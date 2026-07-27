@@ -16,7 +16,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="推送模块：dividend、a500、hs300、zz500、zz1000、kc50、cyb、ndx、spx、all(全部，默认)",
+        help="推送模块：dividend、a500、hs300、zz500、zz1000、kc50、cyb、hstech、ndx、spx、all(全部，默认)",
     )
     parser.add_argument(
         "--index",
@@ -82,6 +82,7 @@ def main(argv=None):
             "zz1000": "中证1000信号",
             "kc50": "科创50信号",
             "cyb": "创业板信号",
+            "hstech": "恒生科技信号",
             "ndx": "纳指100信号",
             "spx": "标普500信号",
         }

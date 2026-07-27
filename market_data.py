@@ -2,7 +2,6 @@
 
 import sys
 from datetime import date
-from functools import lru_cache
 
 import pandas as pd
 import requests
@@ -19,6 +18,7 @@ from config import (
     REQUEST_TIMEOUT,
     indicator_xls_url,
 )
+from data_cache import get_or_fetch_dataframe, get_or_fetch_json
 
 
 def configure_stdout_utf8():
@@ -32,34 +32,66 @@ def configure_stdout_utf8():
                 pass
 
 
-@lru_cache(maxsize=16)
+def _fetch_indicator_history(index_code):
+    df = pd.read_excel(indicator_xls_url(index_code))
+    if df.empty:
+        return None
+    out = df.rename(
+        columns={
+            "日期Date": "date",
+            "市盈率1（总股本）P/E1": "pe",
+            "市盈率2（计算用股本）P/E2": "pe2",
+            "股息率1（总股本）D/P1": "dividend_yield",
+            "股息率2（计算用股本）D/P2": "dividend_yield2",
+        }
+    )
+    out["date"] = pd.to_datetime(
+        out["date"].astype(str), format="%Y%m%d", errors="coerce"
+    ).dt.date
+    out["pe"] = pd.to_numeric(out["pe"], errors="coerce")
+    out["dividend_yield"] = pd.to_numeric(out["dividend_yield"], errors="coerce") / 100
+    return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+
 def read_indicator_history(index_code):
     """读取中证指数指标文件中的近期 PE 与股息率。"""
     try:
-        df = pd.read_excel(indicator_xls_url(index_code))
-        if df.empty:
-            return None
-        out = df.rename(
-            columns={
-                "日期Date": "date",
-                "市盈率1（总股本）P/E1": "pe",
-                "市盈率2（计算用股本）P/E2": "pe2",
-                "股息率1（总股本）D/P1": "dividend_yield",
-                "股息率2（计算用股本）D/P2": "dividend_yield2",
-            }
+        return get_or_fetch_dataframe(
+            f"indicator_{index_code}",
+            lambda: _fetch_indicator_history(index_code),
+            subdir="cn",
         )
-        out["date"] = pd.to_datetime(
-            out["date"].astype(str), format="%Y%m%d", errors="coerce"
-        ).dt.date
-        out["pe"] = pd.to_numeric(out["pe"], errors="coerce")
-        out["dividend_yield"] = pd.to_numeric(out["dividend_yield"], errors="coerce") / 100
-        return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     except Exception as exc:
         print(f" 读取 {index_code} 指标文件时出错: {exc}")
         return None
 
 
-@lru_cache(maxsize=32)
+def _fetch_index_perf_history(index_code, start_date, end_date):
+    response = requests.get(
+        INDEX_PERF_URL,
+        params={
+            "indexCode": index_code,
+            "startDate": start_date,
+            "endDate": end_date,
+        },
+        headers=HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    payload = response.json()
+    records = payload.get("data") or []
+    if not records:
+        print(f" 无法获取 {index_code} 在 {start_date}-{end_date} 的历史数据。")
+        return None
+
+    history = pd.DataFrame(records)
+    history["date"] = pd.to_datetime(history["tradeDate"]).dt.date
+    history["rolling_pe"] = pd.to_numeric(history["peg"], errors="coerce")
+    history["close"] = pd.to_numeric(history["close"], errors="coerce")
+    history["trading_value"] = pd.to_numeric(history["tradingValue"], errors="coerce")
+    history = history.dropna(subset=["date", "close"])
+    return history.sort_values("date").reset_index(drop=True)
+
+
 def get_index_perf_history(index_code, start_date=None, end_date=None, years=10):
     """从中证指数 API 获取历史行情与滚动 PE。"""
     if end_date is None:
@@ -68,61 +100,46 @@ def get_index_perf_history(index_code, start_date=None, end_date=None, years=10)
         start_date = f"{date.today().year - years}0101"
 
     try:
-        response = requests.get(
-            INDEX_PERF_URL,
-            params={
-                "indexCode": index_code,
-                "startDate": start_date,
-                "endDate": end_date,
-            },
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
+        return get_or_fetch_dataframe(
+            f"index_perf_{index_code}_{start_date}_{end_date}",
+            lambda: _fetch_index_perf_history(index_code, start_date, end_date),
+            subdir="cn",
         )
-        payload = response.json()
-        records = payload.get("data") or []
-        if not records:
-            print(
-                f" 无法获取 {index_code} 在 {start_date}-{end_date} 的历史数据。"
-            )
-            return None
-
-        history = pd.DataFrame(records)
-        history["date"] = pd.to_datetime(history["tradeDate"]).dt.date
-        history["rolling_pe"] = pd.to_numeric(history["peg"], errors="coerce")
-        history["close"] = pd.to_numeric(history["close"], errors="coerce")
-        history["trading_value"] = pd.to_numeric(
-            history["tradingValue"], errors="coerce"
-        )
-        history = history.dropna(subset=["date", "close"])
-        return history.sort_values("date").reset_index(drop=True)
     except Exception as exc:
         print(f" 获取 {index_code} 历史数据时出错: {exc}")
         return None
 
 
-@lru_cache(maxsize=1)
+def _fetch_gov_bond_yield_history():
+    params = {**BOND_YIELD_PARAMS, "ps": str(BOND_HISTORY_PAGE_SIZE)}
+    response = requests.get(
+        BOND_YIELD_URL,
+        params=params,
+        headers=HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    records = response.json().get("result", {}).get("data", [])
+    if not records:
+        print(" 无法从接口获取国债收益率历史。")
+        return None
+
+    history = pd.DataFrame(records)
+    history["date"] = pd.to_datetime(history["SOLAR_DATE"]).dt.date
+    history["bond_yield"] = (
+        pd.to_numeric(history[BOND_YIELD_FIELD], errors="coerce") / 100
+    )
+    history = history.dropna(subset=["date", "bond_yield"])
+    return history.sort_values("date").reset_index(drop=True)
+
+
 def get_gov_bond_yield_history():
     """从东方财富获取国债收益率历史。"""
     try:
-        params = {**BOND_YIELD_PARAMS, "ps": str(BOND_HISTORY_PAGE_SIZE)}
-        response = requests.get(
-            BOND_YIELD_URL,
-            params=params,
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
+        return get_or_fetch_dataframe(
+            "bond_yield_history",
+            _fetch_gov_bond_yield_history,
+            subdir="cn",
         )
-        records = response.json().get("result", {}).get("data", [])
-        if not records:
-            print(" 无法从接口获取国债收益率历史。")
-            return None
-
-        history = pd.DataFrame(records)
-        history["date"] = pd.to_datetime(history["SOLAR_DATE"]).dt.date
-        history["bond_yield"] = (
-            pd.to_numeric(history[BOND_YIELD_FIELD], errors="coerce") / 100
-        )
-        history = history.dropna(subset=["date", "bond_yield"])
-        return history.sort_values("date").reset_index(drop=True)
     except Exception as exc:
         print(f" 获取国债收益率历史时出错: {exc}")
         return None
@@ -130,7 +147,7 @@ def get_gov_bond_yield_history():
 
 def get_gov_bond_yield():
     """获取最新 10 年期国债收益率。"""
-    try:
+    def _fetch():
         response = requests.get(
             BOND_YIELD_URL,
             params=BOND_YIELD_PARAMS,
@@ -139,12 +156,15 @@ def get_gov_bond_yield():
         )
         records = response.json().get("result", {}).get("data", [])
         if not records:
-            print(" 无法从接口获取国债收益率。")
-            return None, None
+            raise RuntimeError("无法从接口获取国债收益率")
         latest = records[0]
         bond_yield = float(latest[BOND_YIELD_FIELD]) / 100
-        data_date = pd.to_datetime(latest["SOLAR_DATE"]).date()
-        return bond_yield, data_date
+        data_date = pd.to_datetime(latest["SOLAR_DATE"]).date().isoformat()
+        return {"bond_yield": bond_yield, "data_date": data_date}
+
+    try:
+        data = get_or_fetch_json("bond_yield_latest", _fetch, subdir="cn")
+        return data["bond_yield"], date.fromisoformat(data["data_date"])
     except Exception as exc:
         print(f" 获取国债收益率时出错: {exc}")
         return None, None

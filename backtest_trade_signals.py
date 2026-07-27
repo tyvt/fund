@@ -14,8 +14,9 @@ from backtest_buy_signals import (
     _spx_buy_snapshot,
 )
 from cn_broad_signal import evaluate_cn_broad_buy
-from config import CYB_INDEX, INDICES, NDX_INDEX, PROJECT_DIR, SPX_INDEX
+from config import CYB_INDEX, HSTECH_INDEX, INDICES, NDX_INDEX, PROJECT_DIR, SPX_INDEX
 from cyb_signal import evaluate_cyb_signal
+from hstech_signal import evaluate_hstech_signal
 from dividend_data import is_buy_signal_row
 from market_data import configure_stdout_utf8
 
@@ -54,8 +55,13 @@ def _row_date(row, date_col="date"):
 
 
 def _filter_panel(panel, start_date, end_date, date_col="date"):
+    if panel is None or panel.empty:
+        return panel.copy() if panel is not None else pd.DataFrame()
     work = panel.copy()
-    work["_dt"] = work.apply(lambda r: _row_date(r, date_col), axis=1)
+    if date_col == "date_only":
+        work["_dt"] = pd.to_datetime(work["date_only"])
+    else:
+        work["_dt"] = pd.to_datetime(work[date_col])
     mask = work["_dt"] >= pd.Timestamp(start_date)
     if end_date:
         mask &= work["_dt"] <= pd.Timestamp(end_date)
@@ -84,6 +90,18 @@ def _cyb_signals(row):
             "pb": row["pb"],
             "pe_percentile": row.get("pe_percentile"),
             "pb_percentile": row.get("pb_percentile"),
+            "pct_above_low": row.get("pct_above_low"),
+        }
+    )
+    return ev["is_buy"], ev.get("is_sell", False)
+
+
+def _hstech_signals(row):
+    ev = evaluate_hstech_signal(
+        {
+            "pe": row["pe"],
+            "pe_percentile": row.get("pe_percentile"),
+            "dividend_percentile": row.get("dividend_percentile"),
             "pct_above_low": row.get("pct_above_low"),
         }
     )
@@ -232,6 +250,26 @@ def backtest_all(
             TradeResult(
                 code=CYB_INDEX["code"],
                 name=CYB_INDEX["name"],
+                has_sell=True,
+                **stats,
+            )
+        )
+
+    hstech_panel = panels.hstech_panel()
+    stats = simulate_trades(
+        hstech_panel,
+        start_date,
+        end_date,
+        amount=amount,
+        buy_fn=lambda r: _hstech_signals(r)[0],
+        sell_fn=lambda r: _hstech_signals(r)[1],
+        has_sell=True,
+    )
+    if stats:
+        results.append(
+            TradeResult(
+                code=HSTECH_INDEX["code"],
+                name=HSTECH_INDEX["name"],
                 has_sell=True,
                 **stats,
             )

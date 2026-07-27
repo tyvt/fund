@@ -6,6 +6,9 @@ from config import (
     CYB_BUY_LOW_LOOKBACK_DAYS,
     CYB_PERCENTILE_MIN_DAYS,
     CYB_PERCENTILE_WINDOW,
+    HSTECH_BUY_LOW_LOOKBACK_DAYS,
+    HSTECH_PERCENTILE_MIN_DAYS,
+    HSTECH_PERCENTILE_WINDOW,
     DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
     DIVIDEND_SPREAD_PERCENTILE_WINDOW,
     NDX_BUY_LOW_LOOKBACK_DAYS,
@@ -240,6 +243,41 @@ def cyb_drop_to_buy(snapshot):
                 "pb": pb,
                 "pe_percentile": pe_pct,
                 "pb_percentile": pb_pct,
+                "pct_above_low": pct_above_low,
+            }
+        )["is_buy"]
+
+    return _estimate_buy_trigger(check_factor)
+
+
+def hstech_drop_to_buy(snapshot):
+    from hstech_signal import evaluate_hstech_signal
+
+    panel = snapshot.get("panel")
+    if panel is None or panel.empty:
+        return None
+
+    idx = len(panel) - 1
+    row = panel.iloc[-1]
+    if row["pe"] is None:
+        return None
+
+    def check_factor(factor):
+        if factor <= 0:
+            return False
+        pe = row["pe"] * factor
+        pe_pct = rolling_percentile(
+            panel["pe"], idx, pe, HSTECH_PERCENTILE_WINDOW, HSTECH_PERCENTILE_MIN_DAYS
+        )
+        new_close = row["close"] * factor
+        pct_above_low = pct_above_low_for_simulated_close(
+            panel, idx, new_close, HSTECH_BUY_LOW_LOOKBACK_DAYS
+        )
+        return evaluate_hstech_signal(
+            {
+                "pe": pe,
+                "pe_percentile": pe_pct,
+                "dividend_percentile": row.get("dividend_percentile"),
                 "pct_above_low": pct_above_low,
             }
         )["is_buy"]

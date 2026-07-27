@@ -1,8 +1,5 @@
 """创业板指（399006）估值数据拉取与历史分位计算。"""
 
-from datetime import date
-from functools import lru_cache
-
 import akshare as ak
 import pandas as pd
 
@@ -13,6 +10,7 @@ from config import (
     CYB_PERCENTILE_MIN_DAYS,
     CYB_PERCENTILE_WINDOW,
 )
+from data_cache import get_or_fetch_dataframe
 from market_data import compute_percentile
 from price_position import attach_pct_above_low
 
@@ -21,54 +19,62 @@ CYB_NAME = CYB_INDEX["name"]
 CYB_DAILY_SYMBOL = "sz399006"
 
 
-@lru_cache(maxsize=1)
 def fetch_cyb_pe_history():
     """乐咕乐股创业板板块滚动市盈率（月度）。"""
-    df = ak.stock_market_pe_lg(symbol="创业板")
-    out = df.rename(columns={"日期": "date", "平均市盈率": "pe"})
-    out["date"] = pd.to_datetime(out["date"])
-    out["pe"] = pd.to_numeric(out["pe"], errors="coerce")
-    return out.dropna(subset=["date", "pe"]).sort_values("date").reset_index(drop=True)
+    def _fetch():
+        df = ak.stock_market_pe_lg(symbol="创业板")
+        out = df.rename(columns={"日期": "date", "平均市盈率": "pe"})
+        out["date"] = pd.to_datetime(out["date"])
+        out["pe"] = pd.to_numeric(out["pe"], errors="coerce")
+        return out.dropna(subset=["date", "pe"]).sort_values("date").reset_index(drop=True)
+
+    return get_or_fetch_dataframe("cyb_pe", _fetch, subdir="cyb")
 
 
-@lru_cache(maxsize=1)
 def fetch_cyb_pb_history():
     """乐咕乐股创业板板块市净率（加权/等权/中位数，日度）。"""
-    df = ak.stock_market_pb_lg(symbol="创业板")
-    out = df.rename(
-        columns={
-            "日期": "date",
-            "市净率": "pb",
-            "等权市净率": "pb_equal",
-            "市净率中位数": "pb_median",
-        }
-    )
-    out["date"] = pd.to_datetime(out["date"])
-    for col in ("pb", "pb_equal", "pb_median"):
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    return out.dropna(subset=["date", "pb"]).sort_values("date").reset_index(drop=True)
+    def _fetch():
+        df = ak.stock_market_pb_lg(symbol="创业板")
+        out = df.rename(
+            columns={
+                "日期": "date",
+                "市净率": "pb",
+                "等权市净率": "pb_equal",
+                "市净率中位数": "pb_median",
+            }
+        )
+        out["date"] = pd.to_datetime(out["date"])
+        for col in ("pb", "pb_equal", "pb_median"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        return out.dropna(subset=["date", "pb"]).sort_values("date").reset_index(drop=True)
+
+    return get_or_fetch_dataframe("cyb_pb", _fetch, subdir="cyb")
 
 
-@lru_cache(maxsize=1)
 def fetch_cyb_dividend_history():
     """乐咕乐股创业板板块股息率（日度，单位为百分比数值）。"""
-    df = ak.stock_a_gxl_lg(symbol="创业板")
-    out = df.rename(columns={"日期": "date", "股息率": "dividend_yield"})
-    out["date"] = pd.to_datetime(out["date"])
-    out["dividend_yield"] = pd.to_numeric(out["dividend_yield"], errors="coerce") / 100
-    return out.dropna(subset=["date", "dividend_yield"]).sort_values("date").reset_index(
-        drop=True
-    )
+    def _fetch():
+        df = ak.stock_a_gxl_lg(symbol="创业板")
+        out = df.rename(columns={"日期": "date", "股息率": "dividend_yield"})
+        out["date"] = pd.to_datetime(out["date"])
+        out["dividend_yield"] = pd.to_numeric(out["dividend_yield"], errors="coerce") / 100
+        return out.dropna(subset=["date", "dividend_yield"]).sort_values("date").reset_index(
+            drop=True
+        )
+
+    return get_or_fetch_dataframe("cyb_dividend", _fetch, subdir="cyb")
 
 
-@lru_cache(maxsize=1)
 def fetch_cyb_price_history():
     """创业板指日线收盘价（用于波动率）。"""
-    df = ak.stock_zh_index_daily(symbol=CYB_DAILY_SYMBOL)
-    out = df.rename(columns={"date": "date", "close": "close"})
-    out["date"] = pd.to_datetime(out["date"])
-    out["close"] = pd.to_numeric(out["close"], errors="coerce")
-    return out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+    def _fetch():
+        df = ak.stock_zh_index_daily(symbol=CYB_DAILY_SYMBOL)
+        out = df.rename(columns={"date": "date", "close": "close"})
+        out["date"] = pd.to_datetime(out["date"])
+        out["close"] = pd.to_numeric(out["close"], errors="coerce")
+        return out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+
+    return get_or_fetch_dataframe("cyb_price", _fetch, subdir="cyb")
 
 
 def build_cyb_valuation_panel():

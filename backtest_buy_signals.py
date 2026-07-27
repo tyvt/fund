@@ -18,6 +18,8 @@ from config import (
     CYB_INDEX,
     DIVIDEND_SIGNAL_HISTORY_START,
     HS300_INDEX,
+    HSTECH_BUY_LOW_LOOKBACK_DAYS,
+    HSTECH_INDEX,
     INDICES,
     KC50_INDEX,
     NDX_INDEX,
@@ -29,6 +31,9 @@ from config import (
 from cyb_data import attach_percentiles as attach_cyb_percentiles
 from cyb_data import build_cyb_valuation_panel, fetch_cyb_price_history
 from cyb_signal import evaluate_cyb_signal
+from hstech_data import attach_percentiles as attach_hstech_percentiles
+from hstech_data import build_hstech_valuation_panel, fetch_hstech_price_history
+from hstech_signal import evaluate_hstech_signal
 from dividend_data import build_signal_history, is_buy_signal_row
 from market_data import configure_stdout_utf8, get_gov_bond_yield_history
 from ndx_data import build_ndx_daily_valuation_panel, build_ndx_valuation_panel
@@ -57,6 +62,7 @@ class BacktestPanels:
         self._a500 = None
         self._cn_broad = {}
         self._cyb = None
+        self._hstech = None
         self._ndx = None
         self._ndx_growth = None
         self._spx = None
@@ -101,6 +107,22 @@ class BacktestPanels:
                 self._cyb, lookback_days=CYB_BUY_LOW_LOOKBACK_DAYS
             )
         return self._cyb
+
+    def hstech_panel(self):
+        if self._hstech is None:
+            panel = build_hstech_valuation_panel()
+            prices = fetch_hstech_price_history()
+            prices["date_only"] = pd.to_datetime(prices["date"]).dt.date
+            panel = panel.merge(
+                prices[["date_only", "close"]],
+                on="date_only",
+                how="left",
+            )
+            self._hstech = attach_hstech_percentiles(panel)
+            self._hstech = attach_pct_above_low(
+                self._hstech, lookback_days=HSTECH_BUY_LOW_LOOKBACK_DAYS
+            )
+        return self._hstech
 
     def ndx_panel(self):
         if self._ndx is None:
@@ -412,6 +434,30 @@ def backtest_cyb(year, amount=None, panels=None):
     return [{"code": CYB_INDEX["code"], "name": CYB_INDEX["name"], **result}]
 
 
+def backtest_hstech(year, amount=None, panels=None):
+    panels = panels or get_panels()
+    panel = panels.hstech_panel()
+    buy_fn = lambda r: evaluate_hstech_signal(  # noqa: E731
+        {
+            "pe": r["pe"],
+            "pe_percentile": r.get("pe_percentile"),
+            "dividend_percentile": r.get("dividend_percentile"),
+            "pct_above_low": r.get("pct_above_low"),
+        }
+    )["is_buy"]
+    if amount is not None:
+        result = _simulate_dca_returns(
+            panel, year, buy_fn, amount=amount, date_col="date"
+        )
+    else:
+        result = _count_buy_days(
+            panel, year, buy_fn, date_col="date"
+        )
+    if not result:
+        return []
+    return [{"code": HSTECH_INDEX["code"], "name": HSTECH_INDEX["name"], **result}]
+
+
 def backtest_ndx(year, amount=None, panels=None):
     """纳指日频信号（10Y 日更，Forward PE 按月对齐，TTM PE 有数据日起日更）。"""
     panels = panels or get_panels()
@@ -500,6 +546,21 @@ def list_buy_dates(year, panels=None):
         date_col="date",
     )
 
+    hstech = panels.hstech_panel()
+    out[f"{HSTECH_INDEX['name']} ({HSTECH_INDEX['code']})"] = _collect_buy_dates(
+        hstech,
+        year,
+        lambda r: evaluate_hstech_signal(
+            {
+                "pe": r["pe"],
+                "pe_percentile": r.get("pe_percentile"),
+                "dividend_percentile": r.get("dividend_percentile"),
+                "pct_above_low": r.get("pct_above_low"),
+            }
+        )["is_buy"],
+        date_col="date",
+    )
+
     daily, hg = panels.ndx_panel()
     out[f"{NDX_INDEX['name']} ({NDX_INDEX['code']})"] = _collect_buy_dates(
         daily,
@@ -538,6 +599,7 @@ def run_backtest(year, amount=None, panels=None):
     for item in CN_BROAD_BACKTEST_INDICES:
         rows.extend(backtest_cn_broad(year, item, panels=panels, amount=amount))
     rows.extend(backtest_cyb(year, panels=panels, amount=amount))
+    rows.extend(backtest_hstech(year, panels=panels, amount=amount))
     rows.extend(backtest_ndx(year, panels=panels, amount=amount))
     rows.extend(backtest_spx(year, panels=panels, amount=amount))
     return rows

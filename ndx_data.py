@@ -3,8 +3,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from io import StringIO
-from pathlib import Path
-import time
 
 import pandas as pd
 import requests
@@ -22,9 +20,14 @@ from config import (
     NDX_PERCENTILE_MIN_DAYS,
     NDX_PERCENTILE_WINDOW,
     NDX_INDEX,
-    PROJECT_DIR,
     REQUEST_TIMEOUT,
     fred_csv_url,
+)
+from data_cache import (
+    get_or_fetch_us_dataframe,
+    get_or_fetch_us_json,
+    get_or_fetch_us_text,
+    us_cache_path,
 )
 from market_data import compute_percentile
 from price_position import attach_pct_above_low
@@ -36,12 +39,6 @@ FRED_US10Y_SERIES = "DGS10"
 NASDAQ_QQQ_SUMMARY_URL = (
     "https://api.nasdaq.com/api/quote/{symbol}/summary?assetclass=etf"
 )
-CACHE_DIR = PROJECT_DIR / "logs" / "us_index_cache"
-
-
-def _cache_path(name):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR / name
 
 
 def _history_start():
@@ -60,46 +57,26 @@ def _fetch_json(url, timeout=REQUEST_TIMEOUT):
     return response.json()
 
 
-def _should_refresh_cache(cache_file, max_age_hours=24):
-    if not cache_file.exists():
-        return True
-    age_seconds = time.time() - cache_file.stat().st_mtime
-    return age_seconds > max_age_hours * 3600
-
-
 def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
-    """从 FRED 拉取 CSV；有缓存时先读缓存，仅过期时才短超时刷新。"""
-    cache_file = _cache_path(f"fred_{series_id}.csv")
-    text = None
-    refresh = allow_network and _should_refresh_cache(cache_file)
-    if cache_file.exists():
-        text = cache_file.read_text(encoding="utf-8")
-        if refresh:
-            try:
-                response = requests.get(
-                    fred_csv_url(series_id),
-                    headers=HEADERS,
-                    timeout=NDX_FRED_NETWORK_TIMEOUT,
-                )
-                response.raise_for_status()
-                text = response.text
-                cache_file.write_text(text, encoding="utf-8")
-            except requests.RequestException:
-                pass
-    elif refresh:
-        try:
-            response = requests.get(
-                fred_csv_url(series_id),
-                headers=HEADERS,
-                timeout=max(NDX_FRED_NETWORK_TIMEOUT, REQUEST_TIMEOUT),
-            )
-            response.raise_for_status()
-            text = response.text
-            cache_file.write_text(text, encoding="utf-8")
-        except requests.RequestException as exc:
-            raise RuntimeError(f"无法获取 FRED {series_id} 且无本地缓存") from exc
+    """从 FRED 拉取 CSV；当日已缓存则直接读取。"""
+    cache_name = f"fred_{series_id}.csv"
+
+    def _download():
+        response = requests.get(
+            fred_csv_url(series_id),
+            headers=HEADERS,
+            timeout=max(NDX_FRED_NETWORK_TIMEOUT, REQUEST_TIMEOUT),
+        )
+        response.raise_for_status()
+        return response.text
+
+    if allow_network:
+        text = get_or_fetch_us_text(cache_name, _download)
     else:
-        raise RuntimeError(f"缺少 FRED {series_id} 本地缓存")
+        path = us_cache_path(cache_name)
+        if not path.exists():
+            raise RuntimeError(f"缺少 FRED {series_id} 本地缓存")
+        text = path.read_text(encoding="utf-8")
 
     frame = pd.read_csv(StringIO(text))
     value_col = [column for column in frame.columns if column != "observation_date"][0]
@@ -115,23 +92,10 @@ def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
 
 def fetch_ndx_pe_payload():
     """History of Market：NDX PE（仅保留近 NDX_HISTORY_YEARS 年）。"""
-    import json
-
-    cache_file = _cache_path("ndx_forward_pe.json")
-    payload = None
-    refresh = _should_refresh_cache(cache_file)
-    if cache_file.exists() and not refresh:
-        payload = json.loads(cache_file.read_text(encoding="utf-8"))
-    else:
-        try:
-            payload = _fetch_json(NDX_FORWARD_PE_URL, timeout=NDX_FRED_NETWORK_TIMEOUT)
-            cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except requests.RequestException:
-            if cache_file.exists():
-                payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            else:
-                raise
-
+    payload = get_or_fetch_us_json(
+        "ndx_forward_pe.json",
+        lambda: _fetch_json(NDX_FORWARD_PE_URL, timeout=NDX_FRED_NETWORK_TIMEOUT),
+    )
     current = payload.get("current") or {}
     trailing = pd.DataFrame(payload.get("trailing") or [])
     forward = pd.DataFrame(payload.get("forward") or [])
@@ -158,75 +122,72 @@ def fetch_ndx_pe_payload():
 
 
 def _fetch_us10y_from_akshare():
-    cache_file = _cache_path("us10y_akshare.csv")
-    if cache_file.exists():
-        frame = pd.read_csv(cache_file, parse_dates=["date"])
-        return frame
+    def _download():
+        import akshare as ak
 
-    import akshare as ak
+        raw = ak.bond_zh_us_rate()
+        out = raw.rename(columns={"日期": "date", "美国国债收益率10年": "us10y"})
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+        out["us10y"] = pd.to_numeric(out["us10y"], errors="coerce") / 100
+        out = out.dropna(subset=["date", "us10y"])
+        return out[["date", "us10y"]].sort_values("date").reset_index(drop=True)
 
-    raw = ak.bond_zh_us_rate()
-    out = raw.rename(columns={"日期": "date", "美国国债收益率10年": "us10y"})
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["us10y"] = pd.to_numeric(out["us10y"], errors="coerce") / 100
-    out = out.dropna(subset=["date", "us10y"])
-    out = out[["date", "us10y"]].sort_values("date")
-    cache_file.write_text(out.to_csv(index=False), encoding="utf-8")
-    return out
+    return get_or_fetch_us_dataframe("us10y_akshare.csv", _download)
 
 
 def fetch_us10y_history():
     """美国 10 年期国债收益率（近 NDX_HISTORY_YEARS 年）。"""
     start = _history_start()
-    fred_cache = _cache_path(f"fred_{FRED_US10Y_SERIES}.csv")
-    if fred_cache.exists():
-        try:
-            history = fetch_fred_series(FRED_US10Y_SERIES, start_date=start)
-            history["value"] = history["value"] / 100
-            return history.rename(columns={"value": "us10y"})
-        except (requests.RequestException, RuntimeError):
-            pass
+    try:
+        history = fetch_fred_series(FRED_US10Y_SERIES, start_date=start)
+        history["value"] = history["value"] / 100
+        return history.rename(columns={"value": "us10y"})
+    except (requests.RequestException, RuntimeError):
+        out = _fetch_us10y_from_akshare()
+        return out[out["date"] >= start].reset_index(drop=True)
 
-    out = _fetch_us10y_from_akshare()
-    return out[out["date"] >= start].reset_index(drop=True)
+
+def _fetch_ndx_price_from_akshare():
+    def _download():
+        import akshare as ak
+
+        frame = ak.index_us_stock_sina(symbol=".NDX")
+        out = frame.rename(columns={"date": "date", "close": "close"})
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+        out["close"] = pd.to_numeric(out["close"], errors="coerce")
+        return out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+
+    return get_or_fetch_us_dataframe("ndx_price_akshare.csv", _download)
 
 
 def fetch_ndx_price_history():
     """纳斯达克 100 价格指数（近 NDX_HISTORY_YEARS 年）。"""
     start = _history_start()
-    fred_cache = _cache_path(f"fred_{FRED_NASDAQ100_SERIES}.csv")
-    if fred_cache.exists():
-        try:
-            history = fetch_fred_series(
-                FRED_NASDAQ100_SERIES, start_date=start, allow_network=True
-            )
-            return history.rename(columns={"value": "close"})
-        except (requests.RequestException, RuntimeError):
-            pass
-
-    import akshare as ak
-
-    frame = ak.index_us_stock_sina(symbol=".NDX")
-    out = frame.rename(columns={"date": "date", "close": "close"})
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["close"] = pd.to_numeric(out["close"], errors="coerce")
-    out = out.dropna(subset=["date", "close"])
-    return out[out["date"] >= start].sort_values("date").reset_index(drop=True)
+    try:
+        history = fetch_fred_series(FRED_NASDAQ100_SERIES, start_date=start)
+        return history.rename(columns={"value": "close"})
+    except (requests.RequestException, RuntimeError):
+        out = _fetch_ndx_price_from_akshare()
+        return out[out["date"] >= start].reset_index(drop=True)
 
 
 def fetch_dividend_yield_proxy():
     """以 QQQ 当前股息率近似 NDX（成长指数分红参考价值有限）。"""
-    try:
+    def _fetch():
         url = NASDAQ_QQQ_SUMMARY_URL.format(symbol=NDX_DIVIDEND_PROXY_SYMBOL)
         payload = _fetch_json(url, timeout=NDX_FRED_NETWORK_TIMEOUT)
         summary = (payload.get("data") or {}).get("summaryData") or {}
         raw = (summary.get("Yield") or {}).get("value")
-        if raw:
-            text = str(raw).strip().replace("%", "")
-            return float(text) / 100
+        if not raw:
+            return {"yield": None}
+        text = str(raw).strip().replace("%", "")
+        return {"yield": float(text) / 100}
+
+    try:
+        data = get_or_fetch_us_json("ndx_qqq_dividend_yield.json", _fetch)
+        return data.get("yield")
     except requests.RequestException:
-        pass
-    return None
+        return None
 
 
 def implied_earnings_growth(trailing_pe, forward_pe):

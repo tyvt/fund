@@ -3,15 +3,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from io import StringIO
-from pathlib import Path
-import time
 
 import pandas as pd
 import requests
 
 from config import (
     HEADERS,
-    PROJECT_DIR,
     REQUEST_TIMEOUT,
     SPX_BUY_LOW_LOOKBACK_DAYS,
     SPX_DAILY_PERCENTILE_MIN_DAYS,
@@ -24,6 +21,7 @@ from config import (
     SPX_PERCENTILE_MIN_DAYS,
     SPX_PERCENTILE_WINDOW,
 )
+from data_cache import get_or_fetch_us_dataframe, get_or_fetch_us_json
 from market_data import compute_percentile
 from ndx_data import fetch_fred_series, fetch_us10y_history
 from price_position import attach_pct_above_low
@@ -34,12 +32,6 @@ FRED_SP500_SERIES = "SP500"
 NASDAQ_ETF_SUMMARY_URL = (
     "https://api.nasdaq.com/api/quote/{symbol}/summary?assetclass=etf"
 )
-CACHE_DIR = PROJECT_DIR / "logs" / "us_index_cache"
-
-
-def _cache_path(name):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR / name
 
 
 def _history_start():
@@ -58,32 +50,12 @@ def _fetch_json(url, timeout=REQUEST_TIMEOUT):
     return response.json()
 
 
-def _should_refresh_cache(cache_file, max_age_hours=24):
-    if not cache_file.exists():
-        return True
-    age_seconds = time.time() - cache_file.stat().st_mtime
-    return age_seconds > max_age_hours * 3600
-
-
 def fetch_spx_pe_payload():
     """History of Market：SPX PE（近 SPX_HISTORY_YEARS 年）。"""
-    import json
-
-    cache_file = _cache_path("spx_forward_pe.json")
-    payload = None
-    refresh = _should_refresh_cache(cache_file)
-    if cache_file.exists() and not refresh:
-        payload = json.loads(cache_file.read_text(encoding="utf-8"))
-    else:
-        try:
-            payload = _fetch_json(SPX_FORWARD_PE_URL, timeout=SPX_FRED_NETWORK_TIMEOUT)
-            cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except requests.RequestException:
-            if cache_file.exists():
-                payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            else:
-                raise
-
+    payload = get_or_fetch_us_json(
+        "spx_forward_pe.json",
+        lambda: _fetch_json(SPX_FORWARD_PE_URL, timeout=SPX_FRED_NETWORK_TIMEOUT),
+    )
     current = payload.get("current") or {}
     trailing = pd.DataFrame(payload.get("trailing") or [])
     forward = pd.DataFrame(payload.get("forward") or [])
@@ -109,42 +81,47 @@ def fetch_spx_pe_payload():
     }
 
 
+def _fetch_spx_price_from_akshare():
+    def _download():
+        import akshare as ak
+
+        frame = ak.index_us_stock_sina(symbol=".INX")
+        out = frame.rename(columns={"date": "date", "close": "close"})
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+        out["close"] = pd.to_numeric(out["close"], errors="coerce")
+        return out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+
+    return get_or_fetch_us_dataframe("spx_price_akshare.csv", _download)
+
+
 def fetch_spx_price_history():
     """标普 500 价格指数（近 SPX_HISTORY_YEARS 年）。"""
     start = _history_start()
-    fred_cache = _cache_path(f"fred_{FRED_SP500_SERIES}.csv")
-    if fred_cache.exists():
-        try:
-            history = fetch_fred_series(
-                FRED_SP500_SERIES, start_date=start, allow_network=True
-            )
-            return history.rename(columns={"value": "close"})
-        except (requests.RequestException, RuntimeError):
-            pass
-
-    import akshare as ak
-
-    frame = ak.index_us_stock_sina(symbol=".INX")
-    out = frame.rename(columns={"date": "date", "close": "close"})
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["close"] = pd.to_numeric(out["close"], errors="coerce")
-    out = out.dropna(subset=["date", "close"])
-    return out[out["date"] >= start].sort_values("date").reset_index(drop=True)
+    try:
+        history = fetch_fred_series(FRED_SP500_SERIES, start_date=start)
+        return history.rename(columns={"value": "close"})
+    except (requests.RequestException, RuntimeError):
+        out = _fetch_spx_price_from_akshare()
+        return out[out["date"] >= start].reset_index(drop=True)
 
 
 def fetch_dividend_yield_proxy():
     """以 SPY 当前股息率近似 SPX。"""
-    try:
+    def _fetch():
         url = NASDAQ_ETF_SUMMARY_URL.format(symbol=SPX_DIVIDEND_PROXY_SYMBOL)
         payload = _fetch_json(url, timeout=SPX_FRED_NETWORK_TIMEOUT)
         summary = (payload.get("data") or {}).get("summaryData") or {}
         raw = (summary.get("Yield") or {}).get("value")
-        if raw:
-            text = str(raw).strip().replace("%", "")
-            return float(text) / 100
+        if not raw:
+            return {"yield": None}
+        text = str(raw).strip().replace("%", "")
+        return {"yield": float(text) / 100}
+
+    try:
+        data = get_or_fetch_us_json("spx_spy_dividend_yield.json", _fetch)
+        return data.get("yield")
     except requests.RequestException:
-        pass
-    return None
+        return None
 
 
 def implied_earnings_growth(trailing_pe, forward_pe):

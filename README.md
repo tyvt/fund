@@ -57,6 +57,7 @@ python report.py -m zz500
 python report.py -m zz1000
 python report.py -m kc50
 python report.py -m cyb
+python report.py -m hstech
 python report.py -m ndx
 
 # 红利模块：只看某只指数
@@ -72,7 +73,7 @@ python report.py -m ndx --ndx-growth 0.15
 
 | 参数 | 说明 |
 |------|------|
-| `-m, --module` | 模块：`dividend` / `a500` / `hs300` / `zz500` / `zz1000` / `kc50` / `cyb` / `ndx` / `spx` / `all`（可多次指定，默认 all） |
+| `-m, --module` | 模块：`dividend` / `a500` / `hs300` / `zz500` / `zz1000` / `kc50` / `cyb` / `hstech` / `ndx` / `spx` / `all`（可多次指定，默认 all） |
 | `--index` | 红利模块：指数代码，可多次指定 |
 | `--growth` | 创业板：机构预期净利润增速（小数） |
 | `--ndx-growth` | 纳指100：预期盈利增速（小数） |
@@ -162,6 +163,7 @@ python compare_broad_indices.py
 | A股宽基 | `cn_broad_data.py` | `cn_broad_signal.py` | 000510、000300、000905、000852、000688 |
 | A500（薄封装） | `a500_data.py` | `a500_signal.py` | 000510 |
 | 创业板 | `cyb_data.py` | `cyb_signal.py` | 399006 |
+| 恒生科技 | `hstech_data.py` | `hstech_signal.py` | HSTECH |
 | 纳指100 | `ndx_data.py` | `ndx_signal.py` | NDX |
 
 - **数据层**：拉取行情/估值、构建历史面板、计算分位。
@@ -193,7 +195,8 @@ python compare_broad_indices.py
 | 路径 | 作用 |
 |------|------|
 | `logs/push.log` | 定时推送日志。 |
-| `logs/us_index_cache/` | 纳指相关数据本地缓存（FRED、Shiller PE 等）。 |
+| `logs/data_cache/` | A 股/创业板/恒生科技等历史数据本地缓存（按日刷新，当日已拉取则复用）。 |
+| `logs/us_index_cache/` | 美股指数数据本地缓存（FRED、Forward PE、akshare 备用行情等，按日刷新）。 |
 
 ---
 
@@ -222,6 +225,12 @@ python compare_broad_indices.py
 - **买入**：加权 PE/PB 历史分位偏低 + PEG（近 5 年增速）≤ 阈值
 - **卖出**：PE/PB 分位均偏高，或 PEG 过高且估值不低（须同时满足）
 
+### 恒生科技指数（hstech）
+
+- **指数**：恒生科技指数（HSTECH），2020 年 7 月发布
+- **买入**：PE 分位偏低 + PEG（近 5 年增速）≤ 阈值 + 股息率分位偏高 + 价格位置（须同时满足；乐咕暂无 PB/PS 历史）
+- **卖出**：PE 分位偏高，或 PEG 过高且估值不低
+
 ### 纳斯达克 100（ndx）/ 标普 500（spx）
 
 - **买入**：Forward PE 分位偏低 + PEG(Forward) ≤ 阈值 + 10Y 利率分位不高
@@ -240,6 +249,7 @@ python compare_broad_indices.py
 ├── cn_broad_data.py / cn_broad_signal.py
 ├── a500_data.py / a500_signal.py
 ├── cyb_data.py / cyb_signal.py
+├── hstech_data.py / hstech_signal.py
 ├── ndx_data.py / ndx_signal.py
 ├── config.py              # 配置与阈值
 ├── data_sources.py        # 数据源地址
