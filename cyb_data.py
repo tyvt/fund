@@ -1,0 +1,243 @@
+"""创业板指（399006）估值数据拉取与历史分位计算。"""
+
+from datetime import date
+from functools import lru_cache
+
+import akshare as ak
+import pandas as pd
+
+from config import (
+    CYB_BUY_LOW_LOOKBACK_DAYS,
+    CYB_DIV_PERCENTILE_WINDOW,
+    CYB_INDEX,
+    CYB_PERCENTILE_MIN_DAYS,
+    CYB_PERCENTILE_WINDOW,
+)
+from market_data import compute_percentile
+from price_position import attach_pct_above_low
+
+CYB_CODE = CYB_INDEX["code"]
+CYB_NAME = CYB_INDEX["name"]
+CYB_DAILY_SYMBOL = "sz399006"
+
+
+@lru_cache(maxsize=1)
+def fetch_cyb_pe_history():
+    """乐咕乐股创业板板块滚动市盈率（月度）。"""
+    df = ak.stock_market_pe_lg(symbol="创业板")
+    out = df.rename(columns={"日期": "date", "平均市盈率": "pe"})
+    out["date"] = pd.to_datetime(out["date"])
+    out["pe"] = pd.to_numeric(out["pe"], errors="coerce")
+    return out.dropna(subset=["date", "pe"]).sort_values("date").reset_index(drop=True)
+
+
+@lru_cache(maxsize=1)
+def fetch_cyb_pb_history():
+    """乐咕乐股创业板板块市净率（加权/等权/中位数，日度）。"""
+    df = ak.stock_market_pb_lg(symbol="创业板")
+    out = df.rename(
+        columns={
+            "日期": "date",
+            "市净率": "pb",
+            "等权市净率": "pb_equal",
+            "市净率中位数": "pb_median",
+        }
+    )
+    out["date"] = pd.to_datetime(out["date"])
+    for col in ("pb", "pb_equal", "pb_median"):
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out.dropna(subset=["date", "pb"]).sort_values("date").reset_index(drop=True)
+
+
+@lru_cache(maxsize=1)
+def fetch_cyb_dividend_history():
+    """乐咕乐股创业板板块股息率（日度，单位为百分比数值）。"""
+    df = ak.stock_a_gxl_lg(symbol="创业板")
+    out = df.rename(columns={"日期": "date", "股息率": "dividend_yield"})
+    out["date"] = pd.to_datetime(out["date"])
+    out["dividend_yield"] = pd.to_numeric(out["dividend_yield"], errors="coerce") / 100
+    return out.dropna(subset=["date", "dividend_yield"]).sort_values("date").reset_index(
+        drop=True
+    )
+
+
+@lru_cache(maxsize=1)
+def fetch_cyb_price_history():
+    """创业板指日线收盘价（用于波动率）。"""
+    df = ak.stock_zh_index_daily(symbol=CYB_DAILY_SYMBOL)
+    out = df.rename(columns={"date": "date", "close": "close"})
+    out["date"] = pd.to_datetime(out["date"])
+    out["close"] = pd.to_numeric(out["close"], errors="coerce")
+    return out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+
+
+def build_cyb_valuation_panel():
+    """合并 PE、PB、股息率为日度估值面板。
+
+    乐咕 PE 为月度发布，merge_asof 对齐后按指数收盘价折算为日度 PE，
+    避免指数上涨而 PE 未更新导致分位与 PEG 被低估（如 2025 年 2 月）。
+    """
+    pb = fetch_cyb_pb_history()
+    pe = fetch_cyb_pe_history()
+    dividend = fetch_cyb_dividend_history()
+    prices = fetch_cyb_price_history()
+
+    panel = pb.sort_values("date")
+    pe_src = pe.sort_values("date").rename(
+        columns={"date": "pe_source_date", "pe": "pe_official"}
+    )
+    panel = pd.merge_asof(
+        panel,
+        pe_src,
+        left_on="date",
+        right_on="pe_source_date",
+        direction="backward",
+    )
+    panel = pd.merge_asof(
+        panel,
+        dividend[["date", "dividend_yield"]].sort_values("date"),
+        on="date",
+        direction="backward",
+    )
+    panel = pd.merge_asof(
+        panel.sort_values("date"),
+        prices[["date", "close"]].sort_values("date"),
+        on="date",
+        direction="backward",
+    )
+    anchor = prices.rename(
+        columns={"date": "pe_source_date", "close": "close_at_pe_source"}
+    )
+    panel = panel.merge(
+        anchor[["pe_source_date", "close_at_pe_source"]],
+        on="pe_source_date",
+        how="left",
+    )
+    panel["pe"] = panel["pe_official"] * (
+        panel["close"] / panel["close_at_pe_source"]
+    )
+    panel = panel.dropna(subset=["pe", "pb", "pb_equal", "dividend_yield"])
+    panel["date_only"] = panel["date"].dt.date
+    drop_cols = ["pe_source_date", "close_at_pe_source", "close"]
+    panel = panel.drop(columns=[c for c in drop_cols if c in panel.columns])
+    return panel.reset_index(drop=True)
+
+
+def compute_annualized_volatility(price_history, window=252):
+    """基于日收益率计算年化波动率。"""
+    if price_history is None or price_history.empty:
+        return None
+    prices = price_history.sort_values("date").copy()
+    prices["ret"] = prices["close"].pct_change()
+    recent = prices["ret"].dropna().tail(window)
+    if len(recent) < window // 2:
+        return None
+    return float(recent.std() * (252**0.5))
+
+
+def attach_percentiles(
+    panel,
+    window=CYB_PERCENTILE_WINDOW,
+    div_window=CYB_DIV_PERCENTILE_WINDOW,
+    min_days=CYB_PERCENTILE_MIN_DAYS,
+):
+    """计算 PE、PB、股息率滚动历史分位。"""
+    if panel is None or panel.empty:
+        return None
+
+    out = panel.copy()
+    pe_pcts, pb_pcts, pb_eq_pcts, pb_med_pcts, div_pcts = [], [], [], [], []
+
+    for idx in range(len(out)):
+        if idx < min_days:
+            pe_pcts.append(None)
+            pb_pcts.append(None)
+            pb_eq_pcts.append(None)
+            pb_med_pcts.append(None)
+            div_pcts.append(None)
+            continue
+
+        pe_start = max(0, idx - window)
+        pb_start = pe_start
+        div_start = max(0, idx - div_window)
+
+        pe_pcts.append(
+            compute_percentile(out["pe"].iloc[pe_start:idx], out["pe"].iloc[idx])
+        )
+        pb_pcts.append(
+            compute_percentile(out["pb"].iloc[pb_start:idx], out["pb"].iloc[idx])
+        )
+        pb_eq_pcts.append(
+            compute_percentile(
+                out["pb_equal"].iloc[pb_start:idx], out["pb_equal"].iloc[idx]
+            )
+        )
+        pb_med_pcts.append(
+            compute_percentile(
+                out["pb_median"].iloc[pb_start:idx], out["pb_median"].iloc[idx]
+            )
+        )
+        div_pcts.append(
+            compute_percentile(
+                out["dividend_yield"].iloc[div_start:idx],
+                out["dividend_yield"].iloc[idx],
+            )
+        )
+
+    out["pe_percentile"] = pe_pcts
+    out["pb_percentile"] = pb_pcts
+    out["pb_equal_percentile"] = pb_eq_pcts
+    out["pb_median_percentile"] = pb_med_pcts
+    out["dividend_percentile"] = div_pcts
+    return out
+
+
+def fetch_cyb_snapshot(expected_growth=None):
+    """拉取创业板指最新估值指标与历史分位。"""
+    panel = build_cyb_valuation_panel()
+    if panel is None or panel.empty:
+        raise RuntimeError("无法构建创业板指估值历史序列")
+
+    panel = attach_percentiles(panel)
+    price_history = fetch_cyb_price_history()
+    price_history["date_only"] = pd.to_datetime(price_history["date"]).dt.date
+    panel = panel.merge(
+        price_history[["date_only", "close"]],
+        on="date_only",
+        how="left",
+    )
+    panel = attach_pct_above_low(panel, lookback_days=CYB_BUY_LOW_LOOKBACK_DAYS)
+    latest = panel.iloc[-1]
+    volatility = compute_annualized_volatility(price_history)
+    pct_above_low = (
+        float(latest["pct_above_low"])
+        if pd.notna(latest.get("pct_above_low"))
+        else None
+    )
+
+    pe = float(latest["pe"])
+    pb = float(latest["pb"])
+    pb_equal = float(latest["pb_equal"])
+    pb_median = float(latest["pb_median"])
+    dividend_yield = float(latest["dividend_yield"])
+
+    return {
+        "code": CYB_CODE,
+        "name": CYB_NAME,
+        "date": latest["date_only"],
+        "pe": pe,
+        "pb": pb,
+        "pb_equal": pb_equal,
+        "pb_median": pb_median,
+        "dividend_yield": dividend_yield,
+        "pe_percentile": latest["pe_percentile"],
+        "pb_percentile": latest["pb_percentile"],
+        "pb_equal_percentile": latest["pb_equal_percentile"],
+        "pb_median_percentile": latest["pb_median_percentile"],
+        "dividend_percentile": latest["dividend_percentile"],
+        "pct_above_low": pct_above_low,
+        "volatility": volatility,
+        "history_days": int(panel["pe"].notna().sum()),
+        "panel": panel,
+        "expected_growth": expected_growth,
+    }

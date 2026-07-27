@@ -1,0 +1,255 @@
+"""A 股宽基指数买入/卖出信号与报告格式化。"""
+
+from config import get_cn_broad_signal_config
+from drop_to_buy import cn_broad_drop_to_buy, format_drop_to_buy_line
+from price_position import (
+    drawdown_from_high_ok,
+    make_drawdown_from_high_criterion,
+    make_price_position_criterion,
+    make_sell_price_position_criterion,
+    price_position_ok,
+    price_position_sell_hit,
+)
+from signal_format import (
+    SIGNAL_BUY,
+    SIGNAL_HOLD,
+    SIGNAL_SELL,
+    append_signal_block,
+    format_module_header,
+    make_criterion,
+    pct_text,
+)
+
+
+def _resolve_cn_broad_signal_short(is_buy, is_sell):
+    if is_buy:
+        return SIGNAL_BUY
+    if is_sell:
+        return SIGNAL_SELL
+    return SIGNAL_HOLD
+
+
+def evaluate_cn_broad_sell(snapshot):
+    """波段卖出：PE 分位偏高，且利差收敛或短期涨幅过大（须同时满足）。"""
+    index_code = snapshot.get("code")
+    cfg = get_cn_broad_signal_config(index_code)
+
+    pe_pct = snapshot.get("pe_percentile")
+    pb_pct = snapshot.get("pb_percentile")
+    spread_pct = snapshot.get("spread_percentile")
+    pct_above_low = snapshot.get("pct_above_low")
+    lookback = cfg["buy_low_lookback_days"]
+
+    spread_hit = (
+        spread_pct is not None
+        and spread_pct <= cfg["sell_spread_percentile_max"]
+    )
+    pe_hit = pe_pct is not None and pe_pct >= cfg["sell_pe_percentile_min"]
+    pb_hit = (
+        pb_pct is not None and pb_pct >= cfg["sell_pb_percentile_min"]
+    )
+    price_hit = price_position_sell_hit(
+        pct_above_low, cfg["sell_max_above_low_pct"]
+    )
+
+    sell_criteria = [
+        make_criterion(
+            "PE 分位",
+            pe_hit,
+            f"{pct_text(pe_pct)}（需≥{cfg['sell_pe_percentile_min']:.0f}%）",
+            "市盈率尚未修复至历史中高位",
+            applicable=pe_pct is not None,
+        ),
+        make_criterion(
+            "股债利差分位",
+            spread_hit,
+            f"{pct_text(spread_pct)}（需≤{cfg['sell_spread_percentile_max']:.0f}%）",
+            "股债优势尚未明显收敛",
+            applicable=spread_pct is not None,
+        ),
+    ]
+    price_criterion = make_sell_price_position_criterion(
+        pct_above_low, cfg["sell_max_above_low_pct"], lookback
+    )
+    if price_criterion is not None:
+        sell_criteria.append(price_criterion)
+    if pb_pct is not None and cfg["sell_pb_percentile_min"] < 95:
+        sell_criteria.append(
+            make_criterion(
+                "PB 分位",
+                pb_hit,
+                f"{pct_text(pb_pct)}（需≥{cfg['sell_pb_percentile_min']:.0f}%）",
+                "市净率尚未修复至历史中高位",
+                applicable=True,
+            )
+        )
+
+    # PE 偏高为前提，再叠加利差收敛或短期涨幅过大，避免熊市低 PE 反弹误卖
+    is_sell = pe_hit and (spread_hit or price_hit or pb_hit)
+
+    reasons = []
+    if pe_hit:
+        reasons.append("PE分位过高")
+    if spread_hit:
+        reasons.append("利差分位过低")
+    if price_hit:
+        reasons.append(f"距{lookback}日低点涨幅过大")
+    if pb_hit and cfg["sell_pb_percentile_min"] < 95:
+        reasons.append("PB分位过高")
+
+    return {
+        "is_sell": is_sell,
+        "sell_criteria": [c for c in sell_criteria if c["applicable"]],
+        "sell_summary": "触发波段卖出: " + "、".join(reasons) if is_sell else None,
+    }
+
+
+def evaluate_cn_broad_buy(snapshot):
+    """股债利差 + PE 分位 + 价格位置；买入需多数指标 favorable。"""
+    index_code = snapshot.get("code")
+    cfg = get_cn_broad_signal_config(index_code)
+
+    pe_pct = snapshot.get("pe_percentile")
+    pb_pct = snapshot.get("pb_percentile")
+    spread_pct = snapshot.get("spread_percentile")
+
+    spread_ok = (
+        spread_pct is not None
+        and spread_pct >= cfg["buy_spread_percentile_min"]
+    )
+    pe_ok = pe_pct is not None and pe_pct <= cfg["buy_pe_percentile_max"]
+    pb_ok = pb_pct is not None and pb_pct <= cfg["buy_pb_percentile_max"]
+
+    criteria = [
+        make_criterion(
+            "股债利差分位",
+            spread_ok,
+            f"{pct_text(spread_pct)}（需≥{cfg['buy_spread_percentile_min']:.0f}%）",
+            "股息率相对国债优势不足",
+            applicable=spread_pct is not None,
+        ),
+        make_criterion(
+            "PE 分位",
+            pe_ok,
+            f"{pct_text(pe_pct)}（需≤{cfg['buy_pe_percentile_max']:.0f}%）",
+            "市盈率处于历史中高位",
+            applicable=pe_pct is not None,
+        ),
+        make_criterion(
+            "PB 分位",
+            pb_ok,
+            f"{pct_text(pb_pct)}（需≤{cfg['buy_pb_percentile_max']:.0f}%）",
+            "市净率处于历史中高位",
+            applicable=pb_pct is not None,
+        ),
+    ]
+    price_criterion = make_price_position_criterion(
+        snapshot.get("pct_above_low"),
+        cfg["buy_max_above_low_pct"],
+        cfg["buy_low_lookback_days"],
+    )
+    if price_criterion is not None:
+        criteria.append(price_criterion)
+    drawdown_criterion = make_drawdown_from_high_criterion(
+        snapshot.get("pct_below_high"),
+        cfg.get("buy_min_drawdown_from_high_pct"),
+        cfg.get("buy_high_lookback_days", 252),
+    )
+    if drawdown_criterion is not None:
+        criteria.append(drawdown_criterion)
+
+    applicable = [c for c in criteria if c["applicable"]]
+    score = sum(1 for c in applicable if c["passed"])
+    total = len(applicable)
+    if total >= 3:
+        need = max(cfg["buy_min_pass_score_floor"], total - 1)
+    else:
+        need = max(1, total)
+    base_buy = (
+        (spread_ok or not cfg["buy_require_spread"])
+        and score >= need
+        and total >= cfg["buy_min_applicable_criteria"]
+    )
+    is_buy = base_buy and price_position_ok(
+        snapshot.get("pct_above_low"), cfg["buy_max_above_low_pct"]
+    ) and drawdown_from_high_ok(
+        snapshot.get("pct_below_high"),
+        cfg.get("buy_min_drawdown_from_high_pct"),
+    )
+
+    sell_eval = evaluate_cn_broad_sell(snapshot)
+    is_sell = sell_eval["is_sell"] and not is_buy
+
+    failed = [c["name"] for c in applicable if not c["passed"]]
+    if is_buy:
+        summary = "股债利差与 PE 分位均处历史有利区间"
+    elif is_sell:
+        summary = sell_eval["sell_summary"]
+    elif not spread_ok:
+        summary = "股债利差未达买入门槛，是主要制约因素"
+    elif failed:
+        summary = f"未达标项: {'、'.join(failed)}（需{need}/{total}项达标）"
+    else:
+        summary = "指标接近但未同时满足买入条件"
+
+    display_criteria = sell_eval["sell_criteria"] if is_sell else applicable
+    display_score = sum(1 for c in display_criteria if c["passed"])
+
+    return {
+        "is_buy": is_buy,
+        "is_sell": is_sell,
+        "score": display_score,
+        "total": len(display_criteria),
+        "signal_short": _resolve_cn_broad_signal_short(is_buy, is_sell),
+        "criteria": display_criteria,
+        "summary": summary,
+        "drop_to_buy": None,
+        "drop_to_buy_line": None,
+    }
+
+
+def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
+    spread = snapshot.get("spread")
+    drop, rise_breaks = cn_broad_drop_to_buy(snapshot)
+    buy_eval = {
+        **buy_eval,
+        "drop_to_buy": drop,
+        "rise_breaks_buy": rise_breaks,
+        "drop_to_buy_line": format_drop_to_buy_line(
+            drop, is_buy=buy_eval.get("is_buy"), rise_breaks_pct=rise_breaks
+        ),
+    }
+    lines = [
+        f"{snapshot['code']} {snapshot['name']}",
+        (
+            f"利差 {spread:.2%} | 利差分位 {pct_text(snapshot.get('spread_percentile'))} | "
+            f"股息率 {snapshot['dividend_yield']:.2%}"
+        ),
+        (
+            f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | "
+            f"PB {snapshot['pb']:.2f} | PB分位 {pct_text(snapshot.get('pb_percentile'))}"
+            if snapshot.get("pb") is not None
+            else f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | PB —"
+        ),
+    ]
+    append_signal_block(lines, buy_eval, module)
+    return {
+        "code": snapshot["code"],
+        "name": snapshot["name"],
+        "text": "\n".join(lines),
+        "signal_short": buy_eval["signal_short"],
+    }
+
+
+def format_cn_broad_report(snapshot, section, title=None):
+    bond = snapshot.get("bond_yield")
+    bond_text = f"{bond:.2%}" if bond is not None else "—"
+    hist_days = snapshot.get("history_days", 0)
+    header_title = title or f"{snapshot['name']} 投资信号"
+    lines = format_module_header(
+        header_title,
+        f"{snapshot['date']} | 国债 {bond_text} | 历史样本约 {hist_days} 个交易日",
+        "买入: 股债利差分位达标 + PE 分位偏低 + 价格位置（距低点/高点回撤）；卖出: PE 分位偏高且（利差收敛或短期涨幅过大）",
+    )
+    lines.append(section["text"])
+    return "\n".join(lines), section

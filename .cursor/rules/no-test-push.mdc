@@ -1,0 +1,31 @@
+---
+description: 开发调试时禁止测试微信推送，仅验证脚本输出
+alwaysApply: true
+---
+
+# 禁止测试微信推送
+
+在本项目中修改或验证脚本时：
+
+- **不要**运行 `push.py` 或 `run_push.bat`，也不要调用 Server酱 接口做真实推送
+- **仅**运行 `python report.py` 检查控制台报告输出
+- 用户未明确要求时，不要主动测试、触发或验证微信推送是否成功
+
+## 正确做法
+
+```bash
+# ✅ 开发/调试：本地看报告（默认全部模块）
+python report.py
+python report.py -m dividend --index H30269
+python report.py -m a500
+python report.py -m cyb
+
+# ❌ 不要在开发调试时使用（除非用户明确要求）
+python push.py
+run_push.bat
+```
+
+## 说明
+
+- 本地报告：`report.py`（纯输出，不推送）
+- 微信推送：`push.py`（定时任务通过 `run_push.bat` 调用）

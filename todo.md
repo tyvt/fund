@@ -1,0 +1,1 @@
+增加各指数卖出指标评估，根据实际数据回测最佳卖点（2021+ 回测见 logs/backtest/trade_2021_present.md）
