@@ -1,6 +1,6 @@
 """A 股宽基指数买入/卖出信号与报告格式化。"""
 
-from config import get_cn_broad_signal_config
+from config import cn_broad_sell_enabled, get_cn_broad_signal_config
 from drop_to_buy import (
     cn_broad_drop_to_buy,
     cn_broad_sell_trigger,
@@ -48,6 +48,12 @@ def _resolve_cn_broad_signal_short(is_buy, is_sell):
 def evaluate_cn_broad_sell(snapshot):
     """波段卖出：PE 分位偏高，且利差收敛或短期涨幅过大（须同时满足）。"""
     index_code = snapshot.get("code")
+    if not cn_broad_sell_enabled(index_code):
+        return {
+            "is_sell": False,
+            "sell_criteria": [],
+            "sell_summary": None,
+        }
     cfg = get_cn_broad_signal_config(index_code)
 
     pe_pct = snapshot.get("pe_percentile")
@@ -388,7 +394,8 @@ def format_cn_broad_report(snapshot, section, title=None):
     lines = format_module_header(
         header_title,
         f"{snapshot['date']} | 国债 {bond_text} | 历史样本约 {hist_days} 个交易日",
-        "买入: 股债利差分位达标 + PE 分位偏低 + 价格位置（距低点/高点回撤）；卖出: PE 分位偏高且（利差收敛或短期涨幅过大）",
+        "买入: 股债利差分位达标 + PE 分位偏低 + 价格位置（距低点/高点回撤）；"
+        "卖出: 仅科创50（PE 分位偏高且利差收敛或短期涨幅过大），其余宽基只买不卖",
     )
     lines.append(section["text"])
     return "\n".join(lines), section

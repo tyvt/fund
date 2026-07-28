@@ -26,6 +26,7 @@ from config import (
     CYB_SELL_PB_PERCENTILE_MIN,
     CYB_SELL_PE_PERCENTILE_MIN,
     CYB_SELL_PEG_HIST_MIN,
+    CYB_SELL_ENABLED,
 )
 from drop_to_buy import (
     cyb_drop_to_buy,
@@ -183,22 +184,23 @@ def evaluate_cyb_signal(snapshot):
 
     is_sell = False
     sell_reasons = []
-    pe_high = pe_pct is not None and pe_pct >= CYB_SELL_PE_PERCENTILE_MIN
-    pb_high = pb_pct is not None and pb_pct >= CYB_SELL_PB_PERCENTILE_MIN
-    peg_combo = (
-        peg_historical is not None
-        and peg_historical >= CYB_SELL_PEG_HIST_MIN
-        and pe_pct is not None
-        and pb_pct is not None
-        and pe_pct >= CYB_SELL_COMBO_PE_PERCENTILE_MIN
-        and pb_pct >= CYB_SELL_COMBO_PB_PERCENTILE_MIN
-    )
-    if pe_high and pb_high:
-        is_sell = True
-        sell_reasons.append(f"PE分位{pct_text(pe_pct)}、PB分位{pct_text(pb_pct)}均偏高")
-    elif peg_combo:
-        is_sell = True
-        sell_reasons.append(f"PEG(5年){peg_historical:.2f}偏高且估值不低")
+    if CYB_SELL_ENABLED:
+        pe_high = pe_pct is not None and pe_pct >= CYB_SELL_PE_PERCENTILE_MIN
+        pb_high = pb_pct is not None and pb_pct >= CYB_SELL_PB_PERCENTILE_MIN
+        peg_combo = (
+            peg_historical is not None
+            and peg_historical >= CYB_SELL_PEG_HIST_MIN
+            and pe_pct is not None
+            and pb_pct is not None
+            and pe_pct >= CYB_SELL_COMBO_PE_PERCENTILE_MIN
+            and pb_pct >= CYB_SELL_COMBO_PB_PERCENTILE_MIN
+        )
+        if pe_high and pb_high:
+            is_sell = True
+            sell_reasons.append(f"PE分位{pct_text(pe_pct)}、PB分位{pct_text(pb_pct)}均偏高")
+        elif peg_combo:
+            is_sell = True
+            sell_reasons.append(f"PEG(5年){peg_historical:.2f}偏高且估值不低")
 
     if is_buy:
         signal_short = SIGNAL_BUY
@@ -298,7 +300,7 @@ def format_cyb_report(snapshot, section):
     lines = format_module_header(
         "创业板指 估值信号",
         f"{snapshot['date']} | 历史样本约 {hist_days} 个交易日 | 主口径: 加权PE/PB(乐咕创业板)，PE按月发布并按指数价日度折算",
-        "买入逻辑: PE/PB 加权分位偏低 + PEG(5年)≤阈值（三项须同时满足）；卖出: PE/PB 分位偏高或 PEG 过高",
+        "买入逻辑: PE/PB 加权分位偏低 + PEG(5年)≤阈值（三项须同时满足）；卖出: 无（长期持有）",
     )
     lines.append(section["text"])
     return "\n".join(lines), section

@@ -147,25 +147,168 @@ def _env_bool(name, default=True):
 _load_env_files()
 
 # --- 回测单次买入金额（元）---
+# 旧版按模块统一金额（仍兼容）；组合模式见下方 PORTFOLIO_* 与 BACKTEST_BUY_AMOUNT_BY_CODE
 DIVIDEND_BUY_AMOUNT = _env_float("DIVIDEND_BUY_AMOUNT", 300)
 CN_BROAD_BUY_AMOUNT = _env_float("CN_BROAD_BUY_AMOUNT", 100)
 BACKTEST_OTHER_BUY_AMOUNT = _env_float("BACKTEST_OTHER_BUY_AMOUNT", 300)
 
+# --- 组合仓位（回测总投入不变前提下，按组分配单次买入金额）---
+# 核心 50%：红利 + A500 | 美股 20% | 科创50 10% | 卫星 20%：创业板 + 中证1000
+# 沪深300 / 中证500 / 恒科：不纳入组合（单次买入 0）
+PORTFOLIO_GROUP_WEIGHTS = {
+    "core": 0.50,
+    "us": 0.20,
+    "kc50": 0.10,
+    "satellite": 0.20,
+}
+PORTFOLIO_INDEX_GROUPS = {
+    "930955": "core",
+    "H30269": "core",
+    "000510": "core",
+    "NDX": "us",
+    "SPX": "us",
+    "000688": "kc50",
+    "399006": "satellite",
+    "000852": "satellite",
+}
+PORTFOLIO_EXCLUDED_CODES = frozenset({"000300", "000905", "HSTECH"})
+# 基准总投入（元）：与收紧阈值后全指数回测一致，组合模式保持此总额
+PORTFOLIO_TOTAL_BUDGET = _env_float("PORTFOLIO_TOTAL_BUDGET", 316_200)
+# 组内分配：return_weighted = 按各指数历史收益率加权（回测优选）
+PORTFOLIO_IN_GROUP_SPLIT = _env_str("PORTFOLIO_IN_GROUP_SPLIT", "return_weighted")
 
-def resolve_backtest_amounts(unified_amount=None):
-    """回测买入金额：红利默认 300，宽基默认 100，其他 300；unified_amount 可统一覆盖。"""
+# 各指数单次买入金额（元）；由 optimize_portfolio_amounts.py 生成，可用 {代码}_BUY_AMOUNT 覆盖
+# 组内倾斜（回测优选）：美股组 NDX 占 85%；卫星组创业板占 80%
+PORTFOLIO_US_NDX_SHARE = _env_float("PORTFOLIO_US_NDX_SHARE", 0.85)
+PORTFOLIO_SAT_CYB_SHARE = _env_float("PORTFOLIO_SAT_CYB_SHARE", 0.80)
+
+# 各指数单次买入金额（元）；总投入约 31.62 万（50/20/10/20 权重 + 组内收益倾斜）
+_BACKTEST_BUY_AMOUNT_DEFAULTS = {
+    "930955": 944,
+    "H30269": 902,
+    "000510": 638,
+    "000300": 0,
+    "000905": 0,
+    "000852": 49,
+    "000688": 155,
+    "399006": 239,
+    "HSTECH": 0,
+    "NDX": 256,
+    "SPX": 62,
+}
+
+
+def _env_buy_amount_for_code(code, default):
+    return _env_float_any((f"{code}_BUY_AMOUNT", f"BACKTEST_{code}_BUY_AMOUNT"), default)
+
+
+def get_backtest_buy_amount(index_code, amounts=None):
+    """读取单只指数单次买入金额（元）；0 表示不买入。"""
+    if amounts is not None:
+        by_code = amounts.get("by_code")
+        if by_code is not None and index_code in by_code:
+            return float(by_code[index_code])
+        if amounts.get("unified"):
+            return float(amounts["dividend"])
+        if amounts.get("portfolio") and index_code in PORTFOLIO_EXCLUDED_CODES:
+            return 0.0
+        if index_code in ("930955", "H30269"):
+            return float(amounts.get("dividend", DIVIDEND_BUY_AMOUNT))
+        if index_code in {i["code"] for i in CN_BROAD_INDICES}:
+            return float(amounts.get("cn_broad", CN_BROAD_BUY_AMOUNT))
+        return float(amounts.get("other", BACKTEST_OTHER_BUY_AMOUNT))
+    default = _BACKTEST_BUY_AMOUNT_DEFAULTS.get(index_code, 0)
+    return _env_buy_amount_for_code(index_code, default)
+
+
+def _build_portfolio_by_code(buy_counts, index_returns, total_budget=None):
+    """按组合权重 + 组内收益率加权，计算各指数单次买入金额。"""
+    budget = total_budget if total_budget is not None else PORTFOLIO_TOTAL_BUDGET
+    group_codes = {}
+    for code, group in PORTFOLIO_INDEX_GROUPS.items():
+        group_codes.setdefault(group, []).append(code)
+    by_code = {code: 0.0 for code in buy_counts}
+    for code in PORTFOLIO_EXCLUDED_CODES:
+        by_code[code] = 0.0
+    for group, weight in PORTFOLIO_GROUP_WEIGHTS.items():
+        codes = [c for c in group_codes.get(group, []) if buy_counts.get(c, 0) > 0]
+        if not codes:
+            continue
+        group_budget = budget * weight
+        if PORTFOLIO_IN_GROUP_SPLIT == "equal":
+            total_buys = sum(buy_counts[c] for c in codes)
+            per_buy = group_budget / total_buys if total_buys else 0
+            for c in codes:
+                by_code[c] = per_buy
+        else:
+            # return_weighted：amount_i = B * r_i / sum(n_j * r_j)
+            scores = []
+            for c in codes:
+                r = max(index_returns.get(c, 0), 0.01)
+                scores.append((c, buy_counts[c] * r))
+            denom = sum(s for _, s in scores) or 1
+            for c, _ in scores:
+                r = max(index_returns.get(c, 0), 0.01)
+                by_code[c] = group_budget * r / denom
+    return by_code
+
+
+def resolve_backtest_amounts(unified_amount=None, portfolio_mode=False):
+    """回测买入金额。默认全指数统一金额；portfolio_mode=True 时使用组合分指数金额。"""
     if unified_amount is not None and unified_amount > 0:
         return {
             "dividend": unified_amount,
             "cn_broad": unified_amount,
             "other": unified_amount,
             "unified": True,
+            "portfolio": False,
+            "by_code": None,
+        }
+    if portfolio_mode:
+        # 默认收益率用于冷启动；优化脚本会写入 _BACKTEST_BUY_AMOUNT_DEFAULTS
+        _ref_returns = {
+            "930955": 43.5,
+            "H30269": 41.6,
+            "000510": 29.4,
+            "NDX": 151.7,
+            "SPX": 105.0,
+            "000688": 66.1,
+            "399006": 87.8,
+            "000852": 34.2,
+        }
+        _ref_buys = {
+            "930955": 47,
+            "H30269": 119,
+            "000510": 10,
+            "NDX": 210,
+            "SPX": 152,
+            "000688": 204,
+            "399006": 212,
+            "000852": 260,
+        }
+        by_code = {
+            code: _env_buy_amount_for_code(code, amt)
+            for code, amt in _BACKTEST_BUY_AMOUNT_DEFAULTS.items()
+        }
+        for code in PORTFOLIO_EXCLUDED_CODES:
+            by_code[code] = 0.0
+        return {
+            "dividend": DIVIDEND_BUY_AMOUNT,
+            "cn_broad": CN_BROAD_BUY_AMOUNT,
+            "other": BACKTEST_OTHER_BUY_AMOUNT,
+            "unified": False,
+            "portfolio": True,
+            "by_code": by_code,
+            "total_budget": PORTFOLIO_TOTAL_BUDGET,
+            "group_weights": dict(PORTFOLIO_GROUP_WEIGHTS),
         }
     return {
         "dividend": DIVIDEND_BUY_AMOUNT,
         "cn_broad": CN_BROAD_BUY_AMOUNT,
         "other": BACKTEST_OTHER_BUY_AMOUNT,
         "unified": False,
+        "portfolio": False,
+        "by_code": None,
     }
 
 
@@ -175,6 +318,14 @@ def format_backtest_amount_note(amounts):
         return "仅统计次数"
     if amounts.get("unified"):
         return f"每次买入 **{amounts['dividend']:.0f}** 元"
+    if amounts.get("portfolio") and amounts.get("by_code"):
+        active = {
+            c: a for c, a in amounts["by_code"].items() if a and a > 0
+        }
+        parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
+        budget = amounts.get("total_budget")
+        head = f"组合模式（总预算 **{budget:,.0f}** 元）" if budget else "组合模式"
+        return head + "：" + "；".join(parts)
     parts = [
         f"红利每次 **{amounts['dividend']:.0f}** 元",
         f"宽基每次 **{amounts['cn_broad']:.0f}** 元",
@@ -437,53 +588,57 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.22,
     ),
+    # 沪深300：二次收紧（夏普持续偏低）
     "000300": _cn_broad_index_defaults(
-        buy_spread_percentile_min=58,
-        buy_pe_percentile_max=62,
-        buy_pb_percentile_max=66,
-        buy_max_above_low_pct=0.08,
-        buy_min_drawdown_from_high_pct=0.12,
-        buy_max_year_range_pct=0.45,
-        buy_mid_range_max_above_low_pct=0.06,
-        buy_trend_min_ma_slope_pct=-0.015,
-        buy_trend_downtrend_max_range_pct=0.08,
+        buy_spread_percentile_min=65,
+        buy_pe_percentile_max=54,
+        buy_pb_percentile_max=58,
+        buy_max_above_low_pct=0.05,
+        buy_min_drawdown_from_high_pct=0.16,
+        buy_max_year_range_pct=0.36,
+        buy_mid_range_max_above_low_pct=0.04,
+        buy_trend_min_ma_slope_pct=-0.010,
+        buy_trend_downtrend_max_range_pct=0.05,
         sell_spread_percentile_max=25,
         sell_pe_percentile_min=85,
         sell_max_above_low_pct=0.18,
     ),
+    # 中证500：二次收紧
     "000905": _cn_broad_index_defaults(
-        buy_spread_percentile_min=60,
-        buy_pe_percentile_max=64,
-        buy_pb_percentile_max=66,
-        buy_max_above_low_pct=0.08,
-        buy_min_drawdown_from_high_pct=0.10,
-        buy_max_year_range_pct=0.48,
-        buy_mid_range_max_above_low_pct=0.07,
+        buy_spread_percentile_min=68,
+        buy_pe_percentile_max=54,
+        buy_pb_percentile_max=58,
+        buy_max_above_low_pct=0.05,
+        buy_min_drawdown_from_high_pct=0.16,
+        buy_max_year_range_pct=0.36,
+        buy_mid_range_max_above_low_pct=0.04,
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.24,
     ),
+    # 中证1000：二次收紧（最严）
     "000852": _cn_broad_index_defaults(
-        buy_spread_percentile_min=60,
-        buy_pe_percentile_max=66,
-        buy_pb_percentile_max=68,
-        buy_max_above_low_pct=0.09,
-        buy_min_drawdown_from_high_pct=0.10,
-        buy_max_year_range_pct=0.46,
-        buy_mid_range_max_above_low_pct=0.07,
+        buy_spread_percentile_min=70,
+        buy_pe_percentile_max=52,
+        buy_pb_percentile_max=56,
+        buy_max_above_low_pct=0.05,
+        buy_min_drawdown_from_high_pct=0.16,
+        buy_max_year_range_pct=0.34,
+        buy_mid_range_max_above_low_pct=0.04,
         sell_spread_percentile_max=25,
         sell_pe_percentile_min=88,
         sell_max_above_low_pct=0.22,
     ),
+    # 科创50：夏普偏低但绝对收益高，轻度收紧
     "000688": _cn_broad_index_defaults(
-        buy_spread_percentile_min=62,
-        buy_pe_percentile_max=55,
-        buy_pb_percentile_max=62,
-        buy_max_above_low_pct=0.08,
-        buy_min_drawdown_from_high_pct=0.12,
-        buy_max_year_range_pct=0.40,
-        buy_mid_range_max_above_low_pct=0.06,
-        buy_trend_downtrend_max_range_pct=0.08,
+        buy_spread_percentile_min=64,
+        buy_pe_percentile_max=52,
+        buy_pb_percentile_max=58,
+        buy_max_above_low_pct=0.07,
+        buy_min_drawdown_from_high_pct=0.14,
+        buy_max_year_range_pct=0.38,
+        buy_mid_range_max_above_low_pct=0.05,
+        buy_trend_downtrend_max_range_pct=0.06,
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.25,
@@ -558,10 +713,11 @@ A500_BUY_LOW_LOOKBACK_DAYS = _env_int(
 CYB_EXPECTED_GROWTH = _env_float("CYB_EXPECTED_GROWTH", 0.3906)
 CYB_HISTORICAL_GROWTH = _env_float("CYB_HISTORICAL_GROWTH", 0.1663)
 CYB_ROE_AVG = _env_float("CYB_ROE_AVG", 0.1229)
-CYB_BUY_PE_PERCENTILE_MAX = _env_float("CYB_BUY_PE_PERCENTILE_MAX", 52)
-CYB_BUY_PB_PERCENTILE_MAX = _env_float("CYB_BUY_PB_PERCENTILE_MAX", 44)
+# 创业板指：2016-2025 夏普偏低(0.41)且回撤大，收紧买入
+CYB_BUY_PE_PERCENTILE_MAX = _env_float("CYB_BUY_PE_PERCENTILE_MAX", 46)
+CYB_BUY_PB_PERCENTILE_MAX = _env_float("CYB_BUY_PB_PERCENTILE_MAX", 38)
 CYB_BUY_PEG_EXPECTED_MAX = _env_float("CYB_BUY_PEG_EXPECTED_MAX", 1.1)
-CYB_BUY_PEG_HIST_MAX = _env_float("CYB_BUY_PEG_HIST_MAX", 2.5)
+CYB_BUY_PEG_HIST_MAX = _env_float("CYB_BUY_PEG_HIST_MAX", 2.2)
 CYB_SELL_PE_PERCENTILE_MIN = _env_float("CYB_SELL_PE_PERCENTILE_MIN", 78)
 CYB_SELL_PB_PERCENTILE_MIN = _env_float("CYB_SELL_PB_PERCENTILE_MIN", 78)
 CYB_SELL_PEG_HIST_MIN = _env_float("CYB_SELL_PEG_HIST_MIN", 3.0)
@@ -570,13 +726,13 @@ CYB_SELL_COMBO_PB_PERCENTILE_MIN = _env_float("CYB_SELL_COMBO_PB_PERCENTILE_MIN"
 CYB_PERCENTILE_WINDOW = _env_int("CYB_PERCENTILE_WINDOW", 2520)
 CYB_DIV_PERCENTILE_WINDOW = _env_int("CYB_DIV_PERCENTILE_WINDOW", 1260)
 CYB_PERCENTILE_MIN_DAYS = _env_int("CYB_PERCENTILE_MIN_DAYS", 120)
-CYB_BUY_MAX_ABOVE_LOW_PCT = _env_float("CYB_BUY_MAX_ABOVE_LOW_PCT", 0.08)
+CYB_BUY_MAX_ABOVE_LOW_PCT = _env_float("CYB_BUY_MAX_ABOVE_LOW_PCT", 0.06)
 CYB_BUY_LOW_LOOKBACK_DAYS = _env_int("CYB_BUY_LOW_LOOKBACK_DAYS", 90)
 CYB_BUY_HIGH_LOOKBACK_DAYS = _env_int("CYB_BUY_HIGH_LOOKBACK_DAYS", 252)
 CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
-    "CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.16
+    "CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.18
 )
-CYB_BUY_MAX_YEAR_RANGE_PCT = _env_float("CYB_BUY_MAX_YEAR_RANGE_PCT", 0.48)
+CYB_BUY_MAX_YEAR_RANGE_PCT = _env_float("CYB_BUY_MAX_YEAR_RANGE_PCT", 0.42)
 CYB_BUY_MID_RANGE_POSITION_PCT = _env_float(
     "CYB_BUY_MID_RANGE_POSITION_PCT", 0.45
 )
@@ -608,6 +764,9 @@ HSTECH_BUY_PEG_HIST_MAX = _env_float("HSTECH_BUY_PEG_HIST_MAX", 1.6)
 HSTECH_BUY_DIV_PERCENTILE_MIN = _env_float("HSTECH_BUY_DIV_PERCENTILE_MIN", 50)
 HSTECH_SELL_PE_PERCENTILE_MIN = _env_float("HSTECH_SELL_PE_PERCENTILE_MIN", 78)
 HSTECH_SELL_PEG_HIST_MIN = _env_float("HSTECH_SELL_PEG_HIST_MIN", 3.0)
+# 动态卖出：PE 分位偏高时，须 PEG 过高或距近1年低点涨幅过大（避免估值钝化时过早/过晚卖）
+HSTECH_SELL_ABOVE_LOW_MIN = _env_float("HSTECH_SELL_ABOVE_LOW_MIN", 0.40)
+HSTECH_SELL_COST_LOOKBACK_DAYS = _env_int("HSTECH_SELL_COST_LOOKBACK_DAYS", 252)
 HSTECH_PERCENTILE_WINDOW = _env_int("HSTECH_PERCENTILE_WINDOW", 1260)
 HSTECH_DIV_PERCENTILE_WINDOW = _env_int("HSTECH_DIV_PERCENTILE_WINDOW", 756)
 HSTECH_PERCENTILE_MIN_DAYS = _env_int("HSTECH_PERCENTILE_MIN_DAYS", 60)
@@ -765,6 +924,21 @@ SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX = _env_float(
     "SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX", 12
 )
 SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float("SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX", 0.5)
+
+# --- 回测风险指标 ---
+BACKTEST_RISK_FREE_RATE = _env_float("BACKTEST_RISK_FREE_RATE", 0.024)
+BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
+
+# --- 卖出开关（回测 2016-2025：仅科创50 卖出对组合收益有正贡献）---
+CN_BROAD_SELL_ENABLED_CODES = frozenset({"000688"})
+CYB_SELL_ENABLED = _env_bool("CYB_SELL_ENABLED", False)
+HSTECH_SELL_ENABLED = _env_bool("HSTECH_SELL_ENABLED", False)
+
+
+def cn_broad_sell_enabled(index_code):
+    """单只 A 股宽基是否启用卖出逻辑。"""
+    return index_code in CN_BROAD_SELL_ENABLED_CODES
+
 
 # --- 其他参考阈值（当前代码未用于主信号逻辑，保留可配置）---
 STRONG_BUY_SPREAD = _env_float("STRONG_BUY_SPREAD", 0.035)

@@ -17,6 +17,7 @@ from config import (
     HSTECH_INDEX,
     HSTECH_PERCENTILE_MIN_DAYS,
     HSTECH_PERCENTILE_WINDOW,
+    HSTECH_SELL_COST_LOOKBACK_DAYS,
 )
 from data_cache import get_or_fetch_dataframe
 from market_data import compute_percentile
@@ -226,6 +227,13 @@ def fetch_hstech_snapshot(expected_growth=None):
         ma_days=BUY_TREND_MA_DAYS,
         slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
     )
+    from hstech_signal import compute_recent_signal_buy_avg
+
+    recent_signal_buy_avg = compute_recent_signal_buy_avg(
+        panel,
+        lookback_days=HSTECH_SELL_COST_LOOKBACK_DAYS,
+        close_col="close",
+    )
     latest = panel.iloc[-1]
     volatility = compute_annualized_volatility(price_history)
     pct_above_low = (
@@ -248,6 +256,11 @@ def fetch_hstech_snapshot(expected_growth=None):
         "code": HSTECH_CODE,
         "name": HSTECH_NAME,
         "date": latest["date_only"],
+        "close": (
+            float(latest["close"])
+            if pd.notna(latest.get("close"))
+            else None
+        ),
         "pe": float(latest["pe"]),
         "dividend_yield": float(latest["dividend_yield"]),
         "pe_percentile": latest["pe_percentile"],
@@ -262,6 +275,7 @@ def fetch_hstech_snapshot(expected_growth=None):
         ),
         "volatility": volatility,
         "history_days": int(panel["pe"].notna().sum()),
+        "recent_signal_buy_avg": recent_signal_buy_avg,
         "panel": panel,
         "expected_growth": expected_growth,
         "high_lookback_days": HSTECH_BUY_HIGH_LOOKBACK_DAYS,

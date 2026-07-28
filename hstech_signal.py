@@ -1,5 +1,7 @@
 """恒生科技指数估值信号与报告格式化（PE + PEG + 股息率分位，无 PB/PS 历史数据源）。"""
 
+import pandas as pd
+
 from config import (
     BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
     BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
@@ -23,6 +25,9 @@ from config import (
     HSTECH_BUY_TREND_MIN_MA_SLOPE_PCT,
     HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     HSTECH_HISTORICAL_GROWTH,
+    HSTECH_SELL_ABOVE_LOW_MIN,
+    HSTECH_SELL_COST_LOOKBACK_DAYS,
+    HSTECH_SELL_ENABLED,
     HSTECH_SELL_PE_PERCENTILE_MIN,
     HSTECH_SELL_PEG_HIST_MIN,
 )
@@ -63,6 +68,76 @@ def compute_peg(pe, growth_rate):
     if pe is None or growth_rate is None or growth_rate <= 0:
         return None
     return pe / (growth_rate * 100)
+
+
+def _hstech_row_snapshot(row):
+    """从估值面板行构建 evaluate_hstech_signal 所需字段。"""
+    return {
+        "pe": row.get("pe"),
+        "pe_percentile": row.get("pe_percentile"),
+        "dividend_percentile": row.get("dividend_percentile"),
+        "pct_above_low": row.get("pct_above_low"),
+        "pct_below_high": row.get("pct_below_high"),
+        "year_range_position": row.get("year_range_position"),
+        "ma_slope_pct": row.get("ma_slope_pct"),
+        "close": row.get("close"),
+    }
+
+
+def compute_recent_signal_buy_avg(
+    panel,
+    lookback_days=None,
+    date_col="date",
+    close_col="close",
+):
+    """近 N 个交易日内，策略买入信号日的收盘价算术平均（报告用隐含成本）。"""
+    if panel is None or panel.empty or close_col not in panel.columns:
+        return None
+    lookback = lookback_days or HSTECH_SELL_COST_LOOKBACK_DAYS
+    work = panel.tail(lookback)
+    prices = []
+    for _, row in work.iterrows():
+        if evaluate_hstech_signal(_hstech_row_snapshot(row))["is_buy"]:
+            close = row.get(close_col)
+            if close is not None and not pd.isna(close):
+                prices.append(float(close))
+    if not prices:
+        return None
+    return sum(prices) / len(prices)
+
+
+def valuation_sell_triggered(snapshot):
+    """估值层面的卖出触发：PE 分位偏高，且 PEG 过高或距低点涨幅过大。"""
+    pe = snapshot.get("pe")
+    peg_historical = compute_peg(pe, HSTECH_HISTORICAL_GROWTH)
+    pe_pct = snapshot.get("pe_percentile")
+    above_low = snapshot.get("pct_above_low")
+
+    pe_high = pe_pct is not None and pe_pct >= HSTECH_SELL_PE_PERCENTILE_MIN
+    peg_high = peg_historical is not None and peg_historical >= HSTECH_SELL_PEG_HIST_MIN
+    momentum_high = (
+        above_low is not None and above_low >= HSTECH_SELL_ABOVE_LOW_MIN
+    )
+
+    triggered = pe_high and (peg_high or momentum_high)
+    reasons = []
+    if triggered:
+        reasons.append(f"PE分位{pct_text(pe_pct)}偏高")
+        if peg_high:
+            reasons.append(f"PEG(5年){peg_historical:.2f}偏高")
+        if momentum_high:
+            pct = above_low * 100 if above_low is not None else None
+            reasons.append(
+                f"距近1年低点涨幅{pct_text(pct) if pct is not None else '—'}"
+            )
+
+    return {
+        "triggered": triggered,
+        "reasons": reasons,
+        "pe_high": pe_high,
+        "peg_high": peg_high,
+        "momentum_high": momentum_high,
+    }
 
 
 def evaluate_hstech_signal(snapshot):
@@ -189,19 +264,12 @@ def evaluate_hstech_signal(snapshot):
 
     is_sell = False
     sell_reasons = []
-    pe_high = pe_pct is not None and pe_pct >= HSTECH_SELL_PE_PERCENTILE_MIN
-    peg_high = (
-        peg_historical is not None
-        and peg_historical >= HSTECH_SELL_PEG_HIST_MIN
-        and pe_pct is not None
-        and pe_pct >= 60
-    )
-    if pe_high:
-        is_sell = True
-        sell_reasons.append(f"PE分位{pct_text(pe_pct)}偏高")
-    elif peg_high:
-        is_sell = True
-        sell_reasons.append(f"PEG(5年){peg_historical:.2f}偏高且估值不低")
+    val_sell = {"triggered": False, "reasons": []}
+    if HSTECH_SELL_ENABLED:
+        val_sell = valuation_sell_triggered(snapshot)
+        if val_sell["triggered"]:
+            is_sell = True
+            sell_reasons.extend(val_sell["reasons"])
 
     if is_buy:
         signal_short = SIGNAL_BUY
@@ -219,6 +287,7 @@ def evaluate_hstech_signal(snapshot):
         "historical_growth": HSTECH_HISTORICAL_GROWTH,
         "is_buy": is_buy,
         "is_sell": is_sell,
+        "valuation_sell": val_sell["triggered"],
         "score": score,
         "signal_short": signal_short,
         "criteria": criteria,
@@ -302,7 +371,8 @@ def format_hstech_report(snapshot, section):
     lines = format_module_header(
         "恒生科技指数 估值信号",
         f"{snapshot['date']} | 历史样本约 {hist_days} 个交易日 | 主口径: 乐咕恒生科技 PE/股息率（月度发布并按指数价日度折算）",
-        "买入逻辑: PE 分位偏低 + PEG(5年)≤阈值 + 股息率分位偏高 + 价格位置（须同时满足）；卖出: PE 分位偏高或 PEG 过高",
+        "买入逻辑: PE 分位偏低 + PEG(5年)≤阈值 + 股息率分位偏高 + 价格位置（须同时满足）；"
+        "卖出: 无（长期持有）",
     )
     lines.append(section["text"])
     return "\n".join(lines), section

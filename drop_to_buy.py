@@ -640,11 +640,17 @@ def hstech_sell_trigger(snapshot):
         pe_pct = rolling_percentile(
             panel["pe"], idx, pe, HSTECH_PERCENTILE_WINDOW, HSTECH_PERCENTILE_MIN_DAYS
         )
-        return evaluate_hstech_signal(
-            {
-                "pe": pe,
-                "pe_percentile": pe_pct,
-            }
-        )["is_sell"]
+        new_close = row["close"] * factor if row.get("close") is not None else None
+        snap = {
+            "pe": pe,
+            "pe_percentile": pe_pct,
+            "dividend_percentile": row.get("dividend_percentile"),
+            "pct_above_low": row.get("pct_above_low"),
+            "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
+            "close": new_close,
+        }
+        return evaluate_hstech_signal(snap)["is_sell"]
 
     return _estimate_sell_trigger(check_factor)
