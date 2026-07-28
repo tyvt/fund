@@ -1,35 +1,8 @@
-"""标普 500 估值信号与报告格式化（逻辑参考纳斯达克 100）。"""
+"""美股指数（纳指 100 / 标普 500）估值信号与报告格式化。"""
 
-from config import (
-    BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
-    BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
-    BUY_RANGE_LOOKBACK_DAYS,
-    SPX_BUY_FORWARD_PE_PERCENTILE_MAX,
-    SPX_BUY_HIGH_LOOKBACK_DAYS,
-    SPX_BUY_LOW_LOOKBACK_DAYS,
-    SPX_BUY_MAX_ABOVE_LOW_PCT,
-    SPX_BUY_MAX_YEAR_RANGE_PCT,
-    SPX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
-    SPX_BUY_MID_RANGE_POSITION_PCT,
-    SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
-    SPX_BUY_NEAR_YEAR_LOW_PE_RELAX,
-    SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX,
-    SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX,
-    SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT,
-    SPX_BUY_PEG_FORWARD_MAX,
-    SPX_BUY_RATE_PERCENTILE_MAX,
-    SPX_BUY_TRAILING_PE_PERCENTILE_MAX,
-    SPX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
-    SPX_BUY_TREND_MA_DAYS,
-    SPX_BUY_TREND_MIN_MA_SLOPE_PCT,
-    SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-    SPX_EXPECTED_GROWTH,
-    SPX_FALLBACK_EXPECTED_GROWTH,
-    SPX_HIGH_GROWTH_PEG_BONUS,
-    SPX_HIGH_GROWTH_THRESHOLD,
-)
-from drop_to_buy import format_buy_trigger_line, format_drop_to_buy_line, spx_drop_to_buy
-from ndx_signal import compute_peg
+import config
+from config import BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX, BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT, BUY_RANGE_LOOKBACK_DAYS
+from drop_to_buy import format_buy_trigger_line, us_index_drop_to_buy
 from price_position import (
     build_buy_price_ceilings,
     drawdown_from_high_ok,
@@ -54,24 +27,44 @@ from signal_format import (
     pct_text,
 )
 
+REPORT_TITLES = {
+    "ndx": "纳斯达克100 估值信号",
+    "spx": "标普500 估值信号",
+}
+DIVIDEND_LABELS = {
+    "ndx": "股息率(QQQ代理)",
+    "spx": "股息率(SPY代理)",
+}
 
-def resolve_spx_expected_growth(snapshot):
+
+def _cfg(key: str, suffix: str):
+    return getattr(config, f"{key.upper()}_{suffix}")
+
+
+def compute_peg(pe, growth_rate):
+    if pe is None or growth_rate is None or growth_rate <= 0:
+        return None
+    return pe / (growth_rate * 100)
+
+
+def resolve_expected_growth(key: str, snapshot):
     explicit = snapshot.get("expected_growth")
     if explicit is not None:
         return explicit
-    if SPX_EXPECTED_GROWTH is not None:
-        return SPX_EXPECTED_GROWTH
+    configured = _cfg(key, "EXPECTED_GROWTH")
+    if configured is not None:
+        return configured
     implied = snapshot.get("implied_growth")
     if implied is not None and implied > 0:
         return implied
     historical = snapshot.get("historical_growth")
     if historical is not None and historical > 0:
         return historical
-    return SPX_FALLBACK_EXPECTED_GROWTH
+    return _cfg(key, "FALLBACK_EXPECTED_GROWTH")
 
 
-def evaluate_spx_signal(snapshot):
-    expected_growth = resolve_spx_expected_growth(snapshot)
+def evaluate_signal(key: str, snapshot):
+    expected_growth = resolve_expected_growth(key, snapshot)
 
     trailing_pe = snapshot.get("trailing_pe")
     forward_pe = snapshot.get("forward_pe")
@@ -82,34 +75,30 @@ def evaluate_spx_signal(snapshot):
     forward_pct = snapshot.get("forward_pe_percentile")
     rate_pct = snapshot.get("us10y_percentile")
     year_range = snapshot.get("year_range_position")
-    near_low = is_near_year_low(year_range, SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT)
-    pe_threshold = SPX_BUY_FORWARD_PE_PERCENTILE_MAX
-    trailing_threshold = SPX_BUY_TRAILING_PE_PERCENTILE_MAX
+    near_low = is_near_year_low(year_range, _cfg(key, "BUY_NEAR_YEAR_LOW_RANGE_PCT"))
+    pe_threshold = _cfg(key, "BUY_FORWARD_PE_PERCENTILE_MAX")
+    trailing_threshold = _cfg(key, "BUY_TRAILING_PE_PERCENTILE_MAX")
     if near_low:
-        pe_threshold = min(100.0, pe_threshold + SPX_BUY_NEAR_YEAR_LOW_PE_RELAX)
-        trailing_threshold = min(100.0, trailing_threshold + SPX_BUY_NEAR_YEAR_LOW_PE_RELAX)
+        pe_threshold = min(100.0, pe_threshold + _cfg(key, "BUY_NEAR_YEAR_LOW_PE_RELAX"))
+        trailing_threshold = min(
+            100.0, trailing_threshold + _cfg(key, "BUY_NEAR_YEAR_LOW_PE_RELAX")
+        )
     max_above_low = effective_max_above_low_pct(
-        SPX_BUY_MAX_ABOVE_LOW_PCT,
+        _cfg(key, "BUY_MAX_ABOVE_LOW_PCT"),
         year_range,
-        SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        _cfg(key, "BUY_NEAR_YEAR_LOW_RANGE_PCT"),
         BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
-        SPX_BUY_MID_RANGE_POSITION_PCT,
-        SPX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+        _cfg(key, "BUY_MID_RANGE_POSITION_PCT"),
+        _cfg(key, "BUY_MID_RANGE_MAX_ABOVE_LOW_PCT"),
     )
     min_drawdown = effective_drawdown_threshold(
-        SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        _cfg(key, "BUY_MIN_DRAWDOWN_FROM_HIGH_PCT"),
         year_range,
         BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
     )
 
-    trailing_ok = (
-        trailing_pct is not None
-        and trailing_pct <= trailing_threshold
-    )
-    forward_ok = (
-        forward_pct is not None
-        and forward_pct <= pe_threshold
-    )
+    trailing_ok = trailing_pct is not None and trailing_pct <= trailing_threshold
+    forward_ok = forward_pct is not None and forward_pct <= pe_threshold
     if forward_pct is not None:
         pe_ok = forward_ok
         pe_label = "Forward PE 分位"
@@ -126,16 +115,16 @@ def evaluate_spx_signal(snapshot):
         pe_pct = None
         display_threshold = pe_threshold
 
-    peg_forward_max = SPX_BUY_PEG_FORWARD_MAX
-    if expected_growth is not None and expected_growth >= SPX_HIGH_GROWTH_THRESHOLD:
-        peg_forward_max += SPX_HIGH_GROWTH_PEG_BONUS
+    peg_forward_max = _cfg(key, "BUY_PEG_FORWARD_MAX")
+    if expected_growth is not None and expected_growth >= _cfg(key, "HIGH_GROWTH_THRESHOLD"):
+        peg_forward_max += _cfg(key, "HIGH_GROWTH_PEG_BONUS")
     if near_low:
-        peg_forward_max += SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX
+        peg_forward_max += _cfg(key, "BUY_NEAR_YEAR_LOW_PEG_RELAX")
 
     peg_fwd_ok = peg_forward is not None and peg_forward <= peg_forward_max
-    rate_max = SPX_BUY_RATE_PERCENTILE_MAX
+    rate_max = _cfg(key, "BUY_RATE_PERCENTILE_MAX")
     if near_low:
-        rate_max = min(100.0, rate_max + SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX)
+        rate_max = min(100.0, rate_max + _cfg(key, "BUY_NEAR_YEAR_LOW_RATE_RELAX"))
     rate_ok = rate_pct is not None and rate_pct <= rate_max
 
     buy_criteria = [
@@ -168,7 +157,7 @@ def evaluate_spx_signal(snapshot):
     price_criterion = make_price_position_criterion(
         snapshot.get("pct_above_low"),
         max_above_low,
-        SPX_BUY_LOW_LOOKBACK_DAYS,
+        _cfg(key, "BUY_LOW_LOOKBACK_DAYS"),
         close=snapshot.get("close"),
         lookback_low=snapshot.get("lookback_low_price"),
     )
@@ -177,7 +166,7 @@ def evaluate_spx_signal(snapshot):
     drawdown_criterion = make_drawdown_from_high_criterion(
         snapshot.get("pct_below_high"),
         min_drawdown,
-        SPX_BUY_HIGH_LOOKBACK_DAYS,
+        _cfg(key, "BUY_HIGH_LOOKBACK_DAYS"),
         close=snapshot.get("close"),
         lookback_high=snapshot.get("lookback_high_price"),
     )
@@ -185,7 +174,7 @@ def evaluate_spx_signal(snapshot):
         buy_criteria.append(drawdown_criterion)
     year_range_criterion = make_year_range_criterion(
         year_range,
-        SPX_BUY_MAX_YEAR_RANGE_PCT,
+        _cfg(key, "BUY_MAX_YEAR_RANGE_PCT"),
         BUY_RANGE_LOOKBACK_DAYS,
         close=snapshot.get("close"),
         range_low=snapshot.get("range_low_price"),
@@ -196,27 +185,26 @@ def evaluate_spx_signal(snapshot):
     trend_criterion = make_trend_criterion(
         snapshot.get("ma_slope_pct"),
         year_range,
-        SPX_BUY_TREND_MIN_MA_SLOPE_PCT,
-        SPX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
-        SPX_BUY_TREND_MA_DAYS,
-        SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
+        _cfg(key, "BUY_TREND_MIN_MA_SLOPE_PCT"),
+        _cfg(key, "BUY_TREND_DOWNTREND_MAX_RANGE_PCT"),
+        _cfg(key, "BUY_TREND_MA_DAYS"),
+        _cfg(key, "BUY_TREND_SLOPE_LOOKBACK_DAYS"),
     )
     if trend_criterion is not None:
         buy_criteria.append(trend_criterion)
 
-    score = sum(1 for c in buy_criteria if c["passed"])
     is_buy = (
         pe_ok
         and peg_fwd_ok
         and rate_ok
         and price_position_ok(snapshot.get("pct_above_low"), max_above_low)
         and drawdown_from_high_ok(snapshot.get("pct_below_high"), min_drawdown)
-        and year_range_ok(year_range, SPX_BUY_MAX_YEAR_RANGE_PCT)
+        and year_range_ok(year_range, _cfg(key, "BUY_MAX_YEAR_RANGE_PCT"))
         and trend_filter_ok(
             snapshot.get("ma_slope_pct"),
             year_range,
-            SPX_BUY_TREND_MIN_MA_SLOPE_PCT,
-            SPX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+            _cfg(key, "BUY_TREND_MIN_MA_SLOPE_PCT"),
+            _cfg(key, "BUY_TREND_DOWNTREND_MAX_RANGE_PCT"),
         )
     )
 
@@ -235,30 +223,30 @@ def evaluate_spx_signal(snapshot):
         "historical_growth": snapshot.get("historical_growth"),
         "implied_growth": snapshot.get("implied_growth"),
         "is_buy": is_buy,
-        "score": score,
+        "score": sum(1 for c in buy_criteria if c["passed"]),
         "signal_short": signal_short,
         "criteria": buy_criteria,
         "summary": summary,
     }
 
 
-def is_spx_buy(snapshot):
-    return evaluate_spx_signal(snapshot)["is_buy"]
+def is_buy(key: str, snapshot):
+    return evaluate_signal(key, snapshot)["is_buy"]
 
 
-def format_spx_section(snapshot, signal_eval):
+def format_section(key: str, snapshot, signal_eval):
     year_range = snapshot.get("year_range_position")
-    near_low = is_near_year_low(year_range, SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT)
+    near_low = is_near_year_low(year_range, _cfg(key, "BUY_NEAR_YEAR_LOW_RANGE_PCT"))
     max_above_low = effective_max_above_low_pct(
-        SPX_BUY_MAX_ABOVE_LOW_PCT,
+        _cfg(key, "BUY_MAX_ABOVE_LOW_PCT"),
         year_range,
-        SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        _cfg(key, "BUY_NEAR_YEAR_LOW_RANGE_PCT"),
         BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
-        SPX_BUY_MID_RANGE_POSITION_PCT,
-        SPX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+        _cfg(key, "BUY_MID_RANGE_POSITION_PCT"),
+        _cfg(key, "BUY_MID_RANGE_MAX_ABOVE_LOW_PCT"),
     )
     min_drawdown = effective_drawdown_threshold(
-        SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        _cfg(key, "BUY_MIN_DRAWDOWN_FROM_HIGH_PCT"),
         year_range,
         BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
     )
@@ -266,12 +254,12 @@ def format_spx_section(snapshot, signal_eval):
         snapshot,
         max_above_low,
         min_drawdown,
-        SPX_BUY_MAX_YEAR_RANGE_PCT,
-        low_lookback_days=SPX_BUY_LOW_LOOKBACK_DAYS,
-        high_lookback_days=SPX_BUY_HIGH_LOOKBACK_DAYS,
+        _cfg(key, "BUY_MAX_YEAR_RANGE_PCT"),
+        low_lookback_days=_cfg(key, "BUY_LOW_LOOKBACK_DAYS"),
+        high_lookback_days=_cfg(key, "BUY_HIGH_LOOKBACK_DAYS"),
         range_lookback_days=BUY_RANGE_LOOKBACK_DAYS,
     )
-    drop, rise_breaks = spx_drop_to_buy(snapshot)
+    drop, rise_breaks = us_index_drop_to_buy(key, snapshot)
     buy_line = format_buy_trigger_line(
         drop,
         is_buy=signal_eval.get("is_buy"),
@@ -301,17 +289,14 @@ def format_spx_section(snapshot, signal_eval):
             f"PEG(Forward) {peg_fwd_text}"
         ),
     ]
-
     if signal_eval.get("implied_growth") is not None:
         lines.append(f"隐含增速 {signal_eval['implied_growth']:.1%}")
-
     lines.append(
         f"10Y美债 {us10y_text} | 利率分位 {pct_text(snapshot.get('us10y_percentile'))} | "
-        f"股息率(SPY代理) {div_text}"
+        f"{DIVIDEND_LABELS[key]} {div_text}"
     )
-    lines.append(format_price_position_line(snapshot, SPX_BUY_LOW_LOOKBACK_DAYS))
-
-    append_signal_block(lines, signal_eval, "spx")
+    lines.append(format_price_position_line(snapshot, _cfg(key, "BUY_LOW_LOOKBACK_DAYS")))
+    append_signal_block(lines, signal_eval, key)
     return {
         "code": snapshot["code"],
         "name": snapshot["name"],
@@ -320,12 +305,12 @@ def format_spx_section(snapshot, signal_eval):
     }
 
 
-def format_spx_report(snapshot, section):
+def format_report(key: str, snapshot, section):
     hist_days = snapshot.get("daily_history_days", snapshot.get("history_days", 0))
     trailing_days = snapshot.get("trailing_history_days", 0)
     years = snapshot.get("history_years", 10)
     lines = format_module_header(
-        "标普500 估值信号",
+        REPORT_TITLES[key],
         (
             f"{snapshot['date']} | 日频样本约 {hist_days} 个交易日 | "
             f"TTM PE 日频约 {trailing_days} 日 | 近{years}年"

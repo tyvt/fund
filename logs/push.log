@@ -390,3 +390,4 @@ Traceback (most recent call last):
   File "d:\repository\投资推送\notify.py", line 9, in <listcomp>
     parts = [f"{section['code']}{section['signal_short']}" for section in sections]
 TypeError: string indices must be integers
+^C

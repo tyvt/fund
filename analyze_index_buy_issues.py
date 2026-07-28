@@ -8,8 +8,7 @@ import pandas as pd
 from analyze_buy_quality import (
     _diagnose_cn_broad,
     _diagnose_hstech,
-    _diagnose_ndx,
-    _diagnose_spx,
+    _diagnose_us_index,
     _near_year_low,
     _top_fail_reasons,
 )
@@ -99,9 +98,9 @@ def _diag(row, code, panels):
     elif code == "HSTECH":
         _, failed = _diagnose_hstech(row)
     elif code == "NDX":
-        _, failed = _diagnose_ndx(row, panels.ndx_panel()[1])
+        _, failed = _diagnose_us_index("ndx", row, panels.us_index_panel("ndx")[1])
     elif code == "SPX":
-        _, failed = _diagnose_spx(row, panels.spx_panel()[1])
+        _, failed = _diagnose_us_index("spx", row, panels.us_index_panel("spx")[1])
     else:
         failed = []
     return failed

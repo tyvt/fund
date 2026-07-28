@@ -16,18 +16,6 @@ from config import (
     HSTECH_PERCENTILE_WINDOW,
     DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
     DIVIDEND_SPREAD_PERCENTILE_WINDOW,
-    NDX_BUY_HIGH_LOOKBACK_DAYS,
-    NDX_BUY_LOW_LOOKBACK_DAYS,
-    NDX_BUY_TREND_MA_DAYS,
-    NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-    NDX_DAILY_PERCENTILE_MIN_DAYS,
-    NDX_DAILY_PERCENTILE_WINDOW,
-    SPX_BUY_HIGH_LOOKBACK_DAYS,
-    SPX_BUY_LOW_LOOKBACK_DAYS,
-    SPX_BUY_TREND_MA_DAYS,
-    SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-    SPX_DAILY_PERCENTILE_MIN_DAYS,
-    SPX_DAILY_PERCENTILE_WINDOW,
     get_cn_broad_signal_config,
 )
 from market_data import compute_percentile
@@ -354,8 +342,98 @@ def cn_broad_drop_to_buy(snapshot):
     return _estimate_buy_trigger(check_factor)
 
 
-def a500_drop_to_buy(snapshot):
-    return cn_broad_drop_to_buy(snapshot)
+def us_index_drop_to_buy(key, snapshot):
+    from us_index_signal import evaluate_signal
+
+    panel = snapshot.get("panel")
+    if panel is None or panel.empty:
+        return None
+
+    idx = len(panel) - 1
+    row = panel.iloc[-1]
+    if row.get("forward_pe") is None:
+        return None
+
+    base = {
+        "trailing_pe": row.get("trailing_pe"),
+        "forward_pe": row.get("forward_pe"),
+        "trailing_pe_percentile": row.get("trailing_pe_percentile"),
+        "forward_pe_percentile": row.get("forward_pe_percentile"),
+        "us10y_percentile": row.get("us10y_percentile"),
+        "implied_growth": row.get("implied_growth"),
+        "historical_growth": snapshot.get("historical_growth"),
+    }
+
+    daily_window = _cfg_us(key, "DAILY_PERCENTILE_WINDOW")
+    daily_min_days = _cfg_us(key, "DAILY_PERCENTILE_MIN_DAYS")
+    low_lookback = _cfg_us(key, "BUY_LOW_LOOKBACK_DAYS")
+    high_lookback = _cfg_us(key, "BUY_HIGH_LOOKBACK_DAYS")
+    trend_ma_days = _cfg_us(key, "BUY_TREND_MA_DAYS")
+    trend_slope_days = _cfg_us(key, "BUY_TREND_SLOPE_LOOKBACK_DAYS")
+
+    def check_factor(factor):
+        if factor <= 0:
+            return False
+        forward_pe = row["forward_pe"] * factor
+        trailing_pe = (
+            row["trailing_pe"] * factor if row.get("trailing_pe") is not None else None
+        )
+        forward_pct = rolling_percentile(
+            panel["forward_pe"],
+            idx,
+            forward_pe,
+            daily_window,
+            daily_min_days,
+        )
+        trailing_pct = None
+        if trailing_pe is not None and "trailing_pe" in panel.columns:
+            trailing_pct = rolling_percentile(
+                panel["trailing_pe"],
+                idx,
+                trailing_pe,
+                daily_window,
+                daily_min_days,
+            )
+        implied = base["implied_growth"]
+        if (
+            trailing_pe is not None
+            and forward_pe is not None
+            and forward_pe > 0
+            and trailing_pe > 0
+        ):
+            implied = (trailing_pe / forward_pe) - 1.0
+
+        snap = {
+            **base,
+            "forward_pe": forward_pe,
+            "trailing_pe": trailing_pe,
+            "forward_pe_percentile": forward_pct,
+            "trailing_pe_percentile": trailing_pct,
+            "implied_growth": implied,
+        }
+        if "close" in panel.columns:
+            new_close = row["close"] * factor
+            snap["pct_above_low"] = pct_above_low_for_simulated_close(
+                panel, idx, new_close, low_lookback
+            )
+            snap["pct_below_high"] = pct_below_high_for_simulated_close(
+                panel, idx, new_close, high_lookback
+            )
+            snap["year_range_position"] = range_position_for_simulated_close(
+                panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
+            )
+            snap["ma_slope_pct"] = ma_slope_for_simulated_close(
+                panel, idx, new_close, trend_ma_days, trend_slope_days
+            )
+        return evaluate_signal(key, snap)["is_buy"]
+
+    return _estimate_buy_trigger(check_factor)
+
+
+def _cfg_us(key, suffix):
+    import config
+
+    return getattr(config, f"{key.upper()}_{suffix}")
 
 
 def cyb_drop_to_buy(snapshot):
@@ -453,168 +531,6 @@ def hstech_drop_to_buy(snapshot):
                 "ma_slope_pct": ma_slope,
             }
         )["is_buy"]
-
-    return _estimate_buy_trigger(check_factor)
-
-
-def ndx_drop_to_buy(snapshot):
-    from ndx_signal import evaluate_ndx_signal
-
-    panel = snapshot.get("panel")
-    if panel is None or panel.empty:
-        return None
-
-    idx = len(panel) - 1
-    row = panel.iloc[-1]
-    if row.get("forward_pe") is None:
-        return None
-
-    base = {
-        "trailing_pe": row.get("trailing_pe"),
-        "forward_pe": row.get("forward_pe"),
-        "trailing_pe_percentile": row.get("trailing_pe_percentile"),
-        "forward_pe_percentile": row.get("forward_pe_percentile"),
-        "us10y_percentile": row.get("us10y_percentile"),
-        "implied_growth": row.get("implied_growth"),
-        "historical_growth": snapshot.get("historical_growth"),
-    }
-
-    def check_factor(factor):
-        if factor <= 0:
-            return False
-        forward_pe = row["forward_pe"] * factor
-        trailing_pe = (
-            row["trailing_pe"] * factor if row.get("trailing_pe") is not None else None
-        )
-        forward_pct = rolling_percentile(
-            panel["forward_pe"],
-            idx,
-            forward_pe,
-            NDX_DAILY_PERCENTILE_WINDOW,
-            NDX_DAILY_PERCENTILE_MIN_DAYS,
-        )
-        trailing_pct = None
-        if trailing_pe is not None and "trailing_pe" in panel.columns:
-            trailing_pct = rolling_percentile(
-                panel["trailing_pe"],
-                idx,
-                trailing_pe,
-                NDX_DAILY_PERCENTILE_WINDOW,
-                NDX_DAILY_PERCENTILE_MIN_DAYS,
-            )
-        implied = base["implied_growth"]
-        if (
-            trailing_pe is not None
-            and forward_pe is not None
-            and forward_pe > 0
-            and trailing_pe > 0
-        ):
-            implied = (trailing_pe / forward_pe) - 1.0
-
-        snap = {
-            **base,
-            "forward_pe": forward_pe,
-            "trailing_pe": trailing_pe,
-            "forward_pe_percentile": forward_pct,
-            "trailing_pe_percentile": trailing_pct,
-            "implied_growth": implied,
-        }
-        if "close" in panel.columns:
-            new_close = row["close"] * factor
-            snap["pct_above_low"] = pct_above_low_for_simulated_close(
-                panel, idx, new_close, NDX_BUY_LOW_LOOKBACK_DAYS
-            )
-            snap["pct_below_high"] = pct_below_high_for_simulated_close(
-                panel, idx, new_close, NDX_BUY_HIGH_LOOKBACK_DAYS
-            )
-            snap["year_range_position"] = range_position_for_simulated_close(
-                panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
-            )
-            snap["ma_slope_pct"] = ma_slope_for_simulated_close(
-                panel, idx, new_close, NDX_BUY_TREND_MA_DAYS, NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS
-            )
-        return evaluate_ndx_signal(snap)["is_buy"]
-
-    return _estimate_buy_trigger(check_factor)
-
-
-def spx_drop_to_buy(snapshot):
-    from spx_signal import evaluate_spx_signal
-
-    panel = snapshot.get("panel")
-    if panel is None or panel.empty:
-        return None
-
-    idx = len(panel) - 1
-    row = panel.iloc[-1]
-    if row.get("forward_pe") is None:
-        return None
-
-    base = {
-        "trailing_pe": row.get("trailing_pe"),
-        "forward_pe": row.get("forward_pe"),
-        "trailing_pe_percentile": row.get("trailing_pe_percentile"),
-        "forward_pe_percentile": row.get("forward_pe_percentile"),
-        "us10y_percentile": row.get("us10y_percentile"),
-        "implied_growth": row.get("implied_growth"),
-        "historical_growth": snapshot.get("historical_growth"),
-    }
-
-    def check_factor(factor):
-        if factor <= 0:
-            return False
-        forward_pe = row["forward_pe"] * factor
-        trailing_pe = (
-            row["trailing_pe"] * factor if row.get("trailing_pe") is not None else None
-        )
-        forward_pct = rolling_percentile(
-            panel["forward_pe"],
-            idx,
-            forward_pe,
-            SPX_DAILY_PERCENTILE_WINDOW,
-            SPX_DAILY_PERCENTILE_MIN_DAYS,
-        )
-        trailing_pct = None
-        if trailing_pe is not None and "trailing_pe" in panel.columns:
-            trailing_pct = rolling_percentile(
-                panel["trailing_pe"],
-                idx,
-                trailing_pe,
-                SPX_DAILY_PERCENTILE_WINDOW,
-                SPX_DAILY_PERCENTILE_MIN_DAYS,
-            )
-        implied = base["implied_growth"]
-        if (
-            trailing_pe is not None
-            and forward_pe is not None
-            and forward_pe > 0
-            and trailing_pe > 0
-        ):
-            implied = (trailing_pe / forward_pe) - 1.0
-
-        snap = {
-            **base,
-            "forward_pe": forward_pe,
-            "trailing_pe": trailing_pe,
-            "forward_pe_percentile": forward_pct,
-            "trailing_pe_percentile": trailing_pct,
-            "implied_growth": implied,
-        }
-        if "close" in panel.columns:
-            new_close = row["close"] * factor
-            snap["pct_above_low"] = pct_above_low_for_simulated_close(
-                panel, idx, new_close, SPX_BUY_LOW_LOOKBACK_DAYS
-            )
-            snap["pct_below_high"] = pct_below_high_for_simulated_close(
-                panel, idx, new_close, SPX_BUY_HIGH_LOOKBACK_DAYS
-            )
-            snap["year_range_position"] = range_position_for_simulated_close(
-                panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
-            )
-            snap["ma_slope_pct"] = ma_slope_for_simulated_close(
-                panel, idx, new_close, SPX_BUY_TREND_MA_DAYS, SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS
-            )
-        return evaluate_spx_signal(snap)["is_buy"]
 
     return _estimate_buy_trigger(check_factor)
 

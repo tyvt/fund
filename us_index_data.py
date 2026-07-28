@@ -1,31 +1,28 @@
-"""纳斯达克 100 估值数据拉取与历史分位计算。"""
+"""美股指数（纳指 100 / 标普 500）估值数据拉取与历史分位计算。"""
+
+from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from io import StringIO
+from typing import Any
 
 import pandas as pd
 import requests
 
+import config
 from config import (
     BUY_RANGE_LOOKBACK_DAYS,
     BUY_TREND_MA_DAYS,
     BUY_TREND_SLOPE_LOOKBACK_DAYS,
     FRED_NASDAQ100_SERIES,
     HEADERS,
-    NDX_BUY_HIGH_LOOKBACK_DAYS,
-    NDX_BUY_LOW_LOOKBACK_DAYS,
-    NDX_DAILY_PERCENTILE_MIN_DAYS,
-    NDX_DAILY_PERCENTILE_WINDOW,
-    NDX_DIVIDEND_PROXY_SYMBOL,
     NDX_FORWARD_PE_URL,
-    NDX_FRED_NETWORK_TIMEOUT,
-    NDX_HISTORY_YEARS,
-    NDX_PERCENTILE_MIN_DAYS,
-    NDX_PERCENTILE_WINDOW,
     NDX_INDEX,
     REQUEST_TIMEOUT,
-    fred_csv_url,
+    SPX_FORWARD_PE_URL,
+    SPX_INDEX,
+    US_INDEX_KEYS,
 )
 from data_cache import (
     get_or_fetch_us_dataframe,
@@ -42,23 +39,58 @@ from price_position import (
     row_price_position_fields,
 )
 
-
-NDX_CODE = NDX_INDEX["code"]
-NDX_NAME = NDX_INDEX["name"]
 FRED_US10Y_SERIES = "DGS10"
-NASDAQ_QQQ_SUMMARY_URL = (
+NASDAQ_ETF_SUMMARY_URL = (
     "https://api.nasdaq.com/api/quote/{symbol}/summary?assetclass=etf"
 )
 
+US_INDEX_SPECS: dict[str, dict[str, Any]] = {
+    "ndx": {
+        "index": NDX_INDEX,
+        "forward_pe_url": NDX_FORWARD_PE_URL,
+        "pe_cache": "ndx_forward_pe.json",
+        "fred_price_series": FRED_NASDAQ100_SERIES,
+        "akshare_symbol": ".NDX",
+        "price_cache": "ndx_price_akshare.csv",
+        "dividend_proxy": config.NDX_DIVIDEND_PROXY_SYMBOL,
+        "dividend_cache": "ndx_qqq_dividend_yield.json",
+        "hist_growth_min_months": lambda years: years * 6,
+        "runtime_error": "无法构建纳斯达克 100 日频估值序列",
+    },
+    "spx": {
+        "index": SPX_INDEX,
+        "forward_pe_url": SPX_FORWARD_PE_URL,
+        "pe_cache": "spx_forward_pe.json",
+        "fred_price_series": "SP500",
+        "akshare_symbol": ".INX",
+        "price_cache": "spx_price_akshare.csv",
+        "dividend_proxy": config.SPX_DIVIDEND_PROXY_SYMBOL,
+        "dividend_cache": "spx_spy_dividend_yield.json",
+        "hist_growth_min_months": lambda years: years * 3,
+        "runtime_error": "无法构建标普 500 日频估值序列",
+    },
+}
 
-def _history_start():
-    return pd.Timestamp(date.today()) - pd.DateOffset(years=NDX_HISTORY_YEARS)
+
+def _cfg(key: str, suffix: str):
+    return getattr(config, f"{key.upper()}_{suffix}")
 
 
-def _filter_since(frame, date_col="date"):
+def _spec(key: str) -> dict[str, Any]:
+    if key not in US_INDEX_SPECS:
+        raise ValueError(f"未知美股指数: {key}，可选 {', '.join(US_INDEX_KEYS)}")
+    return US_INDEX_SPECS[key]
+
+
+def _history_start(key: str):
+    years = _cfg(key, "HISTORY_YEARS")
+    return pd.Timestamp(date.today()) - pd.DateOffset(years=years)
+
+
+def _filter_since(frame, date_col="date", *, key: str):
     if frame is None or frame.empty:
         return frame
-    return frame[frame[date_col] >= _history_start()].copy()
+    return frame[frame[date_col] >= _history_start(key)].copy()
 
 
 def _fetch_json(url, timeout=REQUEST_TIMEOUT):
@@ -70,12 +102,13 @@ def _fetch_json(url, timeout=REQUEST_TIMEOUT):
 def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
     """从 FRED 拉取 CSV；当日已缓存则直接读取。"""
     cache_name = f"fred_{series_id}.csv"
+    network_timeout = max(_cfg("ndx", "FRED_NETWORK_TIMEOUT"), REQUEST_TIMEOUT)
 
     def _download():
         response = requests.get(
-            fred_csv_url(series_id),
+            config.fred_csv_url(series_id),
             headers=HEADERS,
-            timeout=max(NDX_FRED_NETWORK_TIMEOUT, REQUEST_TIMEOUT),
+            timeout=network_timeout,
         )
         response.raise_for_status()
         return response.text
@@ -95,40 +128,9 @@ def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
     frame = frame.dropna(subset=["date", "value"]).sort_values("date")
     if start_date is None:
-        start_date = _history_start()
+        start_date = _history_start("ndx")
     frame = frame[frame["date"] >= pd.Timestamp(start_date)]
     return frame.reset_index(drop=True)
-
-
-def fetch_ndx_pe_payload():
-    """History of Market：NDX PE（仅保留近 NDX_HISTORY_YEARS 年）。"""
-    payload = get_or_fetch_us_json(
-        "ndx_forward_pe.json",
-        lambda: _fetch_json(NDX_FORWARD_PE_URL, timeout=NDX_FRED_NETWORK_TIMEOUT),
-    )
-    current = payload.get("current") or {}
-    trailing = pd.DataFrame(payload.get("trailing") or [])
-    forward = pd.DataFrame(payload.get("forward") or [])
-    if trailing.empty and forward.empty:
-        raise RuntimeError("无法获取纳斯达克 100 PE 数据")
-
-    for frame in (trailing, forward):
-        if frame.empty:
-            continue
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-        frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
-        frame.dropna(subset=["date", "value"], inplace=True)
-        frame.sort_values("date", inplace=True)
-
-    trailing = _filter_since(trailing)
-    forward = _filter_since(forward)
-    return {
-        "updated": payload.get("updated"),
-        "source": payload.get("source"),
-        "current": current,
-        "trailing": trailing.reset_index(drop=True),
-        "forward": forward.reset_index(drop=True),
-    }
 
 
 def _fetch_us10y_from_akshare():
@@ -145,9 +147,9 @@ def _fetch_us10y_from_akshare():
     return get_or_fetch_us_dataframe("us10y_akshare.csv", _download)
 
 
-def fetch_us10y_history():
-    """美国 10 年期国债收益率（近 NDX_HISTORY_YEARS 年）。"""
-    start = _history_start()
+def fetch_us10y_history(*, key: str = "ndx"):
+    """美国 10 年期国债收益率。"""
+    start = _history_start(key)
     try:
         history = fetch_fred_series(FRED_US10Y_SERIES, start_date=start)
         history["value"] = history["value"] / 100
@@ -157,35 +159,72 @@ def fetch_us10y_history():
         return out[out["date"] >= start].reset_index(drop=True)
 
 
-def _fetch_ndx_price_from_akshare():
+def fetch_pe_payload(key: str):
+    spec = _spec(key)
+    payload = get_or_fetch_us_json(
+        spec["pe_cache"],
+        lambda: _fetch_json(
+            spec["forward_pe_url"],
+            timeout=_cfg(key, "FRED_NETWORK_TIMEOUT"),
+        ),
+    )
+    current = payload.get("current") or {}
+    trailing = pd.DataFrame(payload.get("trailing") or [])
+    forward = pd.DataFrame(payload.get("forward") or [])
+    if trailing.empty and forward.empty:
+        raise RuntimeError(f"无法获取{spec['index']['name']} PE 数据")
+
+    for frame in (trailing, forward):
+        if frame.empty:
+            continue
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+        frame.dropna(subset=["date", "value"], inplace=True)
+        frame.sort_values("date", inplace=True)
+
+    trailing = _filter_since(trailing, key=key)
+    forward = _filter_since(forward, key=key)
+    return {
+        "updated": payload.get("updated"),
+        "source": payload.get("source"),
+        "current": current,
+        "trailing": trailing.reset_index(drop=True),
+        "forward": forward.reset_index(drop=True),
+    }
+
+
+def _fetch_price_from_akshare(key: str):
+    spec = _spec(key)
+
     def _download():
         import akshare as ak
 
-        frame = ak.index_us_stock_sina(symbol=".NDX")
+        frame = ak.index_us_stock_sina(symbol=spec["akshare_symbol"])
         out = frame.rename(columns={"date": "date", "close": "close"})
         out["date"] = pd.to_datetime(out["date"], errors="coerce")
         out["close"] = pd.to_numeric(out["close"], errors="coerce")
         return out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
 
-    return get_or_fetch_us_dataframe("ndx_price_akshare.csv", _download)
+    return get_or_fetch_us_dataframe(spec["price_cache"], _download)
 
 
-def fetch_ndx_price_history():
-    """纳斯达克 100 价格指数（近 NDX_HISTORY_YEARS 年）。"""
-    start = _history_start()
+def fetch_price_history(key: str):
+    spec = _spec(key)
+    start = _history_start(key)
     try:
-        history = fetch_fred_series(FRED_NASDAQ100_SERIES, start_date=start)
+        history = fetch_fred_series(spec["fred_price_series"], start_date=start)
         return history.rename(columns={"value": "close"})
     except (requests.RequestException, RuntimeError):
-        out = _fetch_ndx_price_from_akshare()
+        out = _fetch_price_from_akshare(key)
         return out[out["date"] >= start].reset_index(drop=True)
 
 
-def fetch_dividend_yield_proxy():
-    """以 QQQ 当前股息率近似 NDX（成长指数分红参考价值有限）。"""
+def fetch_dividend_yield_proxy(key: str):
+    spec = _spec(key)
+
     def _fetch():
-        url = NASDAQ_QQQ_SUMMARY_URL.format(symbol=NDX_DIVIDEND_PROXY_SYMBOL)
-        payload = _fetch_json(url, timeout=NDX_FRED_NETWORK_TIMEOUT)
+        url = NASDAQ_ETF_SUMMARY_URL.format(symbol=spec["dividend_proxy"])
+        payload = _fetch_json(url, timeout=_cfg(key, "FRED_NETWORK_TIMEOUT"))
         summary = (payload.get("data") or {}).get("summaryData") or {}
         raw = (summary.get("Yield") or {}).get("value")
         if not raw:
@@ -194,25 +233,23 @@ def fetch_dividend_yield_proxy():
         return {"yield": float(text) / 100}
 
     try:
-        data = get_or_fetch_us_json("ndx_qqq_dividend_yield.json", _fetch)
+        data = get_or_fetch_us_json(spec["dividend_cache"], _fetch)
         return data.get("yield")
     except requests.RequestException:
         return None
 
 
 def implied_earnings_growth(trailing_pe, forward_pe):
-    """由 TTM / Forward PE 隐含未来 12 个月盈利增速。"""
     if trailing_pe is None or forward_pe is None or forward_pe <= 0:
         return None
     return trailing_pe / forward_pe - 1
 
 
-def build_ndx_valuation_panel():
-    """合并 Forward PE（月频）与指数价格，估算历史盈利与增速。"""
+def build_valuation_panel(key: str):
     with ThreadPoolExecutor(max_workers=3) as executor:
-        pe_future = executor.submit(fetch_ndx_pe_payload)
-        price_future = executor.submit(fetch_ndx_price_history)
-        us10y_future = executor.submit(fetch_us10y_history)
+        pe_future = executor.submit(fetch_pe_payload, key)
+        price_future = executor.submit(fetch_price_history, key)
+        us10y_future = executor.submit(fetch_us10y_history, key=key)
         pe_payload = pe_future.result()
         prices = price_future.result()
         us10y = us10y_future.result()
@@ -245,9 +282,10 @@ def build_ndx_valuation_panel():
     return panel, pe_payload
 
 
-def compute_historical_earnings_growth(panel, years=5):
-    """基于隐含盈利（价格/Forward PE）计算多年 CAGR。"""
-    if panel is None or len(panel) < years * 6:
+def compute_historical_earnings_growth(panel, key: str, years=5):
+    spec = _spec(key)
+    min_rows = spec["hist_growth_min_months"](years)
+    if panel is None or len(panel) < min_rows:
         return None
     latest = panel.iloc[-1]
     target = latest["date"] - pd.DateOffset(years=years)
@@ -263,15 +301,12 @@ def compute_historical_earnings_growth(panel, years=5):
     return (latest["implied_earnings"] / start["implied_earnings"]) ** (1 / elapsed_years) - 1
 
 
-def attach_percentiles(
-    panel,
-    window=NDX_PERCENTILE_WINDOW,
-    min_days=NDX_PERCENTILE_MIN_DAYS,
-):
-    """计算 Forward PE、10Y 国债收益率滚动历史分位（默认 10 年窗口）。"""
+def attach_percentiles(panel, key: str):
     if panel is None or panel.empty:
         return None
 
+    window = _cfg(key, "PERCENTILE_WINDOW")
+    min_days = _cfg(key, "PERCENTILE_MIN_DAYS")
     out = panel.copy()
     forward_pcts, rate_pcts = [], []
     for idx in range(len(out)):
@@ -298,15 +333,12 @@ def attach_percentiles(
     return out
 
 
-def attach_daily_percentiles(
-    panel,
-    window=NDX_DAILY_PERCENTILE_WINDOW,
-    min_days=NDX_DAILY_PERCENTILE_MIN_DAYS,
-):
-    """日频面板：Forward PE / TTM PE / 10Y 利率滚动历史分位。"""
+def attach_daily_percentiles(panel, key: str):
     if panel is None or panel.empty:
         return None
 
+    window = _cfg(key, "DAILY_PERCENTILE_WINDOW")
+    min_days = _cfg(key, "DAILY_PERCENTILE_MIN_DAYS")
     out = panel.sort_values("date").reset_index(drop=True).copy()
     forward_pcts, rate_pcts, trailing_pcts = [], [], []
     for idx in range(len(out)):
@@ -349,7 +381,6 @@ def attach_daily_percentiles(
 
 
 def _scale_pe_by_price(panel, pe_col, anchor_date_col, prices):
-    """月度 PE 按指数收盘价折算为日度，避免价格上涨而 PE 未更新导致低估。"""
     if pe_col not in panel.columns or anchor_date_col not in panel.columns:
         return panel
     anchor = prices.rename(
@@ -373,20 +404,22 @@ def _scale_pe_by_price(panel, pe_col, anchor_date_col, prices):
     return panel.drop(columns=[f"close_at_{anchor_date_col}"], errors="ignore")
 
 
-def build_ndx_daily_valuation_panel():
-    """日频估值面板：价格/10Y 日更，Forward/TTM PE 按月对齐后按收盘价折算。"""
+def build_daily_valuation_panel(key: str):
     with ThreadPoolExecutor(max_workers=3) as executor:
-        pe_future = executor.submit(fetch_ndx_pe_payload)
-        price_future = executor.submit(fetch_ndx_price_history)
-        us10y_future = executor.submit(fetch_us10y_history)
+        pe_future = executor.submit(fetch_pe_payload, key)
+        price_future = executor.submit(fetch_price_history, key)
+        us10y_future = executor.submit(fetch_us10y_history, key=key)
         pe_payload = pe_future.result()
         prices = price_future.result()
         us10y = us10y_future.result()
 
     daily = prices[["date", "close"]].sort_values("date").reset_index(drop=True)
-
-    rates = us10y.sort_values("date")
-    daily = pd.merge_asof(daily, rates, on="date", direction="backward")
+    daily = pd.merge_asof(
+        daily,
+        us10y.sort_values("date"),
+        on="date",
+        direction="backward",
+    )
 
     forward = pe_payload["forward"].copy()
     if not forward.empty:
@@ -414,15 +447,14 @@ def build_ndx_daily_valuation_panel():
 
     daily = _scale_pe_by_price(daily, "forward_pe", "fwd_date", prices)
     daily = _scale_pe_by_price(daily, "trailing_pe", "trail_date", prices)
-
     daily["implied_growth"] = daily.apply(
         lambda row: implied_earnings_growth(row.get("trailing_pe"), row.get("forward_pe")),
         axis=1,
     )
-    daily = attach_daily_percentiles(daily)
-    daily = attach_pct_above_low(daily, lookback_days=NDX_BUY_LOW_LOOKBACK_DAYS)
+    daily = attach_daily_percentiles(daily, key)
+    daily = attach_pct_above_low(daily, lookback_days=_cfg(key, "BUY_LOW_LOOKBACK_DAYS"))
     daily = attach_pct_below_high(
-        daily, lookback_days=NDX_BUY_HIGH_LOOKBACK_DAYS
+        daily, lookback_days=_cfg(key, "BUY_HIGH_LOOKBACK_DAYS")
     )
     daily = attach_year_range_position(daily, lookback_days=BUY_RANGE_LOOKBACK_DAYS)
     daily = attach_ma_trend(
@@ -433,14 +465,14 @@ def build_ndx_daily_valuation_panel():
     return daily, pe_payload
 
 
-def fetch_ndx_snapshot(expected_growth=None):
-    """拉取纳斯达克 100 最新估值快照（日频分位，PE 按月对齐后按收盘价折算）。"""
-    daily, pe_payload = build_ndx_daily_valuation_panel()
+def fetch_snapshot(key: str, expected_growth=None):
+    spec = _spec(key)
+    daily, pe_payload = build_daily_valuation_panel(key)
     if daily is None or daily.empty:
-        raise RuntimeError("无法构建纳斯达克 100 日频估值序列")
+        raise RuntimeError(spec["runtime_error"])
 
-    month_panel, _ = build_ndx_valuation_panel()
-    hist_growth = compute_historical_earnings_growth(month_panel)
+    month_panel, _ = build_valuation_panel(key)
+    hist_growth = compute_historical_earnings_growth(month_panel, key)
 
     latest = daily.iloc[-1]
     trailing_pe = (
@@ -470,9 +502,11 @@ def fetch_ndx_snapshot(expected_growth=None):
             trailing_history["value"], trailing_pe
         )
 
+    index_meta = spec["index"]
     snapshot = {
-        "code": NDX_CODE,
-        "name": NDX_NAME,
+        "code": index_meta["code"],
+        "name": index_meta["name"],
+        "us_index_key": key,
         "date": pd.Timestamp(latest["date"]).date(),
         "trailing_pe": trailing_pe,
         "forward_pe": forward_pe,
@@ -481,7 +515,7 @@ def fetch_ndx_snapshot(expected_growth=None):
         "implied_growth": implied_growth,
         "historical_growth": hist_growth,
         "expected_growth": expected_growth,
-        "dividend_yield": fetch_dividend_yield_proxy(),
+        "dividend_yield": fetch_dividend_yield_proxy(key),
         "us10y": float(latest["us10y"]) if pd.notna(latest.get("us10y")) else None,
         "us10y_percentile": latest.get("us10y_percentile"),
         "pct_above_low": (
@@ -504,21 +538,16 @@ def fetch_ndx_snapshot(expected_growth=None):
             if pd.notna(latest.get("ma_slope_pct"))
             else None
         ),
-        "history_years": NDX_HISTORY_YEARS,
+        "history_years": _cfg(key, "HISTORY_YEARS"),
         "history_days": int(daily["forward_pe"].notna().sum()),
         "trailing_history_days": int(len(trailing_history)),
         "daily_history_days": int(len(daily)),
         "panel": daily,
         "pe_source": pe_payload.get("source"),
-        "high_lookback_days": NDX_BUY_HIGH_LOOKBACK_DAYS,
+        "high_lookback_days": _cfg(key, "BUY_HIGH_LOOKBACK_DAYS"),
         **row_price_position_fields(latest),
     }
-    snapshot["expected_growth"] = _resolve_ndx_expected_growth(snapshot)
+    from us_index_signal import resolve_expected_growth
+
+    snapshot["expected_growth"] = resolve_expected_growth(key, snapshot)
     return snapshot
-
-
-def _resolve_ndx_expected_growth(snapshot):
-    """避免 ndx_data ↔ ndx_signal 循环依赖，逻辑与 ndx_signal 保持一致。"""
-    from ndx_signal import resolve_ndx_expected_growth
-
-    return resolve_ndx_expected_growth(snapshot)

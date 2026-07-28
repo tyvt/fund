@@ -17,6 +17,10 @@ from data_sources import (
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = PROJECT_DIR / "push.env"
+LOGS_DIR = PROJECT_DIR / "logs"
+DATA_CACHE_DIR = PROJECT_DIR / "cache"
+US_DATA_CACHE_DIR = DATA_CACHE_DIR / "us"
+BACKTEST_OUTPUT_DIR = PROJECT_DIR / "output" / "backtest"
 
 INDICES = [
     {"code": "930955", "name": "中证红利低波100"},
@@ -45,6 +49,15 @@ HSTECH_INDEX = {"code": "HSTECH", "name": "恒生科技指数"}
 HSTECH_MARKET_DATA_START = "2020-07-27"
 NDX_INDEX = {"code": "NDX", "name": "纳斯达克100"}
 SPX_INDEX = {"code": "SPX", "name": "标普500"}
+
+CN_BROAD_INDICES = [
+    A500_INDEX,
+    HS300_INDEX,
+    ZZ500_INDEX,
+    ZZ1000_INDEX,
+    KC50_INDEX,
+]
+US_INDEX_KEYS = ("ndx", "spx")
 
 HEADERS = {
     "User-Agent": (

@@ -10,10 +10,10 @@ from typing import Callable, TypeVar
 
 import pandas as pd
 
-from config import PROJECT_DIR
+from config import DATA_CACHE_DIR, US_DATA_CACHE_DIR
 
-CACHE_DIR = PROJECT_DIR / "logs" / "data_cache"
-US_CACHE_DIR = PROJECT_DIR / "logs" / "us_index_cache"
+CACHE_DIR = DATA_CACHE_DIR
+US_CACHE_DIR = US_DATA_CACHE_DIR
 
 T = TypeVar("T")
 

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# 本地配置
+push.env
+
+# 运行时日志（仅 push.log 等）
+logs/
+
+# 外部数据本地缓存（行情、估值、国债等）
+cache/
+
+# 回测输出（Markdown 报告）
+output/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store

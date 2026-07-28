@@ -17,11 +17,11 @@ from cyb_signal import evaluate_cyb_signal
 from dividend_data import is_buy_signal_row
 from hstech_signal import evaluate_hstech_signal
 from market_data import configure_stdout_utf8
-from ndx_signal import evaluate_ndx_signal, resolve_ndx_expected_growth
-from spx_signal import evaluate_spx_signal, resolve_spx_expected_growth
+from us_index_signal import evaluate_signal, resolve_expected_growth
 
 CN_BROAD_CODES = {item["code"] for item in CN_BROAD_BACKTEST_INDICES}
 DIVIDEND_CODES = {"930955", "H30269"}
+US_INDEX_CODE_TO_KEY = {"NDX": "ndx", "SPX": "spx"}
 
 
 def _year_range_position(close, year_low, year_high):
@@ -105,7 +105,7 @@ def _diagnose_hstech(row):
     return ev["is_buy"], failed
 
 
-def _diagnose_ndx(row, growth):
+def _diagnose_us_index(key, row, growth):
     snap = {
         "forward_pe": row.get("forward_pe"),
         "trailing_pe": row.get("trailing_pe"),
@@ -118,29 +118,26 @@ def _diagnose_ndx(row, growth):
         "pct_below_high": row.get("pct_below_high"),
         "year_range_position": row.get("year_range_position"),
     }
-    snap["expected_growth"] = resolve_ndx_expected_growth(snap)
-    ev = evaluate_ndx_signal(snap)
+    snap["expected_growth"] = resolve_expected_growth(key, snap)
+    ev = evaluate_signal(key, snap)
     failed = [c["name"] for c in ev.get("criteria", []) if c.get("applicable") and not c.get("passed")]
     return ev["is_buy"], failed
 
 
-def _diagnose_spx(row, growth):
-    snap = {
-        "forward_pe": row.get("forward_pe"),
-        "trailing_pe": row.get("trailing_pe"),
-        "forward_pe_percentile": row.get("forward_pe_percentile"),
-        "trailing_pe_percentile": row.get("trailing_pe_percentile"),
-        "us10y_percentile": row.get("us10y_percentile"),
-        "implied_growth": row.get("implied_growth"),
-        "historical_growth": growth,
-        "pct_above_low": row.get("pct_above_low"),
-        "pct_below_high": row.get("pct_below_high"),
-        "year_range_position": row.get("year_range_position"),
-    }
-    snap["expected_growth"] = resolve_spx_expected_growth(snap)
-    ev = evaluate_spx_signal(snap)
-    failed = [c["name"] for c in ev.get("criteria", []) if c.get("applicable") and not c.get("passed")]
-    return ev["is_buy"], failed
+def _diagnose_index_row(code, row, panels):
+    if code in CN_BROAD_CODES:
+        return _diagnose_cn_broad(row, code)
+    if code in DIVIDEND_CODES:
+        return _diagnose_dividend(row, code)
+    if code == "399006":
+        return _diagnose_cyb(row)
+    if code == "HSTECH":
+        return _diagnose_hstech(row)
+    if code in US_INDEX_CODE_TO_KEY:
+        key = US_INDEX_CODE_TO_KEY[code]
+        _, growth = panels.us_index_panel(key)
+        return _diagnose_us_index(key, row, growth)
+    return False, []
 
 
 def analyze_year(year, panels=None, high_threshold=0.70, near_low_threshold=0.03):
@@ -181,20 +178,7 @@ def analyze_year(year, panels=None, high_threshold=0.70, near_low_threshold=0.03
             if is_buy:
                 summary[code]["buys"] += 1
                 if yr_pos is not None and yr_pos >= high_threshold:
-                    if code in CN_BROAD_CODES:
-                        _, failed = _diagnose_cn_broad(row, code)
-                    elif code in DIVIDEND_CODES:
-                        _, failed = _diagnose_dividend(row, code)
-                    elif code == "399006":
-                        _, failed = _diagnose_cyb(row)
-                    elif code == "HSTECH":
-                        _, failed = _diagnose_hstech(row)
-                    elif code == "NDX":
-                        _, failed = _diagnose_ndx(row, panels.ndx_panel()[1])
-                    elif code == "SPX":
-                        _, failed = _diagnose_spx(row, panels.spx_panel()[1])
-                    else:
-                        failed = []
+                    _, failed = _diagnose_index_row(code, row, panels)
                     high_buys.append({
                         "year": year,
                         "code": code,
@@ -211,20 +195,7 @@ def analyze_year(year, panels=None, high_threshold=0.70, near_low_threshold=0.03
                     summary[code]["high_buys"] += 1
 
             elif near_low:
-                if code in CN_BROAD_CODES:
-                    _, failed = _diagnose_cn_broad(row, code)
-                elif code in DIVIDEND_CODES:
-                    _, failed = _diagnose_dividend(row, code)
-                elif code == "399006":
-                    _, failed = _diagnose_cyb(row)
-                elif code == "HSTECH":
-                    _, failed = _diagnose_hstech(row)
-                elif code == "NDX":
-                    _, failed = _diagnose_ndx(row, panels.ndx_panel()[1])
-                elif code == "SPX":
-                    _, failed = _diagnose_spx(row, panels.spx_panel()[1])
-                else:
-                    failed = []
+                _, failed = _diagnose_index_row(code, row, panels)
                 missed_lows.append({
                     "year": year,
                     "code": code,

@@ -5,7 +5,6 @@ import sys
 
 import pandas as pd
 
-from a500_data import build_a500_valuation_history
 from cn_broad_data import (
     attach_cn_broad_percentiles,
     build_cn_broad_valuation_history,
@@ -17,23 +16,22 @@ from config import (
     BUY_RANGE_LOOKBACK_DAYS,
     BUY_TREND_MA_DAYS,
     BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    CN_BROAD_INDICES,
     CYB_BUY_HIGH_LOOKBACK_DAYS,
     CYB_BUY_LOW_LOOKBACK_DAYS,
     CYB_INDEX,
     DIVIDEND_SIGNAL_HISTORY_START,
-    HS300_INDEX,
     HSTECH_BUY_HIGH_LOOKBACK_DAYS,
     HSTECH_BUY_LOW_LOOKBACK_DAYS,
     HSTECH_INDEX,
     INDICES,
-    KC50_INDEX,
     NDX_INDEX,
+    BACKTEST_OUTPUT_DIR,
     PROJECT_DIR,
     SPX_INDEX,
-    ZZ1000_INDEX,
+    US_INDEX_KEYS,
     format_backtest_amount_note,
     resolve_backtest_amounts,
-    ZZ500_INDEX,
 )
 from cyb_data import attach_percentiles as attach_cyb_percentiles
 from cyb_data import build_cyb_valuation_panel, fetch_cyb_price_history
@@ -43,21 +41,16 @@ from hstech_data import build_hstech_valuation_panel, fetch_hstech_price_history
 from hstech_signal import evaluate_hstech_signal
 from dividend_data import build_signal_history, is_buy_signal_row
 from market_data import configure_stdout_utf8, get_gov_bond_yield_history
-from ndx_data import build_ndx_daily_valuation_panel, build_ndx_valuation_panel
-from ndx_data import compute_historical_earnings_growth
-from ndx_signal import is_ndx_buy, resolve_ndx_expected_growth
-from spx_data import build_spx_daily_valuation_panel, build_spx_valuation_panel
-from spx_data import compute_historical_earnings_growth as compute_spx_historical_growth
-from spx_signal import is_spx_buy, resolve_spx_expected_growth
+from us_index_data import (
+    build_daily_valuation_panel,
+    build_valuation_panel,
+    compute_historical_earnings_growth,
+)
+from us_index_signal import is_buy as is_us_index_buy
+from us_index_signal import resolve_expected_growth
 from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_below_high, attach_year_range_position
 
-CN_BROAD_BACKTEST_INDICES = [
-    A500_INDEX,
-    HS300_INDEX,
-    ZZ500_INDEX,
-    ZZ1000_INDEX,
-    KC50_INDEX,
-]
+CN_BROAD_BACKTEST_INDICES = CN_BROAD_INDICES
 
 BACKTEST_RETURN_FOOTNOTE = (
     "红利指数（930955/H30269）收益率按中证全收益指数（H20955/H20269）估算，含分红再投资；"
@@ -71,14 +64,10 @@ class BacktestPanels:
     def __init__(self):
         self.bond_history = get_gov_bond_yield_history()
         self._dividend = {}
-        self._a500 = None
         self._cn_broad = {}
         self._cyb = None
         self._hstech = None
-        self._ndx = None
-        self._ndx_growth = None
-        self._spx = None
-        self._spx_growth = None
+        self._us = {}
 
     def dividend_panel(self, index_code):
         if index_code not in self._dividend:
@@ -101,8 +90,13 @@ class BacktestPanels:
             )
         return self._cn_broad[index_code]
 
-    def a500_panel(self):
-        return self.cn_broad_panel(A500_INDEX["code"])
+    def us_index_panel(self, key):
+        if key not in self._us:
+            daily, _ = build_daily_valuation_panel(key)
+            month_panel, _ = build_valuation_panel(key)
+            growth = compute_historical_earnings_growth(month_panel, key)
+            self._us[key] = (daily, growth)
+        return self._us[key]
 
     def cyb_panel(self):
         if self._cyb is None:
@@ -158,25 +152,9 @@ class BacktestPanels:
             )
         return self._hstech
 
-    def ndx_panel(self):
-        if self._ndx is None:
-            daily, _ = build_ndx_daily_valuation_panel()
-            self._ndx = daily
-            month_panel, _ = build_ndx_valuation_panel()
-            self._ndx_growth = compute_historical_earnings_growth(month_panel)
-        return self._ndx, self._ndx_growth
-
-    def spx_panel(self):
-        if self._spx is None:
-            daily, _ = build_spx_daily_valuation_panel()
-            self._spx = daily
-            month_panel, _ = build_spx_valuation_panel()
-            self._spx_growth = compute_spx_historical_growth(month_panel)
-        return self._spx, self._spx_growth
-
 
 _PANELS = None
-BACKTEST_DIR = PROJECT_DIR / "logs" / "backtest"
+BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 
 
 def get_panels():
@@ -347,7 +325,7 @@ def _cn_broad_buy_snapshot(row, index_code):
     )["is_buy"]
 
 
-def _ndx_buy_snapshot(row, historical_growth=None):
+def _us_buy_snapshot(key, row, historical_growth=None):
     snapshot = {
         "forward_pe": row.get("forward_pe"),
         "trailing_pe": row.get("trailing_pe"),
@@ -361,26 +339,8 @@ def _ndx_buy_snapshot(row, historical_growth=None):
         "year_range_position": row.get("year_range_position"),
         "ma_slope_pct": row.get("ma_slope_pct"),
     }
-    snapshot["expected_growth"] = resolve_ndx_expected_growth(snapshot)
-    return is_ndx_buy(snapshot)
-
-
-def _spx_buy_snapshot(row, historical_growth=None):
-    snapshot = {
-        "forward_pe": row.get("forward_pe"),
-        "trailing_pe": row.get("trailing_pe"),
-        "forward_pe_percentile": row.get("forward_pe_percentile"),
-        "trailing_pe_percentile": row.get("trailing_pe_percentile"),
-        "us10y_percentile": row.get("us10y_percentile"),
-        "implied_growth": row.get("implied_growth"),
-        "historical_growth": historical_growth,
-        "pct_above_low": row.get("pct_above_low"),
-        "pct_below_high": row.get("pct_below_high"),
-        "year_range_position": row.get("year_range_position"),
-        "ma_slope_pct": row.get("ma_slope_pct"),
-    }
-    snapshot["expected_growth"] = resolve_spx_expected_growth(snapshot)
-    return is_spx_buy(snapshot)
+    snapshot["expected_growth"] = resolve_expected_growth(key, snapshot)
+    return is_us_index_buy(key, snapshot)
 
 
 def backtest_dividend(year, bond_history=None, amount=None, panels=None):
@@ -444,16 +404,28 @@ def backtest_cn_broad(year, index_meta, amount=None, panels=None):
     return [{"code": code, "name": index_meta["name"], **result}]
 
 
-def backtest_a500(year, bond_history=None, amount=None, panels=None):
-    return backtest_cn_broad(year, A500_INDEX, amount=amount, panels=panels)
+US_INDEX_META = {"ndx": NDX_INDEX, "spx": SPX_INDEX}
+US_INDEX_NOTES = {
+    "ndx": "日频（10Y日更，Forward PE按月对齐）",
+    "spx": "日频（10Y日更，Forward PE按季对齐）",
+}
 
 
-def backtest_hs300(year, amount=None, panels=None):
-    return backtest_cn_broad(year, HS300_INDEX, amount=amount, panels=panels)
-
-
-def backtest_zz1000(year, amount=None, panels=None):
-    return backtest_cn_broad(year, ZZ1000_INDEX, amount=amount, panels=panels)
+def backtest_us_index(year, key, amount=None, panels=None):
+    panels = panels or get_panels()
+    daily, historical_growth = panels.us_index_panel(key)
+    buy_fn = lambda r, k=key, g=historical_growth: _us_buy_snapshot(k, r, g)  # noqa: E731
+    if amount is not None:
+        result = _simulate_dca_returns(
+            daily, year, buy_fn, amount=amount, date_col="date"
+        )
+    else:
+        result = _count_buy_days(daily, year, buy_fn, date_col="date")
+    if not result:
+        return []
+    result["note"] = US_INDEX_NOTES[key]
+    meta = US_INDEX_META[key]
+    return [{"code": meta["code"], "name": meta["name"], **result}]
 
 
 def backtest_cyb(year, amount=None, panels=None):
@@ -509,41 +481,6 @@ def backtest_hstech(year, amount=None, panels=None):
     if not result:
         return []
     return [{"code": HSTECH_INDEX["code"], "name": HSTECH_INDEX["name"], **result}]
-
-
-def backtest_ndx(year, amount=None, panels=None):
-    """纳指日频信号（10Y 日更，Forward PE 按月对齐，TTM PE 有数据日起日更）。"""
-    panels = panels or get_panels()
-    daily, historical_growth = panels.ndx_panel()
-
-    buy_fn = lambda r: _ndx_buy_snapshot(r, historical_growth)  # noqa: E731
-    if amount is not None:
-        result = _simulate_dca_returns(
-            daily, year, buy_fn, amount=amount, date_col="date"
-        )
-    else:
-        result = _count_buy_days(daily, year, buy_fn, date_col="date")
-    if not result:
-        return []
-    result["note"] = "日频（10Y日更，Forward PE按月对齐）"
-    return [{"code": NDX_INDEX["code"], "name": NDX_INDEX["name"], **result}]
-
-
-def backtest_spx(year, amount=None, panels=None):
-    panels = panels or get_panels()
-    daily, historical_growth = panels.spx_panel()
-
-    buy_fn = lambda r: _spx_buy_snapshot(r, historical_growth)  # noqa: E731
-    if amount is not None:
-        result = _simulate_dca_returns(
-            daily, year, buy_fn, amount=amount, date_col="date"
-        )
-    else:
-        result = _count_buy_days(daily, year, buy_fn, date_col="date")
-    if not result:
-        return []
-    result["note"] = "日频（10Y日更，Forward PE按季对齐）"
-    return [{"code": SPX_INDEX["code"], "name": SPX_INDEX["name"], **result}]
 
 
 def _collect_buy_dates(panel, year, buy_fn, date_col="date"):
@@ -630,27 +567,18 @@ def _iter_backtest_configs(panels):
         "note": "日频，每交易日评估",
     }
 
-    ndx_daily, ndx_growth = panels.ndx_panel()
-    yield {
-        "code": NDX_INDEX["code"],
-        "name": NDX_INDEX["name"],
-        "panel": ndx_daily,
-        "buy_fn": lambda r: _ndx_buy_snapshot(r, ndx_growth),
-        "date_col": "date",
-        "price_col": "close",
-        "note": "日频（10Y日更，Forward PE按月对齐）",
-    }
-
-    spx_daily, spx_growth = panels.spx_panel()
-    yield {
-        "code": SPX_INDEX["code"],
-        "name": SPX_INDEX["name"],
-        "panel": spx_daily,
-        "buy_fn": lambda r: _spx_buy_snapshot(r, spx_growth),
-        "date_col": "date",
-        "price_col": "close",
-        "note": "日频（10Y日更，Forward PE按季对齐）",
-    }
+    for key in US_INDEX_KEYS:
+        daily, growth = panels.us_index_panel(key)
+        meta = US_INDEX_META[key]
+        yield {
+            "code": meta["code"],
+            "name": meta["name"],
+            "panel": daily,
+            "buy_fn": lambda r, k=key, g=growth: _us_buy_snapshot(k, r, g),
+            "date_col": "date",
+            "price_col": "close",
+            "note": US_INDEX_NOTES[key],
+        }
 
 
 def _resolve_date_value(row, date_col):
@@ -856,8 +784,8 @@ def run_backtest(year, amounts=None, panels=None):
         rows.extend(backtest_cn_broad(year, item, panels=panels, amount=broad_amt))
     rows.extend(backtest_cyb(year, panels=panels, amount=other_amt))
     rows.extend(backtest_hstech(year, panels=panels, amount=other_amt))
-    rows.extend(backtest_ndx(year, panels=panels, amount=other_amt))
-    rows.extend(backtest_spx(year, panels=panels, amount=other_amt))
+    for key in US_INDEX_KEYS:
+        rows.extend(backtest_us_index(year, key, panels=panels, amount=other_amt))
     return rows
 
 

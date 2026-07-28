@@ -10,9 +10,10 @@ from backtest_buy_signals import (
     BACKTEST_RETURN_FOOTNOTE,
     CN_BROAD_BACKTEST_INDICES,
     BacktestPanels,
+    US_INDEX_META,
+    US_INDEX_NOTES,
     _cn_broad_buy_snapshot,
-    _ndx_buy_snapshot,
-    _spx_buy_snapshot,
+    _us_buy_snapshot,
 )
 from cn_broad_signal import evaluate_cn_broad_buy
 from config import (
@@ -20,17 +21,17 @@ from config import (
     format_backtest_amount_note,
     HSTECH_INDEX,
     INDICES,
-    NDX_INDEX,
+    BACKTEST_OUTPUT_DIR,
     PROJECT_DIR,
     resolve_backtest_amounts,
-    SPX_INDEX,
+    US_INDEX_KEYS,
 )
 from cyb_signal import evaluate_cyb_signal
 from hstech_signal import evaluate_hstech_signal
 from dividend_data import is_buy_signal_row
 from market_data import configure_stdout_utf8
 
-BACKTEST_DIR = PROJECT_DIR / "logs" / "backtest"
+BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 DEFAULT_START = "2015-01-01"
 
 
@@ -300,45 +301,27 @@ def backtest_all(
             )
         )
 
-    ndx_daily, ndx_growth = panels.ndx_panel()
-    stats = simulate_trades(
-        ndx_daily,
-        start_date,
-        end_date,
-        amount=amounts["other"],
-        buy_fn=lambda r: _ndx_buy_snapshot(r, ndx_growth),
-        has_sell=False,
-    )
-    if stats:
-        results.append(
-            TradeResult(
-                code=NDX_INDEX["code"],
-                name=NDX_INDEX["name"],
-                has_sell=False,
-                note="日频（10Y日更，Forward PE按月对齐）",
-                **stats,
-            )
+    for key in US_INDEX_KEYS:
+        daily, growth = panels.us_index_panel(key)
+        meta = US_INDEX_META[key]
+        stats = simulate_trades(
+            daily,
+            start_date,
+            end_date,
+            amount=amounts["other"],
+            buy_fn=lambda r, k=key, g=growth: _us_buy_snapshot(k, r, g),
+            has_sell=False,
         )
-
-    spx_daily, spx_growth = panels.spx_panel()
-    stats = simulate_trades(
-        spx_daily,
-        start_date,
-        end_date,
-        amount=amounts["other"],
-        buy_fn=lambda r: _spx_buy_snapshot(r, spx_growth),
-        has_sell=False,
-    )
-    if stats:
-        results.append(
-            TradeResult(
-                code=SPX_INDEX["code"],
-                name=SPX_INDEX["name"],
-                has_sell=False,
-                note="日频（10Y日更，Forward PE按季对齐）",
-                **stats,
+        if stats:
+            results.append(
+                TradeResult(
+                    code=meta["code"],
+                    name=meta["name"],
+                    has_sell=False,
+                    note=US_INDEX_NOTES[key],
+                    **stats,
+                )
             )
-        )
 
     return results
 
@@ -552,7 +535,7 @@ def main(argv=None):
     parser.add_argument(
         "--output",
         default="trade_2015_present.md",
-        help="输出文件名（保存在 logs/backtest/）",
+        help="输出文件名（保存在 output/backtest/）",
     )
     args = parser.parse_args(argv)
 

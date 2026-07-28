@@ -16,7 +16,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="推送模块：dividend、a500、hs300、zz500、zz1000、kc50、cyb、hstech、ndx、spx、all(全部，默认)",
+        help="推送模块：dividend、cn_broad、cyb、hstech、us、all(全部，默认)",
     )
     parser.add_argument(
         "--index",
@@ -31,16 +31,10 @@ def main(argv=None):
         help="创业板模块：机构预期净利润增速（小数）",
     )
     parser.add_argument(
-        "--ndx-growth",
+        "--us-growth",
         type=float,
         default=None,
-        help="纳斯达克100模块：预期盈利增速（小数）",
-    )
-    parser.add_argument(
-        "--spx-growth",
-        type=float,
-        default=None,
-        help="标普500模块：预期盈利增速（小数）",
+        help="美股模块：预期盈利增速（小数，纳指/标普共用）",
     )
     parser.add_argument(
         "--quiet",
@@ -55,8 +49,7 @@ def main(argv=None):
             modules=args.modules,
             index_codes=args.index,
             cyb_growth=args.growth,
-            ndx_growth=args.ndx_growth,
-            spx_growth=args.spx_growth,
+            us_growth=args.us_growth,
         )
     except (ValueError, RuntimeError) as exc:
         print(exc)
@@ -76,15 +69,10 @@ def main(argv=None):
         module = modules[0]
         titles = {
             "dividend": "红利信号",
-            "a500": "A500信号",
-            "hs300": "沪深300信号",
-            "zz500": "中证500信号",
-            "zz1000": "中证1000信号",
-            "kc50": "科创50信号",
+            "cn_broad": "A股宽基信号",
             "cyb": "创业板信号",
             "hstech": "恒生科技信号",
-            "ndx": "纳指100信号",
-            "spx": "标普500信号",
+            "us": "美股信号",
         }
         title = f"{titles[module]} {sections[0]['signal_short']}"
 
