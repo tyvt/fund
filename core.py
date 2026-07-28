@@ -6,7 +6,7 @@ from config import (
     get_dividend_signal_config,
     select_indices,
 )
-from drop_to_buy import dividend_drop_to_buy, format_drop_to_buy_line
+from drop_to_buy import dividend_drop_to_buy, format_buy_trigger_line
 from dividend_data import (
     assess_spread_10y_level,
     build_signal_history,
@@ -15,7 +15,13 @@ from dividend_data import (
     format_dividend_spread_10y_line,
 )
 from market_data import get_gov_bond_yield, get_gov_bond_yield_history
-from price_position import make_price_position_criterion
+from price_position import (
+    build_buy_price_ceilings,
+    effective_drawdown_threshold,
+    effective_max_above_low_pct,
+    is_near_year_low,
+    make_price_position_criterion,
+)
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -148,14 +154,40 @@ def build_index_section(
         index_code, buy_eval, spread, spread_pct, pe_pct
     )
     drop, rise_breaks = dividend_drop_to_buy(index_code, bond_history)
-    signal_eval["drop_to_buy"] = drop
-    signal_eval["rise_breaks_buy"] = rise_breaks
-    signal_eval["drop_to_buy_line"] = format_drop_to_buy_line(
+    cfg = get_dividend_signal_config(index_code)
+    year_range = buy_eval.get("year_range_position")
+    max_above_low = effective_max_above_low_pct(
+        cfg.get("buy_max_above_low_pct"),
+        year_range,
+        cfg.get("buy_near_year_low_range_pct"),
+        cfg.get("buy_near_year_low_above_low_relax", 0),
+        cfg.get("buy_mid_range_position_pct"),
+        cfg.get("buy_mid_range_max_above_low_pct"),
+    )
+    min_drawdown = effective_drawdown_threshold(
+        cfg.get("buy_min_drawdown_from_high_pct"),
+        year_range,
+        cfg.get("buy_near_year_low_range_pct"),
+    )
+    price_ceilings = build_buy_price_ceilings(
+        buy_eval,
+        max_above_low,
+        min_drawdown,
+        cfg.get("buy_max_year_range_pct"),
+        low_lookback_days=cfg.get("buy_low_lookback_days", 60),
+        high_lookback_days=cfg.get("buy_high_lookback_days", 252),
+    )
+    buy_line = format_buy_trigger_line(
         drop,
         is_buy=signal_eval.get("is_buy"),
         rise_breaks_pct=rise_breaks,
         close=buy_eval.get("close"),
+        price_ceilings=price_ceilings,
     )
+    signal_eval["drop_to_buy"] = drop
+    signal_eval["rise_breaks_buy"] = rise_breaks
+    signal_eval["drop_to_buy_line"] = buy_line
+    signal_eval["buy_trigger_line"] = buy_line
 
     lines = [
         f"{index_code} {index_name}",

@@ -478,6 +478,79 @@ def price_position_sell_hit(pct_above_low, min_above_low_pct):
     return pct_above_low >= min_above_low_pct
 
 
+def build_buy_price_ceilings(
+    snapshot,
+    max_above_low_pct,
+    min_drawdown_pct,
+    max_year_range_pct,
+    low_lookback_days=90,
+    high_lookback_days=252,
+    range_lookback_days=252,
+):
+    """从快照提取各价格类买入条件的上限点位（收盘需≤该值）。"""
+    ceilings = []
+    low = snapshot.get("lookback_low_price")
+    high = snapshot.get("lookback_high_price")
+    range_low = snapshot.get("range_low_price")
+    range_high = snapshot.get("range_high_price")
+
+    if max_above_low_pct is not None and low is not None and not pd.isna(low):
+        ceilings.append(
+            (f"近{low_lookback_days}日低", _max_close_above_low(low, max_above_low_pct))
+        )
+    if min_drawdown_pct is not None and high is not None and not pd.isna(high):
+        ceilings.append(
+            (
+                f"近{high_lookback_days}日高",
+                _min_close_for_drawdown(high, min_drawdown_pct),
+            )
+        )
+    if (
+        max_year_range_pct is not None
+        and range_low is not None
+        and range_high is not None
+        and not pd.isna(range_low)
+        and not pd.isna(range_high)
+    ):
+        label = "近1年区间" if range_lookback_days == 252 else f"近{range_lookback_days}日区间"
+        ceilings.append(
+            (
+                label,
+                _max_close_in_year_range(range_low, range_high, max_year_range_pct),
+            )
+        )
+    return ceilings
+
+
+def build_sell_price_floors(snapshot, min_above_low_pct, lookback_days=120):
+    """从快照提取卖出侧价格下限（收盘需≥该值才维持卖出）。"""
+    floors = []
+    low = snapshot.get("lookback_low_price")
+    if min_above_low_pct is not None and low is not None and not pd.isna(low):
+        floors.append(
+            (f"近{lookback_days}日低", _min_close_sell_above_low(low, min_above_low_pct))
+        )
+    return floors
+
+
+def format_price_bound_summary(bounds, bound_kind="上限"):
+    """将 (标签, 点位) 列表格式化为报告用摘要。"""
+    valid = [(label, price) for label, price in bounds if price is not None]
+    if not valid:
+        return None
+    tightest = min(valid, key=lambda x: x[1]) if bound_kind == "上限" else max(valid, key=lambda x: x[1])
+    label, price = tightest
+    text = f"{label} {bound_kind} {format_index_price(price)}"
+    extras = []
+    for other_label, other_price in valid:
+        if other_label == label:
+            continue
+        extras.append(f"{other_label} {bound_kind} {format_index_price(other_price)}")
+    if extras:
+        text += "；" + "；".join(extras)
+    return text
+
+
 def make_sell_price_position_criterion(
     pct_above_low,
     min_above_low_pct,

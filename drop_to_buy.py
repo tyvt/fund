@@ -37,6 +37,7 @@ from price_position import (
     pct_below_high_for_simulated_close,
     range_position_for_simulated_close,
     format_index_price,
+    format_price_bound_summary,
 )
 
 
@@ -89,18 +90,60 @@ def find_min_rise_breaks_buy(is_buy_at_rise, max_rise=0.35, precision=0.002):
         return None
 
 
-def format_drop_to_buy_line(
-    drop_pct, is_buy=False, max_drop=0.35, rise_breaks_pct=None, close=None
+def find_min_drop_breaks_condition(
+    still_true_at_drop, max_drop=0.35, precision=0.002
 ):
-    """报告用单行文案（优先展示目标点位）。"""
+    """条件已满足时，二分搜索最小跌幅使条件不再成立。"""
+    try:
+        if not still_true_at_drop(0.0):
+            return None
+        if still_true_at_drop(max_drop):
+            return None
+        lo, hi = 0.0, max_drop
+        while hi - lo > precision:
+            mid = (lo + hi) / 2.0
+            if still_true_at_drop(mid):
+                lo = mid
+            else:
+                hi = mid
+        return lo
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def format_buy_trigger_line(
+    drop_pct=None,
+    is_buy=False,
+    rise_breaks_pct=None,
+    close=None,
+    price_ceilings=None,
+    max_drop=0.35,
+):
+    """报告用买入触发文案：未满足时估算达标点位，已满足时标注维持区间。"""
     if is_buy or drop_pct == 0:
-        line = "触发估算: 按昨日数据已满足买入条件"
+        parts = ["触发估算: 已满足买入条件"]
+        if close is not None:
+            parts[0] += f"（当前 {format_index_price(close)}）"
+        hold_parts = []
+        if price_ceilings:
+            summary = format_price_bound_summary(price_ceilings, "上限")
+            if summary:
+                hold_parts.append(f"维持买入 {summary}")
         if rise_breaks_pct is not None and close is not None:
             break_price = close * (1 + rise_breaks_pct)
-            line += f"；当日涨至 {format_index_price(break_price)} 将不再满足买入"
+            hold_parts.append(
+                f"涨至 {format_index_price(break_price)} 将不再满足买入"
+            )
         elif rise_breaks_pct is not None:
-            line += f"；当日涨幅超 {rise_breaks_pct * 100:.1f}% 将不再满足买入"
-        return line
+            hold_parts.append(
+                f"涨幅超 {rise_breaks_pct * 100:.1f}% 将不再满足买入"
+            )
+        if hold_parts:
+            parts.append("；".join(hold_parts))
+        elif not price_ceilings:
+            parts.append("估值条件较宽，大涨后仍可能维持买入信号")
+        return "；".join(parts)
+
     if drop_pct is None:
         if close is not None:
             floor_price = close * (1 - max_drop)
@@ -115,7 +158,55 @@ def format_drop_to_buy_line(
             f"触发估算: 跌至约 {format_index_price(target)} 可达买入标准"
             f"（当前 {format_index_price(close)}，估值推演，盘中参考）"
         )
-    return f"触发估算: 指数再跌约 {drop_pct * 100:.1f}% 可达买入标准（估值推演，盘中参考）"
+    return (
+        f"触发估算: 指数再跌约 {drop_pct * 100:.1f}% 可达买入标准"
+        "（估值推演，盘中参考）"
+    )
+
+
+def format_sell_trigger_line(
+    is_sell=False,
+    drop_breaks_pct=None,
+    close=None,
+    price_floors=None,
+    max_drop=0.35,
+):
+    """报告用卖出触发文案：已满足时标注维持区间与失效点位。"""
+    if not is_sell:
+        return None
+    parts = ["触发估算: 已满足卖出条件"]
+    if close is not None:
+        parts[0] += f"（当前 {format_index_price(close)}）"
+    hold_parts = []
+    if price_floors:
+        summary = format_price_bound_summary(price_floors, "下限")
+        if summary:
+            hold_parts.append(f"维持卖出 {summary}")
+    if drop_breaks_pct is not None and close is not None:
+        break_price = close * (1 - drop_breaks_pct)
+        hold_parts.append(f"跌至 {format_index_price(break_price)} 将不再满足卖出")
+    elif drop_breaks_pct is not None:
+        hold_parts.append(f"跌幅超 {drop_breaks_pct * 100:.1f}% 将不再满足卖出")
+    if hold_parts:
+        parts.append("；".join(hold_parts))
+    elif not price_floors:
+        parts.append("估值仍偏高，大跌后仍可能维持卖出信号")
+    return "；".join(parts)
+
+
+def format_drop_to_buy_line(
+    drop_pct, is_buy=False, max_drop=0.35, rise_breaks_pct=None, close=None,
+    price_ceilings=None,
+):
+    """报告用单行文案（兼容旧调用，内部转 format_buy_trigger_line）。"""
+    return format_buy_trigger_line(
+        drop_pct=drop_pct,
+        is_buy=is_buy,
+        rise_breaks_pct=rise_breaks_pct,
+        close=close,
+        price_ceilings=price_ceilings,
+        max_drop=max_drop,
+    )
 
 
 def _estimate_buy_trigger(check_factor, max_move=0.35, precision=0.002):
@@ -526,3 +617,118 @@ def spx_drop_to_buy(snapshot):
         return evaluate_spx_signal(snap)["is_buy"]
 
     return _estimate_buy_trigger(check_factor)
+
+
+def _estimate_sell_trigger(still_sell_at_factor, max_move=0.35, precision=0.002):
+    """已满足卖出时，估算跌幅使卖出不再成立。"""
+    return find_min_drop_breaks_condition(
+        lambda d: still_sell_at_factor(1.0 - d),
+        max_drop=max_move,
+        precision=precision,
+    )
+
+
+def cn_broad_sell_trigger(snapshot):
+    from cn_broad_signal import evaluate_cn_broad_sell
+
+    panel = snapshot.get("panel")
+    if panel is None or panel.empty:
+        return None
+
+    index_code = snapshot.get("code")
+    cfg = get_cn_broad_signal_config(index_code)
+    window = cfg["percentile_window"]
+    min_days = cfg["percentile_min_days"]
+    lookback_days = cfg["buy_low_lookback_days"]
+
+    idx = len(panel) - 1
+    row = panel.iloc[-1]
+    if row["pe"] is None:
+        return None
+
+    def check_factor(factor):
+        if factor <= 0:
+            return False
+        pe = row["pe"] * factor
+        pe_pct = rolling_percentile(panel["pe"], idx, pe, window, min_days)
+        new_close = row["close"] * factor
+        pct_above_low = pct_above_low_for_simulated_close(
+            panel, idx, new_close, lookback_days
+        )
+        return evaluate_cn_broad_sell(
+            {
+                "code": index_code,
+                "pe_percentile": pe_pct,
+                "pb_percentile": snapshot.get("pb_percentile"),
+                "spread_percentile": snapshot.get("spread_percentile"),
+                "pct_above_low": pct_above_low,
+                "close": new_close,
+                "lookback_low_price": snapshot.get("lookback_low_price"),
+            }
+        )["is_sell"]
+
+    return _estimate_sell_trigger(check_factor)
+
+
+def cyb_sell_trigger(snapshot):
+    from cyb_signal import evaluate_cyb_signal
+
+    panel = snapshot.get("panel")
+    if panel is None or panel.empty:
+        return None
+
+    idx = len(panel) - 1
+    row = panel.iloc[-1]
+    if row["pe"] is None or row["pb"] is None:
+        return None
+
+    def check_factor(factor):
+        if factor <= 0:
+            return False
+        pe = row["pe"] * factor
+        pb = row["pb"] * factor
+        pe_pct = rolling_percentile(
+            panel["pe"], idx, pe, CYB_PERCENTILE_WINDOW, CYB_PERCENTILE_MIN_DAYS
+        )
+        pb_pct = rolling_percentile(
+            panel["pb"], idx, pb, CYB_PERCENTILE_WINDOW, CYB_PERCENTILE_MIN_DAYS
+        )
+        return evaluate_cyb_signal(
+            {
+                "pe": pe,
+                "pb": pb,
+                "pe_percentile": pe_pct,
+                "pb_percentile": pb_pct,
+            }
+        )["is_sell"]
+
+    return _estimate_sell_trigger(check_factor)
+
+
+def hstech_sell_trigger(snapshot):
+    from hstech_signal import evaluate_hstech_signal
+
+    panel = snapshot.get("panel")
+    if panel is None or panel.empty:
+        return None
+
+    idx = len(panel) - 1
+    row = panel.iloc[-1]
+    if row["pe"] is None:
+        return None
+
+    def check_factor(factor):
+        if factor <= 0:
+            return False
+        pe = row["pe"] * factor
+        pe_pct = rolling_percentile(
+            panel["pe"], idx, pe, HSTECH_PERCENTILE_WINDOW, HSTECH_PERCENTILE_MIN_DAYS
+        )
+        return evaluate_hstech_signal(
+            {
+                "pe": pe,
+                "pe_percentile": pe_pct,
+            }
+        )["is_sell"]
+
+    return _estimate_sell_trigger(check_factor)

@@ -28,9 +28,10 @@ from config import (
     SPX_HIGH_GROWTH_PEG_BONUS,
     SPX_HIGH_GROWTH_THRESHOLD,
 )
-from drop_to_buy import format_drop_to_buy_line, spx_drop_to_buy
+from drop_to_buy import format_buy_trigger_line, format_drop_to_buy_line, spx_drop_to_buy
 from ndx_signal import compute_peg
 from price_position import (
+    build_buy_price_ceilings,
     drawdown_from_high_ok,
     effective_drawdown_threshold,
     effective_max_above_low_pct,
@@ -246,17 +247,44 @@ def is_spx_buy(snapshot):
 
 
 def format_spx_section(snapshot, signal_eval):
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(year_range, SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT)
+    max_above_low = effective_max_above_low_pct(
+        SPX_BUY_MAX_ABOVE_LOW_PCT,
+        year_range,
+        SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+        SPX_BUY_MID_RANGE_POSITION_PCT,
+        SPX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    )
+    min_drawdown = effective_drawdown_threshold(
+        SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        year_range,
+        BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    )
+    price_ceilings = build_buy_price_ceilings(
+        snapshot,
+        max_above_low,
+        min_drawdown,
+        SPX_BUY_MAX_YEAR_RANGE_PCT,
+        low_lookback_days=SPX_BUY_LOW_LOOKBACK_DAYS,
+        high_lookback_days=SPX_BUY_HIGH_LOOKBACK_DAYS,
+        range_lookback_days=BUY_RANGE_LOOKBACK_DAYS,
+    )
     drop, rise_breaks = spx_drop_to_buy(snapshot)
+    buy_line = format_buy_trigger_line(
+        drop,
+        is_buy=signal_eval.get("is_buy"),
+        rise_breaks_pct=rise_breaks,
+        close=snapshot.get("close"),
+        price_ceilings=price_ceilings,
+    )
     signal_eval = {
         **signal_eval,
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
-        "drop_to_buy_line": format_drop_to_buy_line(
-            drop,
-            is_buy=signal_eval.get("is_buy"),
-            rise_breaks_pct=rise_breaks,
-            close=snapshot.get("close"),
-        ),
+        "drop_to_buy_line": buy_line,
+        "buy_trigger_line": buy_line,
     }
     peg_fwd = signal_eval.get("peg_forward")
     peg_fwd_text = f"{peg_fwd:.2f}" if peg_fwd is not None else "—"

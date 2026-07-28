@@ -27,8 +27,14 @@ from config import (
     CYB_SELL_PE_PERCENTILE_MIN,
     CYB_SELL_PEG_HIST_MIN,
 )
-from drop_to_buy import cyb_drop_to_buy, format_drop_to_buy_line
+from drop_to_buy import (
+    cyb_drop_to_buy,
+    cyb_sell_trigger,
+    format_buy_trigger_line,
+    format_sell_trigger_line,
+)
 from price_position import (
+    build_buy_price_ceilings,
     drawdown_from_high_ok,
     effective_drawdown_threshold,
     effective_max_above_low_pct,
@@ -218,17 +224,53 @@ def evaluate_cyb_signal(snapshot):
 
 
 def format_cyb_section(snapshot, signal_eval):
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(year_range, CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT)
+    max_above_low = effective_max_above_low_pct(
+        CYB_BUY_MAX_ABOVE_LOW_PCT,
+        year_range,
+        CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+        CYB_BUY_MID_RANGE_POSITION_PCT,
+        CYB_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    )
+    min_drawdown = effective_drawdown_threshold(
+        CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        year_range,
+        BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    )
+    price_ceilings = build_buy_price_ceilings(
+        snapshot,
+        max_above_low,
+        min_drawdown,
+        CYB_BUY_MAX_YEAR_RANGE_PCT,
+        low_lookback_days=CYB_BUY_LOW_LOOKBACK_DAYS,
+        high_lookback_days=CYB_BUY_HIGH_LOOKBACK_DAYS,
+        range_lookback_days=BUY_RANGE_LOOKBACK_DAYS,
+    )
     drop, rise_breaks = cyb_drop_to_buy(snapshot)
+    drop_breaks = (
+        cyb_sell_trigger(snapshot) if signal_eval.get("is_sell") else None
+    )
+    buy_line = format_buy_trigger_line(
+        drop,
+        is_buy=signal_eval.get("is_buy"),
+        rise_breaks_pct=rise_breaks,
+        close=snapshot.get("close"),
+        price_ceilings=price_ceilings,
+    )
+    sell_line = format_sell_trigger_line(
+        is_sell=signal_eval.get("is_sell"),
+        drop_breaks_pct=drop_breaks,
+        close=snapshot.get("close"),
+    )
     signal_eval = {
         **signal_eval,
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
-        "drop_to_buy_line": format_drop_to_buy_line(
-            drop,
-            is_buy=signal_eval.get("is_buy"),
-            rise_breaks_pct=rise_breaks,
-            close=snapshot.get("close"),
-        ),
+        "drop_to_buy_line": buy_line,
+        "buy_trigger_line": buy_line,
+        "sell_trigger_line": sell_line,
     }
     peg_hist = signal_eval.get("peg_historical")
     peg_hist_text = f"{peg_hist:.2f}" if peg_hist is not None else "—"

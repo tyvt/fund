@@ -1,8 +1,15 @@
 """A 股宽基指数买入/卖出信号与报告格式化。"""
 
 from config import get_cn_broad_signal_config
-from drop_to_buy import cn_broad_drop_to_buy, format_drop_to_buy_line
+from drop_to_buy import (
+    cn_broad_drop_to_buy,
+    cn_broad_sell_trigger,
+    format_buy_trigger_line,
+    format_sell_trigger_line,
+)
 from price_position import (
+    build_buy_price_ceilings,
+    build_sell_price_floors,
     drawdown_from_high_ok,
     effective_drawdown_threshold,
     effective_max_above_low_pct,
@@ -289,17 +296,62 @@ def evaluate_cn_broad_buy(snapshot):
 
 def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
     spread = snapshot.get("spread")
+    cfg = get_cn_broad_signal_config(snapshot["code"])
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(
+        year_range, cfg.get("buy_near_year_low_range_pct")
+    )
+    max_above_low = effective_max_above_low_pct(
+        cfg["buy_max_above_low_pct"],
+        year_range,
+        cfg.get("buy_near_year_low_range_pct"),
+        cfg.get("buy_near_year_low_above_low_relax", 0),
+        cfg.get("buy_mid_range_position_pct"),
+        cfg.get("buy_mid_range_max_above_low_pct"),
+    )
+    min_drawdown = effective_drawdown_threshold(
+        cfg.get("buy_min_drawdown_from_high_pct"),
+        year_range,
+        cfg.get("buy_near_year_low_drawdown_waive_pct"),
+    )
+    price_ceilings = build_buy_price_ceilings(
+        snapshot,
+        max_above_low,
+        min_drawdown,
+        cfg.get("buy_max_year_range_pct"),
+        low_lookback_days=cfg["buy_low_lookback_days"],
+        high_lookback_days=cfg.get("buy_high_lookback_days", 252),
+        range_lookback_days=cfg.get("buy_range_lookback_days", 252),
+    )
+    price_floors = build_sell_price_floors(
+        snapshot,
+        cfg["sell_max_above_low_pct"],
+        lookback_days=cfg["buy_low_lookback_days"],
+    )
     drop, rise_breaks = cn_broad_drop_to_buy(snapshot)
+    drop_breaks = (
+        cn_broad_sell_trigger(snapshot) if buy_eval.get("is_sell") else None
+    )
+    buy_line = format_buy_trigger_line(
+        drop,
+        is_buy=buy_eval.get("is_buy"),
+        rise_breaks_pct=rise_breaks,
+        close=snapshot.get("close"),
+        price_ceilings=price_ceilings,
+    )
+    sell_line = format_sell_trigger_line(
+        is_sell=buy_eval.get("is_sell"),
+        drop_breaks_pct=drop_breaks,
+        close=snapshot.get("close"),
+        price_floors=price_floors,
+    )
     buy_eval = {
         **buy_eval,
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
-        "drop_to_buy_line": format_drop_to_buy_line(
-            drop,
-            is_buy=buy_eval.get("is_buy"),
-            rise_breaks_pct=rise_breaks,
-            close=snapshot.get("close"),
-        ),
+        "drop_to_buy_line": buy_line,
+        "buy_trigger_line": buy_line,
+        "sell_trigger_line": sell_line,
     }
     lines = [
         f"{snapshot['code']} {snapshot['name']}",

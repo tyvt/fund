@@ -81,9 +81,13 @@ def append_signal_block(lines, signal_eval, module):
     else:
         lines.append(f"信号: {signal}")
 
-    drop_line = signal_eval.get("drop_to_buy_line")
+    drop_line = signal_eval.get("buy_trigger_line") or signal_eval.get("drop_to_buy_line")
     if drop_line:
         lines.append(drop_line)
+
+    sell_line = signal_eval.get("sell_trigger_line")
+    if sell_line:
+        lines.append(sell_line)
 
     for item in criteria:
         mark = MARK_PASS if item["passed"] else MARK_FAIL
