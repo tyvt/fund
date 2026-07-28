@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from backtest_buy_signals import (
+    BACKTEST_RETURN_FOOTNOTE,
     CN_BROAD_BACKTEST_INDICES,
     BacktestPanels,
     _cn_broad_buy_snapshot,
@@ -14,15 +15,23 @@ from backtest_buy_signals import (
     _spx_buy_snapshot,
 )
 from cn_broad_signal import evaluate_cn_broad_buy
-from config import CYB_INDEX, HSTECH_INDEX, INDICES, NDX_INDEX, PROJECT_DIR, SPX_INDEX
+from config import (
+    CYB_INDEX,
+    format_backtest_amount_note,
+    HSTECH_INDEX,
+    INDICES,
+    NDX_INDEX,
+    PROJECT_DIR,
+    resolve_backtest_amounts,
+    SPX_INDEX,
+)
 from cyb_signal import evaluate_cyb_signal
 from hstech_signal import evaluate_hstech_signal
 from dividend_data import is_buy_signal_row
 from market_data import configure_stdout_utf8
 
 BACKTEST_DIR = PROJECT_DIR / "logs" / "backtest"
-DEFAULT_START = "2021-01-01"
-DEFAULT_AMOUNT = 300.0
+DEFAULT_START = "2015-01-01"
 
 
 @dataclass
@@ -78,6 +87,8 @@ def _cn_broad_signals(row, index_code):
             "spread_percentile": row.get("spread_percentile"),
             "pct_above_low": row.get("pct_above_low"),
             "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
         }
     )
     return ev["is_buy"], ev.get("is_sell", False)
@@ -91,6 +102,9 @@ def _cyb_signals(row):
             "pe_percentile": row.get("pe_percentile"),
             "pb_percentile": row.get("pb_percentile"),
             "pct_above_low": row.get("pct_above_low"),
+            "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
         }
     )
     return ev["is_buy"], ev.get("is_sell", False)
@@ -103,6 +117,9 @@ def _hstech_signals(row):
             "pe_percentile": row.get("pe_percentile"),
             "dividend_percentile": row.get("dividend_percentile"),
             "pct_above_low": row.get("pct_above_low"),
+            "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
         }
     )
     return ev["is_buy"], ev.get("is_sell", False)
@@ -112,19 +129,24 @@ def simulate_trades(
     panel,
     start_date,
     end_date=None,
-    amount=DEFAULT_AMOUNT,
+    amount=100.0,
     date_col="date",
     buy_fn=None,
     sell_fn=None,
     has_sell=False,
+    valuation_price_col=None,
 ):
     """按日模拟买入/卖出；has_sell=False 时仅买入持有。"""
+    val_col = valuation_price_col or "close"
     sample = _filter_panel(panel, start_date, end_date, date_col=date_col)
     if sample.empty:
         return None
 
+    if val_col not in sample.columns:
+        val_col = "close"
+
     latest = sample.iloc[-1]
-    latest_price = float(latest["close"])
+    latest_price = float(latest[val_col])
     latest_date = latest["_dt"]
 
     units = 0.0
@@ -137,7 +159,7 @@ def simulate_trades(
     sell_dates = []
 
     for _, row in sample.iterrows():
-        price = float(row["close"])
+        price = float(row[val_col])
         day = row["_dt"].strftime("%Y-%m-%d")
         is_buy = buy_fn(row) if buy_fn else False
         is_sell = sell_fn(row) if sell_fn and has_sell else False
@@ -186,9 +208,11 @@ def simulate_trades(
 def backtest_all(
     start_date=DEFAULT_START,
     end_date=None,
-    amount=DEFAULT_AMOUNT,
+    amounts=None,
     panels=None,
 ):
+    if amounts is None:
+        amounts = resolve_backtest_amounts()
     panels = panels or BacktestPanels()
     results = []
 
@@ -199,9 +223,10 @@ def backtest_all(
             panel,
             start_date,
             end_date,
-            amount=amount,
+            amount=amounts["dividend"],
             buy_fn=lambda r, c=code: is_buy_signal_row(r, c),
             has_sell=False,
+            valuation_price_col="total_return_close",
         )
         if stats:
             results.append(
@@ -220,7 +245,7 @@ def backtest_all(
             panel,
             start_date,
             end_date,
-            amount=amount,
+            amount=amounts["cn_broad"],
             buy_fn=lambda r, c=code: _cn_broad_signals(r, c)[0],
             sell_fn=lambda r, c=code: _cn_broad_signals(r, c)[1],
             has_sell=True,
@@ -240,7 +265,7 @@ def backtest_all(
         cyb_panel,
         start_date,
         end_date,
-        amount=amount,
+        amount=amounts["other"],
         buy_fn=lambda r: _cyb_signals(r)[0],
         sell_fn=lambda r: _cyb_signals(r)[1],
         has_sell=True,
@@ -260,7 +285,7 @@ def backtest_all(
         hstech_panel,
         start_date,
         end_date,
-        amount=amount,
+        amount=amounts["other"],
         buy_fn=lambda r: _hstech_signals(r)[0],
         sell_fn=lambda r: _hstech_signals(r)[1],
         has_sell=True,
@@ -280,7 +305,7 @@ def backtest_all(
         ndx_daily,
         start_date,
         end_date,
-        amount=amount,
+        amount=amounts["other"],
         buy_fn=lambda r: _ndx_buy_snapshot(r, ndx_growth),
         has_sell=False,
     )
@@ -300,7 +325,7 @@ def backtest_all(
         spx_daily,
         start_date,
         end_date,
-        amount=amount,
+        amount=amounts["other"],
         buy_fn=lambda r: _spx_buy_snapshot(r, spx_growth),
         has_sell=False,
     )
@@ -330,7 +355,37 @@ def _md_pct(value):
     return f"{value:+.1f}%"
 
 
-def format_markdown(results, start_date, end_date, amount):
+def _trade_totals(results):
+    total_bought = sum(r.total_bought for r in results)
+    trade_value = 0.0
+    trade_profit = 0.0
+    buy_only_value = 0.0
+    buy_only_profit = 0.0
+    for r in results:
+        if r.has_sell:
+            trade_value += r.final_value
+            trade_profit += r.profit
+        else:
+            trade_value += r.buy_only_value
+            trade_profit += r.buy_only_profit
+        buy_only_value += r.buy_only_value
+        buy_only_profit += r.buy_only_profit
+    trade_ret = trade_profit / total_bought * 100 if total_bought > 0 else None
+    buy_only_ret = buy_only_profit / total_bought * 100 if total_bought > 0 else None
+    return {
+        "buy_count": sum(r.buy_count for r in results),
+        "sell_count": sum(r.sell_count for r in results),
+        "total_bought": total_bought,
+        "trade_value": trade_value,
+        "trade_profit": trade_profit,
+        "trade_ret": trade_ret,
+        "buy_only_value": buy_only_value,
+        "buy_only_profit": buy_only_profit,
+        "buy_only_ret": buy_only_ret,
+    }
+
+
+def format_markdown(results, start_date, end_date, amounts):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     val_dates = [r.final_date for r in results if r.final_date is not None]
     val_date = max(val_dates).strftime("%Y-%m-%d") if val_dates else "—"
@@ -340,12 +395,16 @@ def format_markdown(results, start_date, end_date, amount):
         f"# {start_date} 至 {end_label} 买卖信号回测",
         "",
         f"> 生成时间：{generated_at}  ",
-        "> 买入/卖出标准：当前 config 阈值  ",
-        f"> 每次买入金额：{amount:.0f} 元  ",
+        "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
+        f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
         "> 卖出规则：触发卖点时清仓（买入优先于卖出）  ",
         "> 红利/美股：仅买入持有，不设卖点",
         "",
-        f"估值截至 **{val_date}**。未计手续费、分红再投资；纳指为美元计价。",
+        f"估值截至 **{val_date}**。{BACKTEST_RETURN_FOOTNOTE}",
+        "",
+        f"> **与按年回测的关系**：本报告为 **{start_date} 至 {end_label} 连续区间** 的买卖模拟；"
+        "各年 `YYYY.md` 为 **按自然年切片** 的买入统计与定投收益。"
+        "同一指数的「买入次数」应等于各年买入次数之和（区间相同、阈值相同）。",
         "",
         "## 交易统计",
         "",
@@ -358,6 +417,12 @@ def format_markdown(results, start_date, end_date, amount):
             f"| {r.name} | {r.code} | {strategy} | {r.buy_count} | "
             f"{r.sell_count} | {_md_money(r.total_bought)} | {r.note} |"
         )
+    totals = _trade_totals(results)
+    lines.append(
+        f"| **合计** | — | — | {totals['buy_count']} | "
+        f"{totals['sell_count']} | {_md_money(totals['total_bought'])} | "
+        f"总收益 {totals['trade_profit']:+.0f} |"
+    )
 
     lines.extend([
         "",
@@ -382,6 +447,13 @@ def format_markdown(results, start_date, end_date, amount):
             f"{_md_money(r.buy_only_value)} | {r.buy_only_profit:+.0f} | "
             f"{_md_pct(r.buy_only_return_pct)} | {r.note} |"
         )
+    totals = _trade_totals(results)
+    lines.append(
+        f"| **合计** | — | {_md_money(totals['trade_value'])} | "
+        f"{totals['trade_profit']:+.0f} | {_md_pct(totals['trade_ret'])} | "
+        f"{_md_money(totals['buy_only_value'])} | {totals['buy_only_profit']:+.0f} | "
+        f"{_md_pct(totals['buy_only_ret'])} | — |"
+    )
 
     lines.extend([
         "",
@@ -411,13 +483,13 @@ def format_markdown(results, start_date, end_date, amount):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def print_table(results, start_date, end_date, amount):
+def print_table(results, start_date, end_date, amounts):
     end_label = end_date or "最新"
     val_dates = [r.final_date for r in results if r.final_date is not None]
     val_date = max(val_dates).strftime("%Y-%m-%d") if val_dates else "—"
     print(
         f"\n=== {start_date} 至 {end_label} 买卖信号回测 "
-        f"(每次买入 {amount:.0f} 元，截至 {val_date}) ==="
+        f"（{format_backtest_amount_note(amounts)}，截至 {val_date}） ==="
     )
     print(
         f"{'指数':<14} {'代码':<8} {'策略':<8} {'买入':>5} {'卖出':>5} "
@@ -435,10 +507,21 @@ def print_table(results, start_date, end_date, amount):
             f"{r.buy_count:>5} {r.sell_count:>5} "
             f"{r.total_bought:>8.0f} {trade_text:>9} {buy_text:>9}"
         )
+    totals = _trade_totals(results)
+    trade_ret = totals["trade_ret"]
+    buy_ret = totals["buy_only_ret"]
+    trade_text = f"{trade_ret:+.1f}%" if trade_ret is not None else "   —"
+    buy_text = f"{buy_ret:+.1f}%" if buy_ret is not None else "   —"
+    print("-" * 78)
+    print(
+        f"{'合计':<14} {'—':<8} {'—':<8} "
+        f"{totals['buy_count']:>5} {totals['sell_count']:>5} "
+        f"{totals['total_bought']:>8.0f} {trade_text:>9} {buy_text:>9}"
+    )
     print("-" * 78)
 
 
-def save_result(markdown, filename="trade_2021_present.md"):
+def save_result(markdown, filename="trade_2015_present.md"):
     BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
     path = BACKTEST_DIR / filename
     path.write_text(markdown, encoding="utf-8")
@@ -463,17 +546,21 @@ def main(argv=None):
     parser.add_argument(
         "--amount",
         type=float,
-        default=DEFAULT_AMOUNT,
-        help=f"每次买入金额（元，默认 {DEFAULT_AMOUNT:.0f}）",
+        default=None,
+        help="统一覆盖所有指数单次买入金额（元；默认红利300、宽基100、其他300）",
     )
     parser.add_argument(
         "--output",
-        default="trade_2021_present.md",
+        default="trade_2015_present.md",
         help="输出文件名（保存在 logs/backtest/）",
     )
     args = parser.parse_args(argv)
 
     try:
+        if args.amount is not None and args.amount > 0:
+            amounts = resolve_backtest_amounts(args.amount)
+        else:
+            amounts = resolve_backtest_amounts()
         print(
             f"正在回测 {args.start} 至 {args.end or '最新'} "
             f"（买入/卖出按当前 config 阈值）..."
@@ -482,12 +569,12 @@ def main(argv=None):
         results = backtest_all(
             start_date=args.start,
             end_date=args.end,
-            amount=args.amount,
+            amounts=amounts,
             panels=panels,
         )
-        print_table(results, args.start, args.end, args.amount)
+        print_table(results, args.start, args.end, amounts)
         markdown = format_markdown(
-            results, args.start, args.end, args.amount
+            results, args.start, args.end, amounts
         )
         path = save_result(markdown, filename=args.output)
         print(f"\n回测结果已保存: {path}")

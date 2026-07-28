@@ -115,14 +115,14 @@ python backtest_buy_signals.py --year 2025 --amount 500
 按当前买入/卖出标准模拟波段交易（触发卖点时清仓；红利/美股仅买入持有）。
 
 ```bash
-# 2021 年至今（默认）
-python backtest_trade_signals.py --start 2021-01-01
+# 2015 年至今（默认）
+python backtest_trade_signals.py
 
 # 自定义区间与每次买入金额
-python backtest_trade_signals.py --start 2021-01-01 --end 2025-12-31 --amount 300
+python backtest_trade_signals.py --start 2015-01-01 --end 2025-12-31 --amount 300
 ```
 
-结果写入 `logs/backtest/trade_2021_present.md`，含买卖次数、收益对比（买卖波段 vs 仅买入持有）及全部买卖日期。
+结果写入 `logs/backtest/trade_2015_present.md`，含买卖次数、收益对比（买卖波段 vs 仅买入持有）及全部买卖日期。
 
 ### 宽基对比（`compare_broad_indices.py`）
 
@@ -178,7 +178,10 @@ python compare_broad_indices.py
 | `data_sources.py` | 数据源 URL 注册表与接口说明（中证、东财、FRED、新浪等）。 |
 | `market_data.py` | 公共行情工具：国债收益率、中证历史行情、分位计算、UTF-8 输出。 |
 | `signal_format.py` | 统一信号文案：买入/观望/卖出标记、判定条件块、模块标题格式。 |
-| `drop_to_buy.py` | 「再跌多少可触发买入」推演（基于昨日估值面板，供盘中参考）。 |
+| `drop_to_buy.py` | 「再跌多少可触发买入」推演（含近1年区间位置，与回测一致） |
+| `price_position.py` | 近1年区间位置、距低点涨幅、距高点回撤及分层阈值计算 |
+| `analyze_buy_quality.py` | 买入质量诊断：高位买 / 漏买低点 |
+| `analyze_index_buy_issues.py` | 重点六指数买入质量专项分析 |
 | `notify.py` | Server酱 微信推送封装，与报告生成解耦。 |
 
 ### 配置文件
@@ -200,6 +203,43 @@ python compare_broad_indices.py
 
 ---
 
+### 价格位置指标（全模块共用）
+
+买入侧除估值分位外，统一使用 **近 252 交易日（约 1 年）** 的价格位置过滤（见 `price_position.py`）：
+
+| 指标 | 字段名 | 含义 |
+|------|--------|------|
+| 近1年区间位置 | `year_range_position` | 收盘价在近 252 日高低点区间中的位置（0=最低，1=最高）；买入须 ≤ `buy_max_year_range_pct` |
+| 距低点涨幅 | `pct_above_low` | 收盘价 / 近 N 日低点 − 1（N 默认 252，见各指数 `buy_low_lookback_days`） |
+| 距高点回撤 | `pct_below_high` | 1 − 收盘价 / 近 252 日高点 |
+
+**分层规则**（`config.py` 全局默认，可通过 `push.env` 覆盖）：
+
+- **近1年低位**（区间位置 ≤ `BUY_NEAR_YEAR_LOW_RANGE_PCT`，默认 20%）：放宽估值门槛（PE/利差/利率/PEG 等），豁免距高点回撤要求（仅当区间 ≤ `BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT`，默认 12%），并放宽距低点涨幅上限。
+- **近1年中高位**（区间位置 > `BUY_MID_RANGE_POSITION_PCT`，默认 35%）：收紧距低点涨幅（上限降至 `BUY_MID_RANGE_MAX_ABOVE_LOW_PCT`，默认 2%），避免反弹途中追高。
+- **硬性上限**：无论估值多便宜，区间位置超过 `buy_max_year_range_pct` 一律不买。
+- **均线趋势**（`MA200` 斜率，默认 60 日变化率）：MA 斜率 ≥ `BUY_TREND_MIN_MA_SLOPE_PCT`（默认 -2.5%）视为企稳可买；若 MA 仍明显下行，仅当近1年区间 ≤ `BUY_TREND_DOWNTREND_MAX_RANGE_PCT`（默认 12%）才允许买入，避免熊市反弹途中追高。
+
+各指数 `buy_max_year_range_pct` 示例：沪深300 **25%**、中证1000/科创50 **22–26%**、恒生科技 **6%**、纳指100 **35%**、标普500 **38%**。
+
+**分指数独立变量**：宽基通过 `get_cn_broad_signal_config(code)`（`CN_BROAD_{代码}_*` 环境变量）；红利 `DIVIDEND_{代码}_*`；创业板/恒生科技/纳指/标普为 `CYB_*` / `HSTECH_*` / `NDX_*` / `SPX_*`（含 `BUY_TREND_*`、`BUY_MID_RANGE_*` 等）。默认值见 `config.py` 中 `_CN_BROAD_PER_INDEX_DEFAULTS` 与各模块常量。
+
+上述指标已接入：`report.py` 报告输出、`backtest_buy_signals.py` / `backtest_trade_signals.py` 回测、`drop_to_buy.py` 盘中推演。红利模块不使用 MA 趋势过滤（策略为股息率+利差，价格位置口径为 60 日）。
+
+趋势相关环境变量（见 `push.example.env`）：`BUY_TREND_MA_DAYS`、`BUY_TREND_SLOPE_LOOKBACK_DAYS`、`BUY_TREND_MIN_MA_SLOPE_PCT`、`BUY_TREND_DOWNTREND_MAX_RANGE_PCT`。
+
+### 买入质量分析（`analyze_buy_quality.py` / `analyze_index_buy_issues.py`）
+
+```bash
+# 全模块：高位买入与漏买低点统计
+python analyze_buy_quality.py
+
+# 重点指数（沪深300/中证1000/科创50/恒生科技/纳指/标普）
+python analyze_index_buy_issues.py
+```
+
+---
+
 ## 模块与策略概要
 
 ### 红利（dividend）
@@ -207,6 +247,7 @@ python compare_broad_indices.py
 - **指数**：中证红利低波100（930955）、中证红利低波动（H30269）
 - **买入**：股息率-国债利差 > 阈值，且利差分位高、PE 分位低
 - **卖出**：无（长期持有型）
+- **回测收益**：使用中证全收益指数（930955→H20955、H30269→H20269）估算，含分红再投资
 
 ### 中证 A500（a500）
 
@@ -217,7 +258,7 @@ python compare_broad_indices.py
 ### A 股宽基（hs300 / zz500 / zz1000 / kc50）
 
 - **指数**：沪深300（000300）、中证500（000905）、中证1000（000852）、科创50（000688）
-- **买入**：股债利差分位达标 + PE/PB 分位达标 + 价格位置（距低点涨幅、可选距高点回撤；沪深300 要求 252 日高点回撤 ≥18%）
+- **买入**：股债利差分位达标 + PE/PB 分位达标 + **近1年价格位置**（区间位置、距低点涨幅、距高点回撤；沪深300 要求 252 日高点回撤 ≥18%，近1年低位可豁免）
 - **卖出**：逻辑同 A500，阈值分指数配置
 
 ### 创业板指（cyb）
@@ -228,12 +269,13 @@ python compare_broad_indices.py
 ### 恒生科技指数（hstech）
 
 - **指数**：恒生科技指数（HSTECH），2020 年 7 月发布
-- **买入**：PE 分位偏低 + PEG（近 5 年增速）≤ 阈值 + 股息率分位偏高 + 价格位置（须同时满足；乐咕暂无 PB/PS 历史）
+- **买入**：PE 分位偏低 + PEG（近 5 年增速）≤ 阈值 + 股息率分位偏高 + **近1年价格位置**（须同时满足；近1年低位放宽 PE/PEG/股息率门槛）
 - **卖出**：PE 分位偏高，或 PEG 过高且估值不低
 
 ### 纳斯达克 100（ndx）/ 标普 500（spx）
 
-- **买入**：Forward PE 分位偏低 + PEG(Forward) ≤ 阈值 + 10Y 利率分位不高
+- **买入**：Forward PE 分位偏低 + PEG(Forward) ≤ 阈值 + 10Y 利率分位不高 + **近1年价格位置**
+- **近1年低位**：放宽 PE/利率/PEG 门槛，豁免距高点回撤
 - **卖出**：无（长期持有型）
 
 ---
@@ -255,7 +297,10 @@ python compare_broad_indices.py
 ├── data_sources.py        # 数据源地址
 ├── market_data.py         # 公共行情
 ├── signal_format.py       # 输出格式
-├── drop_to_buy.py         # 跌多少买入
+├── drop_to_buy.py         # 跌多少买入（含近1年价格位置）
+├── price_position.py      # 价格位置指标
+├── analyze_buy_quality.py
+├── analyze_index_buy_issues.py
 ├── notify.py              # 微信推送
 ├── backtest_buy_signals.py
 ├── backtest_trade_signals.py

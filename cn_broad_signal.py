@@ -4,11 +4,20 @@ from config import get_cn_broad_signal_config
 from drop_to_buy import cn_broad_drop_to_buy, format_drop_to_buy_line
 from price_position import (
     drawdown_from_high_ok,
+    effective_drawdown_threshold,
+    effective_max_above_low_pct,
+    format_index_price,
+    format_price_position_line,
+    is_near_year_low,
     make_drawdown_from_high_criterion,
     make_price_position_criterion,
     make_sell_price_position_criterion,
+    make_trend_criterion,
+    make_year_range_criterion,
     price_position_ok,
     price_position_sell_hit,
+    trend_filter_ok,
+    year_range_ok,
 )
 from signal_format import (
     SIGNAL_BUY,
@@ -69,7 +78,11 @@ def evaluate_cn_broad_sell(snapshot):
         ),
     ]
     price_criterion = make_sell_price_position_criterion(
-        pct_above_low, cfg["sell_max_above_low_pct"], lookback
+        pct_above_low,
+        cfg["sell_max_above_low_pct"],
+        lookback,
+        close=snapshot.get("close"),
+        lookback_low=snapshot.get("lookback_low_price"),
     )
     if price_criterion is not None:
         sell_criteria.append(price_criterion)
@@ -93,7 +106,16 @@ def evaluate_cn_broad_sell(snapshot):
     if spread_hit:
         reasons.append("利差分位过低")
     if price_hit:
-        reasons.append(f"距{lookback}日低点涨幅过大")
+        close = snapshot.get("close")
+        low = snapshot.get("lookback_low_price")
+        sell_pct = cfg["sell_max_above_low_pct"]
+        if close is not None and low is not None and sell_pct is not None:
+            min_close = low * (1 + sell_pct)
+            reasons.append(
+                f"收盘 {format_index_price(close)} 高于卖出线 {format_index_price(min_close)}"
+            )
+        else:
+            reasons.append(f"距{lookback}日低点涨幅过大")
     if pb_hit and cfg["sell_pb_percentile_min"] < 95:
         reasons.append("PB分位过高")
 
@@ -112,26 +134,54 @@ def evaluate_cn_broad_buy(snapshot):
     pe_pct = snapshot.get("pe_percentile")
     pb_pct = snapshot.get("pb_percentile")
     spread_pct = snapshot.get("spread_percentile")
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(
+        year_range, cfg.get("buy_near_year_low_range_pct")
+    )
+    spread_min = cfg["buy_spread_percentile_min"]
+    pe_max = cfg["buy_pe_percentile_max"]
+    if near_low:
+        spread_min = max(
+            0.0,
+            spread_min - cfg.get("buy_near_year_low_spread_relax", 0),
+        )
+        pe_max = min(
+            100.0,
+            pe_max + cfg.get("buy_near_year_low_pe_relax", 0),
+        )
+    max_above_low = effective_max_above_low_pct(
+        cfg["buy_max_above_low_pct"],
+        year_range,
+        cfg.get("buy_near_year_low_range_pct"),
+        cfg.get("buy_near_year_low_above_low_relax", 0),
+        cfg.get("buy_mid_range_position_pct"),
+        cfg.get("buy_mid_range_max_above_low_pct"),
+    )
+    min_drawdown = effective_drawdown_threshold(
+        cfg.get("buy_min_drawdown_from_high_pct"),
+        year_range,
+        cfg.get("buy_near_year_low_drawdown_waive_pct"),
+    )
 
     spread_ok = (
         spread_pct is not None
-        and spread_pct >= cfg["buy_spread_percentile_min"]
+        and spread_pct >= spread_min
     )
-    pe_ok = pe_pct is not None and pe_pct <= cfg["buy_pe_percentile_max"]
+    pe_ok = pe_pct is not None and pe_pct <= pe_max
     pb_ok = pb_pct is not None and pb_pct <= cfg["buy_pb_percentile_max"]
 
     criteria = [
         make_criterion(
             "股债利差分位",
             spread_ok,
-            f"{pct_text(spread_pct)}（需≥{cfg['buy_spread_percentile_min']:.0f}%）",
+            f"{pct_text(spread_pct)}（需≥{spread_min:.0f}%）",
             "股息率相对国债优势不足",
             applicable=spread_pct is not None,
         ),
         make_criterion(
             "PE 分位",
             pe_ok,
-            f"{pct_text(pe_pct)}（需≤{cfg['buy_pe_percentile_max']:.0f}%）",
+            f"{pct_text(pe_pct)}（需≤{pe_max:.0f}%）",
             "市盈率处于历史中高位",
             applicable=pe_pct is not None,
         ),
@@ -145,18 +195,42 @@ def evaluate_cn_broad_buy(snapshot):
     ]
     price_criterion = make_price_position_criterion(
         snapshot.get("pct_above_low"),
-        cfg["buy_max_above_low_pct"],
+        max_above_low,
         cfg["buy_low_lookback_days"],
+        close=snapshot.get("close"),
+        lookback_low=snapshot.get("lookback_low_price"),
     )
     if price_criterion is not None:
         criteria.append(price_criterion)
     drawdown_criterion = make_drawdown_from_high_criterion(
         snapshot.get("pct_below_high"),
-        cfg.get("buy_min_drawdown_from_high_pct"),
+        min_drawdown,
         cfg.get("buy_high_lookback_days", 252),
+        close=snapshot.get("close"),
+        lookback_high=snapshot.get("lookback_high_price"),
     )
     if drawdown_criterion is not None:
         criteria.append(drawdown_criterion)
+    year_range_criterion = make_year_range_criterion(
+        year_range,
+        cfg.get("buy_max_year_range_pct"),
+        cfg.get("buy_range_lookback_days", 252),
+        close=snapshot.get("close"),
+        range_low=snapshot.get("range_low_price"),
+        range_high=snapshot.get("range_high_price"),
+    )
+    if year_range_criterion is not None:
+        criteria.append(year_range_criterion)
+    trend_criterion = make_trend_criterion(
+        snapshot.get("ma_slope_pct"),
+        year_range,
+        cfg.get("buy_trend_min_ma_slope_pct"),
+        cfg.get("buy_trend_downtrend_max_range_pct"),
+        cfg.get("buy_trend_ma_days"),
+        cfg.get("buy_trend_slope_lookback_days"),
+    )
+    if trend_criterion is not None:
+        criteria.append(trend_criterion)
 
     applicable = [c for c in criteria if c["applicable"]]
     score = sum(1 for c in applicable if c["passed"])
@@ -171,10 +245,15 @@ def evaluate_cn_broad_buy(snapshot):
         and total >= cfg["buy_min_applicable_criteria"]
     )
     is_buy = base_buy and price_position_ok(
-        snapshot.get("pct_above_low"), cfg["buy_max_above_low_pct"]
+        snapshot.get("pct_above_low"), max_above_low
     ) and drawdown_from_high_ok(
         snapshot.get("pct_below_high"),
-        cfg.get("buy_min_drawdown_from_high_pct"),
+        min_drawdown,
+    ) and year_range_ok(year_range, cfg.get("buy_max_year_range_pct")) and trend_filter_ok(
+        snapshot.get("ma_slope_pct"),
+        year_range,
+        cfg.get("buy_trend_min_ma_slope_pct"),
+        cfg.get("buy_trend_downtrend_max_range_pct"),
     )
 
     sell_eval = evaluate_cn_broad_sell(snapshot)
@@ -216,7 +295,10 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
         "drop_to_buy_line": format_drop_to_buy_line(
-            drop, is_buy=buy_eval.get("is_buy"), rise_breaks_pct=rise_breaks
+            drop,
+            is_buy=buy_eval.get("is_buy"),
+            rise_breaks_pct=rise_breaks,
+            close=snapshot.get("close"),
         ),
     }
     lines = [
@@ -232,6 +314,11 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
             else f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | PB —"
         ),
     ]
+    lines.append(
+        format_price_position_line(
+            snapshot, get_cn_broad_signal_config(snapshot["code"])["buy_low_lookback_days"]
+        )
+    )
     append_signal_block(lines, buy_eval, module)
     return {
         "code": snapshot["code"],

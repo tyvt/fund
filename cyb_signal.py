@@ -1,11 +1,25 @@
 """创业板指估值信号与报告格式化（加权 PE/PB 为主）。"""
 
 from config import (
+    BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+    BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    BUY_RANGE_LOOKBACK_DAYS,
+    CYB_BUY_HIGH_LOOKBACK_DAYS,
     CYB_BUY_LOW_LOOKBACK_DAYS,
     CYB_BUY_MAX_ABOVE_LOW_PCT,
+    CYB_BUY_MAX_YEAR_RANGE_PCT,
+    CYB_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    CYB_BUY_MID_RANGE_POSITION_PCT,
+    CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+    CYB_BUY_NEAR_YEAR_LOW_PE_RELAX,
+    CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     CYB_BUY_PB_PERCENTILE_MAX,
     CYB_BUY_PE_PERCENTILE_MAX,
     CYB_BUY_PEG_HIST_MAX,
+    CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+    CYB_BUY_TREND_MA_DAYS,
+    CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
+    CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     CYB_HISTORICAL_GROWTH,
     CYB_SELL_COMBO_PB_PERCENTILE_MIN,
     CYB_SELL_COMBO_PE_PERCENTILE_MIN,
@@ -14,7 +28,20 @@ from config import (
     CYB_SELL_PEG_HIST_MIN,
 )
 from drop_to_buy import cyb_drop_to_buy, format_drop_to_buy_line
-from price_position import make_price_position_criterion, price_position_ok
+from price_position import (
+    drawdown_from_high_ok,
+    effective_drawdown_threshold,
+    effective_max_above_low_pct,
+    format_price_position_line,
+    is_near_year_low,
+    make_drawdown_from_high_criterion,
+    make_price_position_criterion,
+    make_trend_criterion,
+    make_year_range_criterion,
+    price_position_ok,
+    trend_filter_ok,
+    year_range_ok,
+)
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -40,23 +67,43 @@ def evaluate_cyb_signal(snapshot):
 
     pe_pct = snapshot.get("pe_percentile")
     pb_pct = snapshot.get("pb_percentile")
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(year_range, CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT)
+    pe_max = CYB_BUY_PE_PERCENTILE_MAX
+    pb_max = CYB_BUY_PB_PERCENTILE_MAX
+    if near_low:
+        pe_max = min(100.0, pe_max + CYB_BUY_NEAR_YEAR_LOW_PE_RELAX)
+        pb_max = min(100.0, pb_max + CYB_BUY_NEAR_YEAR_LOW_PE_RELAX)
+    max_above_low = effective_max_above_low_pct(
+        CYB_BUY_MAX_ABOVE_LOW_PCT,
+        year_range,
+        CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+        CYB_BUY_MID_RANGE_POSITION_PCT,
+        CYB_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    )
+    min_drawdown = effective_drawdown_threshold(
+        CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        year_range,
+        BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    )
 
-    pe_ok = pe_pct is not None and pe_pct <= CYB_BUY_PE_PERCENTILE_MAX
-    pb_ok = pb_pct is not None and pb_pct <= CYB_BUY_PB_PERCENTILE_MAX
+    pe_ok = pe_pct is not None and pe_pct <= pe_max
+    pb_ok = pb_pct is not None and pb_pct <= pb_max
     peg_hist_ok = peg_historical is not None and peg_historical <= CYB_BUY_PEG_HIST_MAX
 
     buy_criteria = [
         make_criterion(
             "PE 分位(加权)",
             pe_ok,
-            f"{pct_text(pe_pct)}（需≤{CYB_BUY_PE_PERCENTILE_MAX:.0f}%）",
+            f"{pct_text(pe_pct)}（需≤{pe_max:.0f}%）",
             "市盈率处于历史中高位",
             applicable=pe_pct is not None,
         ),
         make_criterion(
             "PB 分位(加权)",
             pb_ok,
-            f"{pct_text(pb_pct)}（需≤{CYB_BUY_PB_PERCENTILE_MAX:.0f}%）",
+            f"{pct_text(pb_pct)}（需≤{pb_max:.0f}%）",
             "市净率处于历史中高位",
             applicable=pb_pct is not None,
         ),
@@ -74,11 +121,42 @@ def evaluate_cyb_signal(snapshot):
     ]
     price_criterion = make_price_position_criterion(
         snapshot.get("pct_above_low"),
-        CYB_BUY_MAX_ABOVE_LOW_PCT,
+        max_above_low,
         CYB_BUY_LOW_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        lookback_low=snapshot.get("lookback_low_price"),
     )
     if price_criterion is not None:
         buy_criteria.append(price_criterion)
+    drawdown_criterion = make_drawdown_from_high_criterion(
+        snapshot.get("pct_below_high"),
+        min_drawdown,
+        CYB_BUY_HIGH_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        lookback_high=snapshot.get("lookback_high_price"),
+    )
+    if drawdown_criterion is not None:
+        buy_criteria.append(drawdown_criterion)
+    year_range_criterion = make_year_range_criterion(
+        year_range,
+        CYB_BUY_MAX_YEAR_RANGE_PCT,
+        BUY_RANGE_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        range_low=snapshot.get("range_low_price"),
+        range_high=snapshot.get("range_high_price"),
+    )
+    if year_range_criterion is not None:
+        buy_criteria.append(year_range_criterion)
+    trend_criterion = make_trend_criterion(
+        snapshot.get("ma_slope_pct"),
+        year_range,
+        CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
+        CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+        CYB_BUY_TREND_MA_DAYS,
+        CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    )
+    if trend_criterion is not None:
+        buy_criteria.append(trend_criterion)
 
     criteria = [c for c in buy_criteria if c["applicable"]]
     score = sum(1 for c in criteria if c["passed"])
@@ -86,7 +164,15 @@ def evaluate_cyb_signal(snapshot):
         pe_ok
         and pb_ok
         and peg_hist_ok
-        and price_position_ok(snapshot.get("pct_above_low"), CYB_BUY_MAX_ABOVE_LOW_PCT)
+        and price_position_ok(snapshot.get("pct_above_low"), max_above_low)
+        and drawdown_from_high_ok(snapshot.get("pct_below_high"), min_drawdown)
+        and year_range_ok(year_range, CYB_BUY_MAX_YEAR_RANGE_PCT)
+        and trend_filter_ok(
+            snapshot.get("ma_slope_pct"),
+            year_range,
+            CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
+            CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+        )
     )
 
     is_sell = False
@@ -138,7 +224,10 @@ def format_cyb_section(snapshot, signal_eval):
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
         "drop_to_buy_line": format_drop_to_buy_line(
-            drop, is_buy=signal_eval.get("is_buy"), rise_breaks_pct=rise_breaks
+            drop,
+            is_buy=signal_eval.get("is_buy"),
+            rise_breaks_pct=rise_breaks,
+            close=snapshot.get("close"),
         ),
     }
     peg_hist = signal_eval.get("peg_historical")
@@ -152,6 +241,7 @@ def format_cyb_section(snapshot, signal_eval):
         ),
         f"PEG(5年) {peg_hist_text} | 近5年增速 {signal_eval['historical_growth']:.1%}",
     ]
+    lines.append(format_price_position_line(snapshot, CYB_BUY_LOW_LOOKBACK_DAYS))
     append_signal_block(lines, signal_eval, "cyb")
     return {
         "code": snapshot["code"],

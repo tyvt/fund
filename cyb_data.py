@@ -4,7 +4,12 @@ import akshare as ak
 import pandas as pd
 
 from config import (
+    BUY_RANGE_LOOKBACK_DAYS,
+    BUY_TREND_MA_DAYS,
+    BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    CYB_BUY_HIGH_LOOKBACK_DAYS,
     CYB_BUY_LOW_LOOKBACK_DAYS,
+    CYB_BUY_MAX_YEAR_RANGE_PCT,
     CYB_DIV_PERCENTILE_WINDOW,
     CYB_INDEX,
     CYB_PERCENTILE_MIN_DAYS,
@@ -12,7 +17,13 @@ from config import (
 )
 from data_cache import get_or_fetch_dataframe
 from market_data import compute_percentile
-from price_position import attach_pct_above_low
+from price_position import (
+    attach_ma_trend,
+    attach_pct_above_low,
+    attach_pct_below_high,
+    attach_year_range_position,
+    row_price_position_fields,
+)
 
 CYB_CODE = CYB_INDEX["code"]
 CYB_NAME = CYB_INDEX["name"]
@@ -213,6 +224,17 @@ def fetch_cyb_snapshot(expected_growth=None):
         how="left",
     )
     panel = attach_pct_above_low(panel, lookback_days=CYB_BUY_LOW_LOOKBACK_DAYS)
+    panel = attach_pct_below_high(
+        panel, lookback_days=CYB_BUY_HIGH_LOOKBACK_DAYS
+    )
+    panel = attach_year_range_position(
+        panel, lookback_days=BUY_RANGE_LOOKBACK_DAYS, date_col="date_only"
+    )
+    panel = attach_ma_trend(
+        panel,
+        ma_days=BUY_TREND_MA_DAYS,
+        slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    )
     latest = panel.iloc[-1]
     volatility = compute_annualized_volatility(price_history)
     pct_above_low = (
@@ -242,8 +264,25 @@ def fetch_cyb_snapshot(expected_growth=None):
         "pb_median_percentile": latest["pb_median_percentile"],
         "dividend_percentile": latest["dividend_percentile"],
         "pct_above_low": pct_above_low,
+        "pct_below_high": (
+            float(latest["pct_below_high"])
+            if pd.notna(latest.get("pct_below_high"))
+            else None
+        ),
+        "year_range_position": (
+            float(latest["year_range_position"])
+            if pd.notna(latest.get("year_range_position"))
+            else None
+        ),
+        "ma_slope_pct": (
+            float(latest["ma_slope_pct"])
+            if pd.notna(latest.get("ma_slope_pct"))
+            else None
+        ),
         "volatility": volatility,
         "history_days": int(panel["pe"].notna().sum()),
         "panel": panel,
         "expected_growth": expected_growth,
+        "high_lookback_days": CYB_BUY_HIGH_LOOKBACK_DAYS,
+        **row_price_position_fields(latest),
     }

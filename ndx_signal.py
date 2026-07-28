@@ -1,19 +1,48 @@
 """纳斯达克 100 估值信号与报告格式化。"""
 
 from config import (
+    BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+    BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    BUY_RANGE_LOOKBACK_DAYS,
     NDX_BUY_FORWARD_PE_PERCENTILE_MAX,
+    NDX_BUY_HIGH_LOOKBACK_DAYS,
     NDX_BUY_LOW_LOOKBACK_DAYS,
     NDX_BUY_MAX_ABOVE_LOW_PCT,
+    NDX_BUY_MAX_YEAR_RANGE_PCT,
+    NDX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    NDX_BUY_MID_RANGE_POSITION_PCT,
+    NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+    NDX_BUY_NEAR_YEAR_LOW_PE_RELAX,
+    NDX_BUY_NEAR_YEAR_LOW_PEG_RELAX,
+    NDX_BUY_NEAR_YEAR_LOW_RATE_RELAX,
+    NDX_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     NDX_BUY_PEG_FORWARD_MAX,
     NDX_BUY_RATE_PERCENTILE_MAX,
     NDX_BUY_TRAILING_PE_PERCENTILE_MAX,
+    NDX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+    NDX_BUY_TREND_MA_DAYS,
+    NDX_BUY_TREND_MIN_MA_SLOPE_PCT,
+    NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     NDX_EXPECTED_GROWTH,
     NDX_FALLBACK_EXPECTED_GROWTH,
     NDX_HIGH_GROWTH_PEG_BONUS,
     NDX_HIGH_GROWTH_THRESHOLD,
 )
 from drop_to_buy import ndx_drop_to_buy, format_drop_to_buy_line
-from price_position import make_price_position_criterion, price_position_ok
+from price_position import (
+    drawdown_from_high_ok,
+    effective_drawdown_threshold,
+    effective_max_above_low_pct,
+    format_price_position_line,
+    is_near_year_low,
+    make_drawdown_from_high_criterion,
+    make_price_position_criterion,
+    make_trend_criterion,
+    make_year_range_criterion,
+    price_position_ok,
+    trend_filter_ok,
+    year_range_ok,
+)
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -59,43 +88,68 @@ def evaluate_ndx_signal(snapshot):
     trailing_pct = snapshot.get("trailing_pe_percentile")
     forward_pct = snapshot.get("forward_pe_percentile")
     rate_pct = snapshot.get("us10y_percentile")
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(year_range, NDX_BUY_NEAR_YEAR_LOW_RANGE_PCT)
+    pe_threshold = NDX_BUY_FORWARD_PE_PERCENTILE_MAX
+    trailing_threshold = NDX_BUY_TRAILING_PE_PERCENTILE_MAX
+    if near_low:
+        pe_threshold = min(100.0, pe_threshold + NDX_BUY_NEAR_YEAR_LOW_PE_RELAX)
+        trailing_threshold = min(100.0, trailing_threshold + NDX_BUY_NEAR_YEAR_LOW_PE_RELAX)
+    max_above_low = effective_max_above_low_pct(
+        NDX_BUY_MAX_ABOVE_LOW_PCT,
+        year_range,
+        NDX_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+        NDX_BUY_MID_RANGE_POSITION_PCT,
+        NDX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    )
+    min_drawdown = effective_drawdown_threshold(
+        NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        year_range,
+        BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    )
 
     trailing_ok = (
         trailing_pct is not None
-        and trailing_pct <= NDX_BUY_TRAILING_PE_PERCENTILE_MAX
+        and trailing_pct <= trailing_threshold
     )
     forward_ok = (
         forward_pct is not None
-        and forward_pct <= NDX_BUY_FORWARD_PE_PERCENTILE_MAX
+        and forward_pct <= pe_threshold
     )
     if forward_pct is not None:
         pe_ok = forward_ok
         pe_label = "Forward PE 分位"
         pe_pct = forward_pct
-        pe_threshold = NDX_BUY_FORWARD_PE_PERCENTILE_MAX
+        display_threshold = pe_threshold
     elif trailing_pct is not None:
         pe_ok = trailing_ok
         pe_label = "TTM PE 分位"
         pe_pct = trailing_pct
-        pe_threshold = NDX_BUY_TRAILING_PE_PERCENTILE_MAX
+        display_threshold = trailing_threshold
     else:
         pe_ok = False
         pe_label = "PE 分位"
         pe_pct = None
-        pe_threshold = NDX_BUY_FORWARD_PE_PERCENTILE_MAX
+        display_threshold = pe_threshold
 
     peg_forward_max = NDX_BUY_PEG_FORWARD_MAX
     if expected_growth is not None and expected_growth >= NDX_HIGH_GROWTH_THRESHOLD:
         peg_forward_max += NDX_HIGH_GROWTH_PEG_BONUS
+    if near_low:
+        peg_forward_max += NDX_BUY_NEAR_YEAR_LOW_PEG_RELAX
 
     peg_fwd_ok = peg_forward is not None and peg_forward <= peg_forward_max
-    rate_ok = rate_pct is not None and rate_pct <= NDX_BUY_RATE_PERCENTILE_MAX
+    rate_max = NDX_BUY_RATE_PERCENTILE_MAX
+    if near_low:
+        rate_max = min(100.0, rate_max + NDX_BUY_NEAR_YEAR_LOW_RATE_RELAX)
+    rate_ok = rate_pct is not None and rate_pct <= rate_max
 
     buy_criteria = [
         make_criterion(
             pe_label,
             pe_ok,
-            f"{pct_text(pe_pct)}（需≤{pe_threshold:.0f}%）",
+            f"{pct_text(pe_pct)}（需≤{display_threshold:.0f}%）",
             "市盈率处于近10年偏高位",
             applicable=pe_pct is not None,
         ),
@@ -113,25 +167,64 @@ def evaluate_ndx_signal(snapshot):
         make_criterion(
             "10Y 利率分位",
             rate_ok,
-            f"{pct_text(rate_pct)}（需≤{NDX_BUY_RATE_PERCENTILE_MAX:.0f}%）",
+            f"{pct_text(rate_pct)}（需≤{rate_max:.0f}%）",
             "无风险利率偏高，压制科技股估值",
             applicable=rate_pct is not None,
         ),
     ]
     price_criterion = make_price_position_criterion(
         snapshot.get("pct_above_low"),
-        NDX_BUY_MAX_ABOVE_LOW_PCT,
+        max_above_low,
         NDX_BUY_LOW_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        lookback_low=snapshot.get("lookback_low_price"),
     )
     if price_criterion is not None:
         buy_criteria.append(price_criterion)
+    drawdown_criterion = make_drawdown_from_high_criterion(
+        snapshot.get("pct_below_high"),
+        min_drawdown,
+        NDX_BUY_HIGH_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        lookback_high=snapshot.get("lookback_high_price"),
+    )
+    if drawdown_criterion is not None:
+        buy_criteria.append(drawdown_criterion)
+    year_range_criterion = make_year_range_criterion(
+        year_range,
+        NDX_BUY_MAX_YEAR_RANGE_PCT,
+        BUY_RANGE_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        range_low=snapshot.get("range_low_price"),
+        range_high=snapshot.get("range_high_price"),
+    )
+    if year_range_criterion is not None:
+        buy_criteria.append(year_range_criterion)
+    trend_criterion = make_trend_criterion(
+        snapshot.get("ma_slope_pct"),
+        year_range,
+        NDX_BUY_TREND_MIN_MA_SLOPE_PCT,
+        NDX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+        NDX_BUY_TREND_MA_DAYS,
+        NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    )
+    if trend_criterion is not None:
+        buy_criteria.append(trend_criterion)
 
     score = sum(1 for c in buy_criteria if c["passed"])
     is_buy = (
         pe_ok
         and peg_fwd_ok
         and rate_ok
-        and price_position_ok(snapshot.get("pct_above_low"), NDX_BUY_MAX_ABOVE_LOW_PCT)
+        and price_position_ok(snapshot.get("pct_above_low"), max_above_low)
+        and drawdown_from_high_ok(snapshot.get("pct_below_high"), min_drawdown)
+        and year_range_ok(year_range, NDX_BUY_MAX_YEAR_RANGE_PCT)
+        and trend_filter_ok(
+            snapshot.get("ma_slope_pct"),
+            year_range,
+            NDX_BUY_TREND_MIN_MA_SLOPE_PCT,
+            NDX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+        )
     )
 
     if is_buy:
@@ -168,7 +261,10 @@ def format_ndx_section(snapshot, signal_eval):
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
         "drop_to_buy_line": format_drop_to_buy_line(
-            drop, is_buy=signal_eval.get("is_buy"), rise_breaks_pct=rise_breaks
+            drop,
+            is_buy=signal_eval.get("is_buy"),
+            rise_breaks_pct=rise_breaks,
+            close=snapshot.get("close"),
         ),
     }
     peg_fwd = signal_eval.get("peg_forward")
@@ -194,6 +290,7 @@ def format_ndx_section(snapshot, signal_eval):
         f"10Y美债 {us10y_text} | 利率分位 {pct_text(snapshot.get('us10y_percentile'))} | "
         f"股息率(QQQ代理) {div_text}"
     )
+    lines.append(format_price_position_line(snapshot, NDX_BUY_LOW_LOOKBACK_DAYS))
 
     append_signal_block(lines, signal_eval, "ndx")
     return {

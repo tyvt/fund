@@ -1,17 +1,46 @@
 """恒生科技指数估值信号与报告格式化（PE + PEG + 股息率分位，无 PB/PS 历史数据源）。"""
 
 from config import (
+    BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+    BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    BUY_RANGE_LOOKBACK_DAYS,
     HSTECH_BUY_DIV_PERCENTILE_MIN,
+    HSTECH_BUY_HIGH_LOOKBACK_DAYS,
     HSTECH_BUY_LOW_LOOKBACK_DAYS,
     HSTECH_BUY_MAX_ABOVE_LOW_PCT,
+    HSTECH_BUY_MAX_YEAR_RANGE_PCT,
+    HSTECH_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    HSTECH_BUY_MID_RANGE_POSITION_PCT,
+    HSTECH_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+    HSTECH_BUY_NEAR_YEAR_LOW_PE_RELAX,
+    HSTECH_BUY_NEAR_YEAR_LOW_PEG_RELAX,
+    HSTECH_BUY_NEAR_YEAR_LOW_DIV_RELAX,
+    HSTECH_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     HSTECH_BUY_PE_PERCENTILE_MAX,
     HSTECH_BUY_PEG_HIST_MAX,
+    HSTECH_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+    HSTECH_BUY_TREND_MA_DAYS,
+    HSTECH_BUY_TREND_MIN_MA_SLOPE_PCT,
+    HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     HSTECH_HISTORICAL_GROWTH,
     HSTECH_SELL_PE_PERCENTILE_MIN,
     HSTECH_SELL_PEG_HIST_MIN,
 )
 from drop_to_buy import format_drop_to_buy_line, hstech_drop_to_buy
-from price_position import make_price_position_criterion, price_position_ok
+from price_position import (
+    drawdown_from_high_ok,
+    effective_drawdown_threshold,
+    effective_max_above_low_pct,
+    format_price_position_line,
+    is_near_year_low,
+    make_drawdown_from_high_criterion,
+    make_price_position_criterion,
+    make_trend_criterion,
+    make_year_range_criterion,
+    price_position_ok,
+    trend_filter_ok,
+    year_range_ok,
+)
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -35,20 +64,42 @@ def evaluate_hstech_signal(snapshot):
     peg_historical = compute_peg(pe, HSTECH_HISTORICAL_GROWTH)
     pe_pct = snapshot.get("pe_percentile")
     div_pct = snapshot.get("dividend_percentile")
+    year_range = snapshot.get("year_range_position")
+    near_low = is_near_year_low(year_range, HSTECH_BUY_NEAR_YEAR_LOW_RANGE_PCT)
+    pe_max = HSTECH_BUY_PE_PERCENTILE_MAX
+    peg_max = HSTECH_BUY_PEG_HIST_MAX
+    div_min = HSTECH_BUY_DIV_PERCENTILE_MIN
+    if near_low:
+        pe_max = min(100.0, pe_max + HSTECH_BUY_NEAR_YEAR_LOW_PE_RELAX)
+        peg_max += HSTECH_BUY_NEAR_YEAR_LOW_PEG_RELAX
+        div_min = max(0.0, div_min - HSTECH_BUY_NEAR_YEAR_LOW_DIV_RELAX)
+    max_above_low = effective_max_above_low_pct(
+        HSTECH_BUY_MAX_ABOVE_LOW_PCT,
+        year_range,
+        HSTECH_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+        BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+        HSTECH_BUY_MID_RANGE_POSITION_PCT,
+        HSTECH_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
+    )
+    min_drawdown = effective_drawdown_threshold(
+        HSTECH_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+        year_range,
+        BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
+    )
 
-    pe_ok = pe_pct is not None and pe_pct <= HSTECH_BUY_PE_PERCENTILE_MAX
+    pe_ok = pe_pct is not None and pe_pct <= pe_max
     peg_hist_ok = (
-        peg_historical is not None and peg_historical <= HSTECH_BUY_PEG_HIST_MAX
+        peg_historical is not None and peg_historical <= peg_max
     )
     div_ok = (
-        div_pct is not None and div_pct >= HSTECH_BUY_DIV_PERCENTILE_MIN
+        div_pct is not None and div_pct >= div_min
     )
 
     buy_criteria = [
         make_criterion(
             "PE 分位",
             pe_ok,
-            f"{pct_text(pe_pct)}（需≤{HSTECH_BUY_PE_PERCENTILE_MAX:.0f}%）",
+            f"{pct_text(pe_pct)}（需≤{pe_max:.0f}%）",
             "市盈率处于历史中高位",
             applicable=pe_pct is not None,
         ),
@@ -56,7 +107,7 @@ def evaluate_hstech_signal(snapshot):
             "PEG(近5年增速)",
             peg_hist_ok,
             (
-                f"{peg_historical:.2f}（需≤{HSTECH_BUY_PEG_HIST_MAX:.1f}）"
+                f"{peg_historical:.2f}（需≤{peg_max:.1f}）"
                 if peg_historical is not None
                 else "—"
             ),
@@ -66,18 +117,49 @@ def evaluate_hstech_signal(snapshot):
         make_criterion(
             "股息率分位",
             div_ok,
-            f"{pct_text(div_pct)}（需≥{HSTECH_BUY_DIV_PERCENTILE_MIN:.0f}%）",
+            f"{pct_text(div_pct)}（需≥{div_min:.0f}%）",
             "股息率相对历史偏低，估值吸引力不足",
             applicable=div_pct is not None,
         ),
     ]
     price_criterion = make_price_position_criterion(
         snapshot.get("pct_above_low"),
-        HSTECH_BUY_MAX_ABOVE_LOW_PCT,
+        max_above_low,
         HSTECH_BUY_LOW_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        lookback_low=snapshot.get("lookback_low_price"),
     )
     if price_criterion is not None:
         buy_criteria.append(price_criterion)
+    drawdown_criterion = make_drawdown_from_high_criterion(
+        snapshot.get("pct_below_high"),
+        min_drawdown,
+        HSTECH_BUY_HIGH_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        lookback_high=snapshot.get("lookback_high_price"),
+    )
+    if drawdown_criterion is not None:
+        buy_criteria.append(drawdown_criterion)
+    year_range_criterion = make_year_range_criterion(
+        year_range,
+        HSTECH_BUY_MAX_YEAR_RANGE_PCT,
+        BUY_RANGE_LOOKBACK_DAYS,
+        close=snapshot.get("close"),
+        range_low=snapshot.get("range_low_price"),
+        range_high=snapshot.get("range_high_price"),
+    )
+    if year_range_criterion is not None:
+        buy_criteria.append(year_range_criterion)
+    trend_criterion = make_trend_criterion(
+        snapshot.get("ma_slope_pct"),
+        year_range,
+        HSTECH_BUY_TREND_MIN_MA_SLOPE_PCT,
+        HSTECH_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
+        HSTECH_BUY_TREND_MA_DAYS,
+        HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    )
+    if trend_criterion is not None:
+        buy_criteria.append(trend_criterion)
 
     criteria = [c for c in buy_criteria if c["applicable"]]
     score = sum(1 for c in criteria if c["passed"])
@@ -86,7 +168,15 @@ def evaluate_hstech_signal(snapshot):
         and peg_hist_ok
         and div_ok
         and price_position_ok(
-            snapshot.get("pct_above_low"), HSTECH_BUY_MAX_ABOVE_LOW_PCT
+            snapshot.get("pct_above_low"), max_above_low
+        )
+        and drawdown_from_high_ok(snapshot.get("pct_below_high"), min_drawdown)
+        and year_range_ok(year_range, HSTECH_BUY_MAX_YEAR_RANGE_PCT)
+        and trend_filter_ok(
+            snapshot.get("ma_slope_pct"),
+            year_range,
+            HSTECH_BUY_TREND_MIN_MA_SLOPE_PCT,
+            HSTECH_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
         )
     )
 
@@ -136,7 +226,10 @@ def format_hstech_section(snapshot, signal_eval):
         "drop_to_buy": drop,
         "rise_breaks_buy": rise_breaks,
         "drop_to_buy_line": format_drop_to_buy_line(
-            drop, is_buy=signal_eval.get("is_buy"), rise_breaks_pct=rise_breaks
+            drop,
+            is_buy=signal_eval.get("is_buy"),
+            rise_breaks_pct=rise_breaks,
+            close=snapshot.get("close"),
         ),
     }
     peg_hist = signal_eval.get("peg_historical")
@@ -151,6 +244,7 @@ def format_hstech_section(snapshot, signal_eval):
         ),
         f"PEG(5年) {peg_hist_text} | 近5年增速 {signal_eval['historical_growth']:.1%}",
     ]
+    lines.append(format_price_position_line(snapshot, HSTECH_BUY_LOW_LOOKBACK_DAYS))
     append_signal_block(lines, signal_eval, "hstech")
     return {
         "code": snapshot["code"],

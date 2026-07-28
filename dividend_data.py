@@ -5,6 +5,10 @@ from datetime import date
 import pandas as pd
 
 from config import (
+    BUY_RANGE_LOOKBACK_DAYS,
+    DIVIDEND_SPREAD_10Y_MIN_DAYS,
+    DIVIDEND_SPREAD_10Y_WINDOW,
+    DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN,
     DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
     DIVIDEND_SPREAD_PERCENTILE_WINDOW,
     DIVIDEND_SIGNAL_HISTORY_START,
@@ -17,7 +21,78 @@ from market_data import (
     read_indicator_history,
     resolve_bond_yield_for_date,
 )
-from price_position import attach_pct_above_low, price_position_ok
+from price_position import (
+    attach_pct_above_low,
+    attach_pct_below_high,
+    attach_year_range_position,
+    drawdown_from_high_ok,
+    effective_drawdown_threshold,
+    effective_max_above_low_pct,
+    is_near_year_low,
+    price_position_ok,
+    row_price_position_fields,
+    year_range_ok,
+)
+
+
+def spread_10y_window_stats(spread_series, idx):
+    """计算近10年（或可用样本）利差区间与分位。"""
+    if idx < DIVIDEND_SPREAD_10Y_MIN_DAYS:
+        return None, None, None, None
+    start = max(0, idx - DIVIDEND_SPREAD_10Y_WINDOW)
+    hist = spread_series.iloc[start:idx]
+    current = spread_series.iloc[idx]
+    if hist.empty or current is None or pd.isna(current):
+        return None, None, None, None
+    pct = compute_percentile(hist, current)
+    return (
+        float(hist.min()),
+        float(hist.max()),
+        pct,
+        int(len(hist)),
+    )
+
+
+def assess_spread_10y_level(spread_10y_pct, high_pct_min=None):
+    """判断近10年利差分位是否偏高。"""
+    if spread_10y_pct is None or pd.isna(spread_10y_pct):
+        return None, "样本不足"
+    threshold = high_pct_min if high_pct_min is not None else DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN
+    if spread_10y_pct >= threshold:
+        return False, "利差偏高"
+    return True, "未过高"
+
+
+def format_dividend_spread_10y_line(
+    spread,
+    spread_10y_pct,
+    spread_10y_min,
+    spread_10y_max,
+    sample_days,
+    high_pct_min=None,
+):
+    """报告用近10年利差区间与偏高判定行。"""
+    threshold = (
+        high_pct_min if high_pct_min is not None else DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN
+    )
+    if sample_days is None or sample_days < DIVIDEND_SPREAD_10Y_MIN_DAYS:
+        return "近10年利差: 历史样本不足"
+    years = sample_days / 252
+    period_label = "近10年" if years >= 9 else f"近{max(1, int(round(years)))}年"
+    range_text = "—"
+    if spread_10y_min is not None and spread_10y_max is not None:
+        range_text = f"{spread_10y_min:.2%}–{spread_10y_max:.2%}"
+    spread_text = f"{spread:.2%}" if spread is not None else "—"
+    pct_text = (
+        f"{spread_10y_pct:.1f}%"
+        if spread_10y_pct is not None and not pd.isna(spread_10y_pct)
+        else "—"
+    )
+    _, verdict = assess_spread_10y_level(spread_10y_pct, threshold)
+    return (
+        f"{period_label}利差 {range_text} | 当前 {spread_text} | "
+        f"{period_label}分位 {pct_text}（偏高线≥{threshold:.0f}%）| 判定: {verdict}"
+    )
 
 
 def get_index_data(index_code):
@@ -99,19 +174,29 @@ def build_signal_history(
     panel["spread"] = panel["dividend_yield"] - panel["bond_yield"]
 
     pe_pcts, spread_pcts = [], []
+    spread_10y_pcts, spread_10y_mins, spread_10y_maxs, spread_10y_samples = [], [], [], []
     for idx in range(len(panel)):
         if idx < DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS:
             pe_pcts.append(None)
             spread_pcts.append(None)
-            continue
-        start = max(0, idx - DIVIDEND_SPREAD_PERCENTILE_WINDOW)
-        pe_pcts.append(compute_percentile(panel["pe"].iloc[start:idx], panel["pe"].iloc[idx]))
-        spread_pcts.append(
-            compute_percentile(panel["spread"].iloc[start:idx], panel["spread"].iloc[idx])
-        )
+        else:
+            start = max(0, idx - DIVIDEND_SPREAD_PERCENTILE_WINDOW)
+            pe_pcts.append(compute_percentile(panel["pe"].iloc[start:idx], panel["pe"].iloc[idx]))
+            spread_pcts.append(
+                compute_percentile(panel["spread"].iloc[start:idx], panel["spread"].iloc[idx])
+            )
+        low, high, pct10, sample = spread_10y_window_stats(panel["spread"], idx)
+        spread_10y_mins.append(low)
+        spread_10y_maxs.append(high)
+        spread_10y_pcts.append(pct10)
+        spread_10y_samples.append(sample)
 
     panel["pe_percentile"] = pe_pcts
     panel["spread_percentile"] = spread_pcts
+    panel["spread_10y_min"] = spread_10y_mins
+    panel["spread_10y_max"] = spread_10y_maxs
+    panel["spread_10y_percentile"] = spread_10y_pcts
+    panel["spread_10y_sample_days"] = spread_10y_samples
     drop_cols = [c for c in ("date_dt", "official_pe", "official_div") if c in panel.columns]
     if drop_cols:
         panel = panel.drop(columns=drop_cols)
@@ -121,7 +206,49 @@ def build_signal_history(
         panel,
         lookback_days=cfg.get("buy_low_lookback_days", 60),
     )
+    panel = attach_pct_below_high(
+        panel,
+        lookback_days=cfg.get("buy_high_lookback_days", 252),
+    )
+    panel = attach_year_range_position(panel, lookback_days=BUY_RANGE_LOOKBACK_DAYS)
+    panel = attach_total_return_close(panel, index_code)
     return panel
+
+
+def attach_total_return_close(panel, index_code):
+    """合并全收益指数收盘价，用于回测收益率（分红再投资）。"""
+    from config import get_dividend_total_return_code
+
+    if panel is None or panel.empty:
+        return panel
+    tr_code = get_dividend_total_return_code(index_code)
+    if not tr_code:
+        panel = panel.copy()
+        panel["total_return_close"] = panel["close"]
+        return panel
+
+    start = panel["date"].min()
+    end = panel["date"].max()
+    if hasattr(start, "strftime"):
+        start_s = start.strftime("%Y%m%d")
+        end_s = end.strftime("%Y%m%d")
+    else:
+        start_s = str(start).replace("-", "")
+        end_s = str(end).replace("-", "")
+
+    tr_hist = get_index_perf_history(tr_code, start_s, end_s)
+    if tr_hist is None or tr_hist.empty:
+        panel = panel.copy()
+        panel["total_return_close"] = panel["close"]
+        return panel
+
+    tr = tr_hist[["date", "close"]].rename(columns={"close": "total_return_close"})
+    out = panel.copy()
+    out["date"] = pd.to_datetime(out["date"]).dt.date
+    tr["date"] = pd.to_datetime(tr["date"]).dt.date
+    out = out.merge(tr, on="date", how="left")
+    out["total_return_close"] = out["total_return_close"].fillna(out["close"])
+    return out
 
 
 def is_buy_signal(
@@ -130,18 +257,46 @@ def is_buy_signal(
     pe_percentile,
     index_code,
     pct_above_low=None,
+    pct_below_high=None,
+    year_range_position=None,
 ):
     """买入条件须全部满足（阈值按指数读取）。"""
     if spread is None or spread_percentile is None or pe_percentile is None:
         return False
     cfg = get_dividend_signal_config(index_code)
+    near_low = is_near_year_low(
+        year_range_position, cfg.get("buy_near_year_low_range_pct")
+    )
+    spread_pct_min = cfg["buy_spread_percentile_min"]
+    pe_pct_max = cfg["buy_pe_percentile_max"]
+    if near_low:
+        spread_pct_min = max(
+            0.0, spread_pct_min - cfg.get("buy_near_year_low_spread_relax", 0)
+        )
+        pe_pct_max = min(100.0, pe_pct_max + cfg.get("buy_near_year_low_pe_relax", 0))
+    min_drawdown = effective_drawdown_threshold(
+        cfg.get("buy_min_drawdown_from_high_pct"),
+        year_range_position,
+        cfg.get("buy_near_year_low_range_pct"),
+    )
+    max_above_low = effective_max_above_low_pct(
+        cfg.get("buy_max_above_low_pct"),
+        year_range_position,
+        cfg.get("buy_near_year_low_range_pct"),
+        cfg.get("buy_near_year_low_above_low_relax", 0),
+        cfg.get("buy_mid_range_position_pct"),
+        cfg.get("buy_mid_range_max_above_low_pct"),
+    )
     base = (
         spread > cfg["buy_spread_min"]
-        and spread_percentile >= cfg["buy_spread_percentile_min"]
-        and pe_percentile <= cfg["buy_pe_percentile_max"]
+        and spread_percentile >= spread_pct_min
+        and pe_percentile <= pe_pct_max
     )
-    max_above_low = cfg.get("buy_max_above_low_pct")
     if not price_position_ok(pct_above_low, max_above_low):
+        return False
+    if not drawdown_from_high_ok(pct_below_high, min_drawdown):
+        return False
+    if not year_range_ok(year_range_position, cfg.get("buy_max_year_range_pct")):
         return False
     return base
 
@@ -154,6 +309,8 @@ def is_buy_signal_row(row, index_code):
         row.get("pe_percentile"),
         index_code,
         pct_above_low=row.get("pct_above_low"),
+        pct_below_high=row.get("pct_below_high"),
+        year_range_position=row.get("year_range_position"),
     )
 
 
@@ -181,6 +338,11 @@ def evaluate_buy_signal(index_code, pe, dividend_yield, bond_yield, bond_history
     pe_percentile = latest["pe_percentile"]
     pct_above_low = latest.get("pct_above_low")
 
+    spread_10y_pct = latest.get("spread_10y_percentile")
+    spread_10y_min = latest.get("spread_10y_min")
+    spread_10y_max = latest.get("spread_10y_max")
+    spread_10y_sample = latest.get("spread_10y_sample_days")
+
     return {
         "pe": float(latest["pe"]),
         "dividend_yield": float(latest["dividend_yield"]),
@@ -188,11 +350,42 @@ def evaluate_buy_signal(index_code, pe, dividend_yield, bond_yield, bond_history
         "spread": spread,
         "spread_percentile": spread_percentile,
         "pe_percentile": pe_percentile,
+        "spread_10y_percentile": (
+            float(spread_10y_pct)
+            if spread_10y_pct is not None and not pd.isna(spread_10y_pct)
+            else None
+        ),
+        "spread_10y_min": (
+            float(spread_10y_min)
+            if spread_10y_min is not None and not pd.isna(spread_10y_min)
+            else None
+        ),
+        "spread_10y_max": (
+            float(spread_10y_max)
+            if spread_10y_max is not None and not pd.isna(spread_10y_max)
+            else None
+        ),
+        "spread_10y_sample_days": (
+            int(spread_10y_sample)
+            if spread_10y_sample is not None and not pd.isna(spread_10y_sample)
+            else None
+        ),
         "pct_above_low": (
             float(pct_above_low) if pct_above_low is not None and not pd.isna(pct_above_low) else None
         ),
+        "pct_below_high": (
+            float(latest["pct_below_high"])
+            if pd.notna(latest.get("pct_below_high"))
+            else None
+        ),
+        "year_range_position": (
+            float(latest["year_range_position"])
+            if pd.notna(latest.get("year_range_position"))
+            else None
+        ),
         "is_buy": is_buy_signal_row(latest, index_code),
         "panel": panel,
+        **row_price_position_fields(latest),
     }
 
 

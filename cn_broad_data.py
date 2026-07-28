@@ -6,8 +6,6 @@ import pandas as pd
 
 from config import (
     A500_INDEX,
-    CN_BROAD_PERCENTILE_MIN_DAYS,
-    CN_BROAD_PERCENTILE_WINDOW,
     get_cn_broad_signal_config,
     HS300_INDEX,
     KC50_INDEX,
@@ -21,7 +19,7 @@ from market_data import (
     read_indicator_history,
     resolve_bond_yield_for_date,
 )
-from price_position import attach_pct_above_low, attach_pct_below_high
+from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_below_high, attach_year_range_position, row_price_position_fields
 
 CN_BROAD_INDEX_BY_CODE = {
     A500_INDEX["code"]: A500_INDEX,
@@ -120,17 +118,14 @@ def build_cn_broad_valuation_history(
     return panel
 
 
-def attach_cn_broad_percentiles(
-    panel,
-    index_code,
-    window=CN_BROAD_PERCENTILE_WINDOW,
-    min_days=CN_BROAD_PERCENTILE_MIN_DAYS,
-):
+def attach_cn_broad_percentiles(panel, index_code, window=None, min_days=None):
     """为 PE、股息率、股债利差计算滚动历史分位。"""
     if panel is None or panel.empty:
         return None
 
     cfg = get_cn_broad_signal_config(index_code)
+    window = window if window is not None else cfg["percentile_window"]
+    min_days = min_days if min_days is not None else cfg["percentile_min_days"]
     lookback_days = cfg["buy_low_lookback_days"]
     high_lookback_days = cfg.get("buy_high_lookback_days", 252)
 
@@ -162,7 +157,15 @@ def attach_cn_broad_percentiles(
     out["dividend_percentile"] = div_pcts
     out["spread_percentile"] = spread_pcts
     out = attach_pct_above_low(out, lookback_days=lookback_days)
-    return attach_pct_below_high(out, lookback_days=high_lookback_days)
+    out = attach_pct_below_high(out, lookback_days=high_lookback_days)
+    out = attach_year_range_position(
+        out, lookback_days=cfg["buy_range_lookback_days"]
+    )
+    return attach_ma_trend(
+        out,
+        ma_days=cfg["buy_trend_ma_days"],
+        slope_lookback=cfg["buy_trend_slope_lookback_days"],
+    )
 
 
 def fetch_cn_broad_snapshot(index_code, bond_history=None):
@@ -182,6 +185,7 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
 
     panel = attach_cn_broad_percentiles(panel, index_code)
     latest_row = panel.iloc[-1]
+    cfg = get_cn_broad_signal_config(index_code)
     pe = float(latest_row["pe"])
     dividend_yield = float(latest_row["dividend_yield"])
     bond_yield = float(latest_row["bond_yield"])
@@ -208,8 +212,25 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
             if pd.notna(latest_row.get("pct_below_high"))
             else None
         ),
+        "year_range_position": (
+            float(latest_row["year_range_position"])
+            if pd.notna(latest_row.get("year_range_position"))
+            else None
+        ),
+        "ma_slope_pct": (
+            float(latest_row["ma_slope_pct"])
+            if pd.notna(latest_row.get("ma_slope_pct"))
+            else None
+        ),
+        "below_ma": (
+            bool(latest_row["below_ma"])
+            if pd.notna(latest_row.get("below_ma"))
+            else None
+        ),
+        "high_lookback_days": cfg.get("buy_high_lookback_days", 252),
         "pb": None,
         "pb_percentile": None,
         "history_days": int(panel["pe"].notna().sum()),
         "panel": panel,
+        **row_price_position_fields(latest_row),
     }

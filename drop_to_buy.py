@@ -1,26 +1,43 @@
 """估算指数价格再跌多少可触发买入（基于昨日估值面板推演，供盘中参考）。"""
 
 from config import (
-    CN_BROAD_PERCENTILE_MIN_DAYS,
-    CN_BROAD_PERCENTILE_WINDOW,
+    BUY_RANGE_LOOKBACK_DAYS,
+    CYB_BUY_HIGH_LOOKBACK_DAYS,
     CYB_BUY_LOW_LOOKBACK_DAYS,
+    CYB_BUY_TREND_MA_DAYS,
+    CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     CYB_PERCENTILE_MIN_DAYS,
     CYB_PERCENTILE_WINDOW,
+    HSTECH_BUY_HIGH_LOOKBACK_DAYS,
     HSTECH_BUY_LOW_LOOKBACK_DAYS,
+    HSTECH_BUY_TREND_MA_DAYS,
+    HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     HSTECH_PERCENTILE_MIN_DAYS,
     HSTECH_PERCENTILE_WINDOW,
     DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
     DIVIDEND_SPREAD_PERCENTILE_WINDOW,
+    NDX_BUY_HIGH_LOOKBACK_DAYS,
     NDX_BUY_LOW_LOOKBACK_DAYS,
+    NDX_BUY_TREND_MA_DAYS,
+    NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     NDX_DAILY_PERCENTILE_MIN_DAYS,
     NDX_DAILY_PERCENTILE_WINDOW,
+    SPX_BUY_HIGH_LOOKBACK_DAYS,
     SPX_BUY_LOW_LOOKBACK_DAYS,
+    SPX_BUY_TREND_MA_DAYS,
+    SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     SPX_DAILY_PERCENTILE_MIN_DAYS,
     SPX_DAILY_PERCENTILE_WINDOW,
     get_cn_broad_signal_config,
 )
 from market_data import compute_percentile
-from price_position import pct_above_low_for_simulated_close, pct_below_high_for_simulated_close
+from price_position import (
+    ma_slope_for_simulated_close,
+    pct_above_low_for_simulated_close,
+    pct_below_high_for_simulated_close,
+    range_position_for_simulated_close,
+    format_index_price,
+)
 
 
 def rolling_percentile(series, idx, value, window, min_days):
@@ -73,16 +90,31 @@ def find_min_rise_breaks_buy(is_buy_at_rise, max_rise=0.35, precision=0.002):
 
 
 def format_drop_to_buy_line(
-    drop_pct, is_buy=False, max_drop=0.35, rise_breaks_pct=None
+    drop_pct, is_buy=False, max_drop=0.35, rise_breaks_pct=None, close=None
 ):
-    """报告用单行文案。"""
+    """报告用单行文案（优先展示目标点位）。"""
     if is_buy or drop_pct == 0:
         line = "触发估算: 按昨日数据已满足买入条件"
-        if rise_breaks_pct is not None:
+        if rise_breaks_pct is not None and close is not None:
+            break_price = close * (1 + rise_breaks_pct)
+            line += f"；当日涨至 {format_index_price(break_price)} 将不再满足买入"
+        elif rise_breaks_pct is not None:
             line += f"；当日涨幅超 {rise_breaks_pct * 100:.1f}% 将不再满足买入"
         return line
     if drop_pct is None:
+        if close is not None:
+            floor_price = close * (1 - max_drop)
+            return (
+                f"触发估算: 跌至约 {format_index_price(floor_price)} 以内仍难达买入标准"
+                f"（当前 {format_index_price(close)}）"
+            )
         return f"触发估算: 再跌约 {max_drop * 100:.0f}% 以内仍难达买入标准"
+    if close is not None:
+        target = close * (1 - drop_pct)
+        return (
+            f"触发估算: 跌至约 {format_index_price(target)} 可达买入标准"
+            f"（当前 {format_index_price(close)}，估值推演，盘中参考）"
+        )
     return f"触发估算: 指数再跌约 {drop_pct * 100:.1f}% 可达买入标准（估值推演，盘中参考）"
 
 
@@ -112,7 +144,9 @@ def dividend_drop_to_buy(index_code, bond_history=None):
 
     cfg = get_dividend_signal_config(index_code)
     lookback = cfg.get("buy_low_lookback_days", 60)
+    high_lookback = cfg.get("buy_high_lookback_days", 252)
     max_above_low = cfg.get("buy_max_above_low_pct")
+    min_drawdown = cfg.get("buy_min_drawdown_from_high_pct")
 
     def check_factor(factor):
         if factor <= 0:
@@ -135,13 +169,24 @@ def dividend_drop_to_buy(index_code, bond_history=None):
             DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
         )
         pct_above_low = None
-        if max_above_low is not None:
+        pct_below_high = None
+        if max_above_low is not None or min_drawdown is not None:
             new_close = row["close"] * factor
-            pct_above_low = pct_above_low_for_simulated_close(
-                panel, idx, new_close, lookback
-            )
+            if max_above_low is not None:
+                pct_above_low = pct_above_low_for_simulated_close(
+                    panel, idx, new_close, lookback
+                )
+            if min_drawdown is not None:
+                pct_below_high = pct_below_high_for_simulated_close(
+                    panel, idx, new_close, high_lookback
+                )
         return is_buy_signal(
-            spread, spread_pct, pe_pct, index_code, pct_above_low=pct_above_low
+            spread,
+            spread_pct,
+            pe_pct,
+            index_code,
+            pct_above_low=pct_above_low,
+            pct_below_high=pct_below_high,
         )
 
     return _estimate_buy_trigger(check_factor)
@@ -191,6 +236,16 @@ def cn_broad_drop_to_buy(snapshot):
             if min_drawdown is not None
             else None
         )
+        year_range = range_position_for_simulated_close(
+            panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
+        )
+        ma_slope = ma_slope_for_simulated_close(
+            panel,
+            idx,
+            new_close,
+            cfg.get("buy_trend_ma_days"),
+            cfg.get("buy_trend_slope_lookback_days"),
+        )
         return evaluate_cn_broad_buy(
             {
                 "code": index_code,
@@ -200,6 +255,8 @@ def cn_broad_drop_to_buy(snapshot):
                 "spread_percentile": spread_pct,
                 "pct_above_low": pct_above_low,
                 "pct_below_high": pct_below_high,
+                "year_range_position": year_range,
+                "ma_slope_pct": ma_slope,
             }
         )["is_buy"]
 
@@ -237,6 +294,15 @@ def cyb_drop_to_buy(snapshot):
         pct_above_low = pct_above_low_for_simulated_close(
             panel, idx, new_close, CYB_BUY_LOW_LOOKBACK_DAYS
         )
+        pct_below_high = pct_below_high_for_simulated_close(
+            panel, idx, new_close, CYB_BUY_HIGH_LOOKBACK_DAYS
+        )
+        year_range = range_position_for_simulated_close(
+            panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
+        )
+        ma_slope = ma_slope_for_simulated_close(
+            panel, idx, new_close, CYB_BUY_TREND_MA_DAYS, CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS
+        )
         return evaluate_cyb_signal(
             {
                 "pe": pe,
@@ -244,6 +310,9 @@ def cyb_drop_to_buy(snapshot):
                 "pe_percentile": pe_pct,
                 "pb_percentile": pb_pct,
                 "pct_above_low": pct_above_low,
+                "pct_below_high": pct_below_high,
+                "year_range_position": year_range,
+                "ma_slope_pct": ma_slope,
             }
         )["is_buy"]
 
@@ -273,12 +342,24 @@ def hstech_drop_to_buy(snapshot):
         pct_above_low = pct_above_low_for_simulated_close(
             panel, idx, new_close, HSTECH_BUY_LOW_LOOKBACK_DAYS
         )
+        pct_below_high = pct_below_high_for_simulated_close(
+            panel, idx, new_close, HSTECH_BUY_HIGH_LOOKBACK_DAYS
+        )
+        year_range = range_position_for_simulated_close(
+            panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
+        )
+        ma_slope = ma_slope_for_simulated_close(
+            panel, idx, new_close, HSTECH_BUY_TREND_MA_DAYS, HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS
+        )
         return evaluate_hstech_signal(
             {
                 "pe": pe,
                 "pe_percentile": pe_pct,
                 "dividend_percentile": row.get("dividend_percentile"),
                 "pct_above_low": pct_above_low,
+                "pct_below_high": pct_below_high,
+                "year_range_position": year_range,
+                "ma_slope_pct": ma_slope,
             }
         )["is_buy"]
 
@@ -352,6 +433,15 @@ def ndx_drop_to_buy(snapshot):
             snap["pct_above_low"] = pct_above_low_for_simulated_close(
                 panel, idx, new_close, NDX_BUY_LOW_LOOKBACK_DAYS
             )
+            snap["pct_below_high"] = pct_below_high_for_simulated_close(
+                panel, idx, new_close, NDX_BUY_HIGH_LOOKBACK_DAYS
+            )
+            snap["year_range_position"] = range_position_for_simulated_close(
+                panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
+            )
+            snap["ma_slope_pct"] = ma_slope_for_simulated_close(
+                panel, idx, new_close, NDX_BUY_TREND_MA_DAYS, NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS
+            )
         return evaluate_ndx_signal(snap)["is_buy"]
 
     return _estimate_buy_trigger(check_factor)
@@ -423,6 +513,15 @@ def spx_drop_to_buy(snapshot):
             new_close = row["close"] * factor
             snap["pct_above_low"] = pct_above_low_for_simulated_close(
                 panel, idx, new_close, SPX_BUY_LOW_LOOKBACK_DAYS
+            )
+            snap["pct_below_high"] = pct_below_high_for_simulated_close(
+                panel, idx, new_close, SPX_BUY_HIGH_LOOKBACK_DAYS
+            )
+            snap["year_range_position"] = range_position_for_simulated_close(
+                panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
+            )
+            snap["ma_slope_pct"] = ma_slope_for_simulated_close(
+                panel, idx, new_close, SPX_BUY_TREND_MA_DAYS, SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS
             )
         return evaluate_spx_signal(snap)["is_buy"]
 

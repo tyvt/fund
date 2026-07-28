@@ -23,6 +23,17 @@ INDICES = [
     {"code": "H30269", "name": "中证红利低波动"},
 ]
 
+# 红利价格指数 → 中证全收益指数（分红再投资，同源 csindex-home/perf API）
+DIVIDEND_TOTAL_RETURN_INDEX = {
+    "930955": "H20955",
+    "H30269": "H20269",
+}
+
+
+def get_dividend_total_return_code(index_code):
+    """红利价格指数对应的全收益指数代码（含分红再投资）。"""
+    return DIVIDEND_TOTAL_RETURN_INDEX.get(index_code)
+
 A500_INDEX = {"code": "000510", "name": "中证A500"}
 A500_MARKET_DATA_START = "2024-09-03"  # 行情起点；与中证500（000905）为不同指数
 HS300_INDEX = {"code": "000300", "name": "沪深300"}
@@ -122,6 +133,43 @@ def _env_bool(name, default=True):
 
 _load_env_files()
 
+# --- 回测单次买入金额（元）---
+DIVIDEND_BUY_AMOUNT = _env_float("DIVIDEND_BUY_AMOUNT", 300)
+CN_BROAD_BUY_AMOUNT = _env_float("CN_BROAD_BUY_AMOUNT", 100)
+BACKTEST_OTHER_BUY_AMOUNT = _env_float("BACKTEST_OTHER_BUY_AMOUNT", 300)
+
+
+def resolve_backtest_amounts(unified_amount=None):
+    """回测买入金额：红利默认 300，宽基默认 100，其他 300；unified_amount 可统一覆盖。"""
+    if unified_amount is not None and unified_amount > 0:
+        return {
+            "dividend": unified_amount,
+            "cn_broad": unified_amount,
+            "other": unified_amount,
+            "unified": True,
+        }
+    return {
+        "dividend": DIVIDEND_BUY_AMOUNT,
+        "cn_broad": CN_BROAD_BUY_AMOUNT,
+        "other": BACKTEST_OTHER_BUY_AMOUNT,
+        "unified": False,
+    }
+
+
+def format_backtest_amount_note(amounts):
+    """Markdown/控制台用的买入金额说明。"""
+    if amounts is None:
+        return "仅统计次数"
+    if amounts.get("unified"):
+        return f"每次买入 **{amounts['dividend']:.0f}** 元"
+    parts = [
+        f"红利每次 **{amounts['dividend']:.0f}** 元",
+        f"宽基每次 **{amounts['cn_broad']:.0f}** 元",
+    ]
+    if amounts["other"] != amounts["cn_broad"]:
+        parts.append(f"其他每次 **{amounts['other']:.0f}** 元")
+    return "；".join(parts)
+
 # =============================================================================
 # 各指数买入 / 卖出信号阈值（可通过 push.env 覆盖）
 # =============================================================================
@@ -132,13 +180,13 @@ _load_env_files()
 # 两只指数价格走势接近，但 PE 中枢不同（低波100 约 8.5，低波动约 7.5），
 # 利差分位历史分布也不同，故使用分指数默认阈值；可用 DIVIDEND_{代码}_* 覆盖。
 DIVIDEND_BUY_SPREAD_MIN = _env_float_any(
-    ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.032
+    ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.034
 )
 DIVIDEND_BUY_SPREAD_PERCENTILE_MIN = _env_float_any(
-    ("DIVIDEND_BUY_SPREAD_PERCENTILE_MIN", "BUY_SPREAD_PERCENTILE_MIN"), 35
+    ("DIVIDEND_BUY_SPREAD_PERCENTILE_MIN", "BUY_SPREAD_PERCENTILE_MIN"), 38
 )
 DIVIDEND_BUY_PE_PERCENTILE_MAX = _env_float_any(
-    ("DIVIDEND_BUY_PE_PERCENTILE_MAX", "BUY_PE_PERCENTILE_MAX"), 75
+    ("DIVIDEND_BUY_PE_PERCENTILE_MAX", "BUY_PE_PERCENTILE_MAX"), 72
 )
 DIVIDEND_SPREAD_PERCENTILE_WINDOW = _env_int_any(
     ("DIVIDEND_SPREAD_PERCENTILE_WINDOW", "SPREAD_PERCENTILE_WINDOW"), 756
@@ -146,36 +194,104 @@ DIVIDEND_SPREAD_PERCENTILE_WINDOW = _env_int_any(
 DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS = _env_int_any(
     ("DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS", "SPREAD_PERCENTILE_MIN_DAYS"), 60
 )
+# 近 10 年（约 2520 交易日）利差分位，用于判断当前利差是否偏高
+DIVIDEND_SPREAD_10Y_WINDOW = _env_int("DIVIDEND_SPREAD_10Y_WINDOW", 2520)
+DIVIDEND_SPREAD_10Y_MIN_DAYS = _env_int("DIVIDEND_SPREAD_10Y_MIN_DAYS", 504)
+DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN = _env_float(
+    "DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN", 75
+)
 DIVIDEND_SIGNAL_HISTORY_START = _env_str(
-    "DIVIDEND_SIGNAL_HISTORY_START", "20180101"
+    "DIVIDEND_SIGNAL_HISTORY_START", "20150101"
+)
+# 滚动区间位置（默认近 252 交易日 ≈ 1 年）：0=窗口内最低、1=窗口内最高
+BUY_RANGE_LOOKBACK_DAYS = _env_int("BUY_RANGE_LOOKBACK_DAYS", 252)
+BUY_MAX_YEAR_RANGE_PCT = _env_float("BUY_MAX_YEAR_RANGE_PCT", 0.58)
+BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float("BUY_NEAR_YEAR_LOW_RANGE_PCT", 0.20)
+BUY_NEAR_YEAR_LOW_SPREAD_RELAX = _env_float("BUY_NEAR_YEAR_LOW_SPREAD_RELAX", 10)
+BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float("BUY_NEAR_YEAR_LOW_PE_RELAX", 12)
+BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX = _env_float("BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX", 0.04)
+BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT = _env_float(
+    "BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT", 0.12
+)
+BUY_MID_RANGE_POSITION_PCT = _env_float("BUY_MID_RANGE_POSITION_PCT", 0.45)
+BUY_MID_RANGE_MAX_ABOVE_LOW_PCT = _env_float("BUY_MID_RANGE_MAX_ABOVE_LOW_PCT", 0.06)
+# 均线趋势过滤：MA200 斜率（默认 60 日变化率）
+BUY_TREND_MA_DAYS = _env_int("BUY_TREND_MA_DAYS", 200)
+BUY_TREND_SLOPE_LOOKBACK_DAYS = _env_int("BUY_TREND_SLOPE_LOOKBACK_DAYS", 60)
+BUY_TREND_MIN_MA_SLOPE_PCT = _env_float("BUY_TREND_MIN_MA_SLOPE_PCT", -0.02)
+BUY_TREND_DOWNTREND_MAX_RANGE_PCT = _env_float(
+    "BUY_TREND_DOWNTREND_MAX_RANGE_PCT", 0.10
 )
 DIVIDEND_BUY_MAX_ABOVE_LOW_PCT = _env_float_any(
-    ("DIVIDEND_BUY_MAX_ABOVE_LOW_PCT",), 0.08
+    ("DIVIDEND_BUY_MAX_ABOVE_LOW_PCT",), 0.05
 )
 DIVIDEND_BUY_LOW_LOOKBACK_DAYS = _env_int_any(
-    ("DIVIDEND_BUY_LOW_LOOKBACK_DAYS",), 60
+    ("DIVIDEND_BUY_LOW_LOOKBACK_DAYS",), 90
+)
+DIVIDEND_BUY_HIGH_LOOKBACK_DAYS = _env_int_any(
+    ("DIVIDEND_BUY_HIGH_LOOKBACK_DAYS",), 252
+)
+DIVIDEND_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float_any(
+    ("DIVIDEND_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT",), 0.12
+)
+DIVIDEND_BUY_MAX_YEAR_RANGE_PCT = _env_float_any(
+    ("DIVIDEND_BUY_MAX_YEAR_RANGE_PCT",), 0.60
+)
+DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float_any(
+    ("DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT",), BUY_NEAR_YEAR_LOW_RANGE_PCT
+)
+DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_RELAX = _env_float_any(
+    ("DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_RELAX",), BUY_NEAR_YEAR_LOW_SPREAD_RELAX
+)
+DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float_any(
+    ("DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX",), BUY_NEAR_YEAR_LOW_PE_RELAX
 )
 
 _DIVIDEND_CFG_SUFFIX = {
     "buy_spread_min": "BUY_SPREAD_MIN",
     "buy_spread_percentile_min": "BUY_SPREAD_PERCENTILE_MIN",
     "buy_pe_percentile_max": "BUY_PE_PERCENTILE_MAX",
+    "buy_max_above_low_pct": "BUY_MAX_ABOVE_LOW_PCT",
+    "buy_low_lookback_days": "BUY_LOW_LOOKBACK_DAYS",
+    "buy_high_lookback_days": "BUY_HIGH_LOOKBACK_DAYS",
+    "buy_min_drawdown_from_high_pct": "BUY_MIN_DRAWDOWN_FROM_HIGH_PCT",
+    "buy_max_year_range_pct": "BUY_MAX_YEAR_RANGE_PCT",
+    "buy_near_year_low_range_pct": "BUY_NEAR_YEAR_LOW_RANGE_PCT",
+    "buy_near_year_low_spread_relax": "BUY_NEAR_YEAR_LOW_SPREAD_RELAX",
+    "buy_near_year_low_pe_relax": "BUY_NEAR_YEAR_LOW_PE_RELAX",
+    "buy_near_year_low_above_low_relax": "BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX",
+    "buy_mid_range_position_pct": "BUY_MID_RANGE_POSITION_PCT",
+    "buy_mid_range_max_above_low_pct": "BUY_MID_RANGE_MAX_ABOVE_LOW_PCT",
 }
 
 _DIVIDEND_GLOBAL_DEFAULTS = {
     "buy_spread_min": DIVIDEND_BUY_SPREAD_MIN,
     "buy_spread_percentile_min": DIVIDEND_BUY_SPREAD_PERCENTILE_MIN,
     "buy_pe_percentile_max": DIVIDEND_BUY_PE_PERCENTILE_MAX,
+    "buy_max_above_low_pct": DIVIDEND_BUY_MAX_ABOVE_LOW_PCT,
+    "buy_low_lookback_days": DIVIDEND_BUY_LOW_LOOKBACK_DAYS,
+    "buy_high_lookback_days": DIVIDEND_BUY_HIGH_LOOKBACK_DAYS,
+    "buy_min_drawdown_from_high_pct": DIVIDEND_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
+    "buy_max_year_range_pct": DIVIDEND_BUY_MAX_YEAR_RANGE_PCT,
+    "buy_near_year_low_range_pct": DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT,
+    "buy_near_year_low_spread_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_RELAX,
+    "buy_near_year_low_pe_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX,
+    "buy_near_year_low_above_low_relax": BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
+    "buy_mid_range_position_pct": BUY_MID_RANGE_POSITION_PCT,
+    "buy_mid_range_max_above_low_pct": BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
 }
 
 _DIVIDEND_PER_INDEX_DEFAULTS = {
     "930955": {
-        "buy_spread_percentile_min": 37,
-        "buy_pe_percentile_max": 75,
+        "buy_spread_percentile_min": 48,
+        "buy_pe_percentile_max": 65,
+        "buy_max_above_low_pct": 0.04,
+        "buy_max_year_range_pct": 0.55,
     },
     "H30269": {
-        "buy_spread_percentile_min": 48,
-        "buy_pe_percentile_max": 70,
+        "buy_spread_percentile_min": 56,
+        "buy_pe_percentile_max": 60,
+        "buy_max_year_range_pct": 0.55,
     },
 }
 
@@ -184,6 +300,7 @@ def get_dividend_signal_config(index_code):
     """读取单只红利指数的买入阈值（分指数默认 + 环境变量覆盖）。"""
     per_index = _DIVIDEND_PER_INDEX_DEFAULTS.get(index_code, {})
     cfg = {}
+    int_keys = {"buy_low_lookback_days", "buy_high_lookback_days"}
     for key, suffix in _DIVIDEND_CFG_SUFFIX.items():
         default = per_index.get(key, _DIVIDEND_GLOBAL_DEFAULTS[key])
         env_names = [f"DIVIDEND_{index_code}_{suffix}", f"DIVIDEND_{suffix}"]
@@ -193,29 +310,10 @@ def get_dividend_signal_config(index_code):
             env_names.append("BUY_SPREAD_PERCENTILE_MIN")
         elif key == "buy_pe_percentile_max":
             env_names.append("BUY_PE_PERCENTILE_MAX")
-        cfg[key] = _env_float_any(tuple(env_names), default)
-
-    max_above_default = per_index.get(
-        "buy_max_above_low_pct", DIVIDEND_BUY_MAX_ABOVE_LOW_PCT
-    )
-    cfg["buy_max_above_low_pct"] = _env_float_any(
-        (
-            f"DIVIDEND_{index_code}_BUY_MAX_ABOVE_LOW_PCT",
-            "DIVIDEND_BUY_MAX_ABOVE_LOW_PCT",
-        ),
-        max_above_default,
-    )
-
-    lookback_default = per_index.get(
-        "buy_low_lookback_days", DIVIDEND_BUY_LOW_LOOKBACK_DAYS
-    )
-    cfg["buy_low_lookback_days"] = _env_int_any(
-        (
-            f"DIVIDEND_{index_code}_BUY_LOW_LOOKBACK_DAYS",
-            "DIVIDEND_BUY_LOW_LOOKBACK_DAYS",
-        ),
-        lookback_default,
-    )
+        if key in int_keys:
+            cfg[key] = _env_int_any(tuple(env_names), default)
+        else:
+            cfg[key] = _env_float_any(tuple(env_names), default)
     return cfg
 
 
@@ -226,60 +324,9 @@ BUY_PE_PERCENTILE_MAX = DIVIDEND_BUY_PE_PERCENTILE_MAX
 SPREAD_PERCENTILE_WINDOW = DIVIDEND_SPREAD_PERCENTILE_WINDOW
 SPREAD_PERCENTILE_MIN_DAYS = DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS
 
-# --- A 股宽基（A500 / 沪深300 / 中证1000，逻辑相同、阈值分指数）---
-# 买入：股债利差分位达标 + PE 分位达标（股息率分位已取消）
-CN_BROAD_BUY_SPREAD_PERCENTILE_MIN = _env_float(
-    "CN_BROAD_BUY_SPREAD_PERCENTILE_MIN", 52
-)
-CN_BROAD_BUY_PE_PERCENTILE_MAX = _env_float("CN_BROAD_BUY_PE_PERCENTILE_MAX", 72)
-CN_BROAD_BUY_PB_PERCENTILE_MAX = _env_float("CN_BROAD_BUY_PB_PERCENTILE_MAX", 62)
-CN_BROAD_BUY_REQUIRE_SPREAD = _env_bool("CN_BROAD_BUY_REQUIRE_SPREAD", True)
-CN_BROAD_BUY_MIN_APPLICABLE_CRITERIA = _env_int(
-    "CN_BROAD_BUY_MIN_APPLICABLE_CRITERIA", 2
-)
-CN_BROAD_BUY_MIN_PASS_SCORE_FLOOR = _env_int(
-    "CN_BROAD_BUY_MIN_PASS_SCORE_FLOOR", 3
-)
-CN_BROAD_PERCENTILE_WINDOW = _env_int("CN_BROAD_PERCENTILE_WINDOW", 2520)
-CN_BROAD_PERCENTILE_MIN_DAYS = _env_int("CN_BROAD_PERCENTILE_MIN_DAYS", 120)
-CN_BROAD_BUY_MAX_ABOVE_LOW_PCT = _env_float("CN_BROAD_BUY_MAX_ABOVE_LOW_PCT", 0.06)
-CN_BROAD_BUY_LOW_LOOKBACK_DAYS = _env_int("CN_BROAD_BUY_LOW_LOOKBACK_DAYS", 60)
-CN_BROAD_BUY_HIGH_LOOKBACK_DAYS = _env_int("CN_BROAD_BUY_HIGH_LOOKBACK_DAYS", 252)
-CN_BROAD_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = None
-# 卖出：PE/PB 分位偏高、利差分位偏低或距近期低点涨幅过大（满足其一）
-CN_BROAD_SELL_SPREAD_PERCENTILE_MAX = _env_float(
-    "CN_BROAD_SELL_SPREAD_PERCENTILE_MAX", 25
-)
-CN_BROAD_SELL_PE_PERCENTILE_MIN = _env_float("CN_BROAD_SELL_PE_PERCENTILE_MIN", 85)
-CN_BROAD_SELL_PB_PERCENTILE_MIN = _env_float("CN_BROAD_SELL_PB_PERCENTILE_MIN", 99)
-CN_BROAD_SELL_MAX_ABOVE_LOW_PCT = _env_float("CN_BROAD_SELL_MAX_ABOVE_LOW_PCT", 0.20)
-
-# 兼容旧变量名（A500）
-A500_BUY_SPREAD_PERCENTILE_MIN = _env_float(
-    "A500_BUY_SPREAD_PERCENTILE_MIN", CN_BROAD_BUY_SPREAD_PERCENTILE_MIN
-)
-A500_BUY_PE_PERCENTILE_MAX = _env_float(
-    "A500_BUY_PE_PERCENTILE_MAX", CN_BROAD_BUY_PE_PERCENTILE_MAX
-)
-A500_BUY_PB_PERCENTILE_MAX = _env_float(
-    "A500_BUY_PB_PERCENTILE_MAX", CN_BROAD_BUY_PB_PERCENTILE_MAX
-)
-A500_BUY_REQUIRE_SPREAD = _env_bool("A500_BUY_REQUIRE_SPREAD", CN_BROAD_BUY_REQUIRE_SPREAD)
-A500_BUY_MIN_APPLICABLE_CRITERIA = _env_int(
-    "A500_BUY_MIN_APPLICABLE_CRITERIA", CN_BROAD_BUY_MIN_APPLICABLE_CRITERIA
-)
-A500_BUY_MIN_PASS_SCORE_FLOOR = _env_int(
-    "A500_BUY_MIN_PASS_SCORE_FLOOR", CN_BROAD_BUY_MIN_PASS_SCORE_FLOOR
-)
-A500_PERCENTILE_WINDOW = _env_int("A500_PERCENTILE_WINDOW", CN_BROAD_PERCENTILE_WINDOW)
-A500_PERCENTILE_MIN_DAYS = _env_int("A500_PERCENTILE_MIN_DAYS", CN_BROAD_PERCENTILE_MIN_DAYS)
-A500_BUY_MAX_ABOVE_LOW_PCT = _env_float(
-    "A500_BUY_MAX_ABOVE_LOW_PCT", CN_BROAD_BUY_MAX_ABOVE_LOW_PCT
-)
-A500_BUY_LOW_LOOKBACK_DAYS = _env_int(
-    "A500_BUY_LOW_LOOKBACK_DAYS", CN_BROAD_BUY_LOW_LOOKBACK_DAYS
-)
-
+# --- A 股宽基（五只指数各自完整阈值，不回退 CN_BROAD_* 全局默认）---
+# 买入：股债利差分位 + PE/PB 分位 + 价格位置（多数指标 favorable）；卖出见 cn_broad_signal。
+# 覆盖方式：CN_BROAD_{代码}_*；中证 A500 另兼容 A500_*。
 _CN_BROAD_CFG_SUFFIX = {
     "buy_spread_percentile_min": "BUY_SPREAD_PERCENTILE_MIN",
     "buy_pe_percentile_max": "BUY_PE_PERCENTILE_MAX",
@@ -293,133 +340,215 @@ _CN_BROAD_CFG_SUFFIX = {
     "buy_low_lookback_days": "BUY_LOW_LOOKBACK_DAYS",
     "buy_high_lookback_days": "BUY_HIGH_LOOKBACK_DAYS",
     "buy_min_drawdown_from_high_pct": "BUY_MIN_DRAWDOWN_FROM_HIGH_PCT",
+    "buy_max_year_range_pct": "BUY_MAX_YEAR_RANGE_PCT",
+    "buy_near_year_low_range_pct": "BUY_NEAR_YEAR_LOW_RANGE_PCT",
+    "buy_near_year_low_spread_relax": "BUY_NEAR_YEAR_LOW_SPREAD_RELAX",
+    "buy_near_year_low_pe_relax": "BUY_NEAR_YEAR_LOW_PE_RELAX",
+    "buy_near_year_low_above_low_relax": "BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX",
+    "buy_near_year_low_drawdown_waive_pct": "BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT",
+    "buy_mid_range_position_pct": "BUY_MID_RANGE_POSITION_PCT",
+    "buy_mid_range_max_above_low_pct": "BUY_MID_RANGE_MAX_ABOVE_LOW_PCT",
+    "buy_range_lookback_days": "BUY_RANGE_LOOKBACK_DAYS",
+    "buy_trend_ma_days": "BUY_TREND_MA_DAYS",
+    "buy_trend_slope_lookback_days": "BUY_TREND_SLOPE_LOOKBACK_DAYS",
+    "buy_trend_min_ma_slope_pct": "BUY_TREND_MIN_MA_SLOPE_PCT",
+    "buy_trend_downtrend_max_range_pct": "BUY_TREND_DOWNTREND_MAX_RANGE_PCT",
     "sell_spread_percentile_max": "SELL_SPREAD_PERCENTILE_MAX",
     "sell_pe_percentile_min": "SELL_PE_PERCENTILE_MIN",
     "sell_pb_percentile_min": "SELL_PB_PERCENTILE_MIN",
     "sell_max_above_low_pct": "SELL_MAX_ABOVE_LOW_PCT",
 }
 
-_CN_BROAD_GLOBAL_DEFAULTS = {
-    "buy_spread_percentile_min": CN_BROAD_BUY_SPREAD_PERCENTILE_MIN,
-    "buy_pe_percentile_max": CN_BROAD_BUY_PE_PERCENTILE_MAX,
-    "buy_pb_percentile_max": CN_BROAD_BUY_PB_PERCENTILE_MAX,
-    "buy_require_spread": CN_BROAD_BUY_REQUIRE_SPREAD,
-    "buy_min_applicable_criteria": CN_BROAD_BUY_MIN_APPLICABLE_CRITERIA,
-    "buy_min_pass_score_floor": CN_BROAD_BUY_MIN_PASS_SCORE_FLOOR,
-    "percentile_window": CN_BROAD_PERCENTILE_WINDOW,
-    "percentile_min_days": CN_BROAD_PERCENTILE_MIN_DAYS,
-    "buy_max_above_low_pct": CN_BROAD_BUY_MAX_ABOVE_LOW_PCT,
-    "buy_low_lookback_days": CN_BROAD_BUY_LOW_LOOKBACK_DAYS,
-    "buy_high_lookback_days": CN_BROAD_BUY_HIGH_LOOKBACK_DAYS,
-    "buy_min_drawdown_from_high_pct": CN_BROAD_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
-    "sell_spread_percentile_max": CN_BROAD_SELL_SPREAD_PERCENTILE_MAX,
-    "sell_pe_percentile_min": CN_BROAD_SELL_PE_PERCENTILE_MIN,
-    "sell_pb_percentile_min": CN_BROAD_SELL_PB_PERCENTILE_MIN,
-    "sell_max_above_low_pct": CN_BROAD_SELL_MAX_ABOVE_LOW_PCT,
+_CN_BROAD_INT_KEYS = {
+    "buy_min_applicable_criteria",
+    "buy_min_pass_score_floor",
+    "percentile_window",
+    "percentile_min_days",
+    "buy_low_lookback_days",
+    "buy_high_lookback_days",
+    "buy_range_lookback_days",
+    "buy_trend_ma_days",
+    "buy_trend_slope_lookback_days",
 }
 
-_CN_BROAD_PER_INDEX_DEFAULTS = {
-    # 卖点：PE 分位偏高且（利差收敛或短期涨幅过大），避免熊市反弹误卖
-    "000510": {
-        "buy_spread_percentile_min": 58,
-        "buy_pe_percentile_max": 70,
+
+def _cn_broad_index_defaults(**overrides):
+    """构造单只宽基指数的完整默认阈值（五只指数各自独立，仅用于初始化）。"""
+    cfg = {
+        "buy_spread_percentile_min": 55,
+        "buy_pe_percentile_max": 68,
+        "buy_pb_percentile_max": 66,
+        "buy_require_spread": True,
+        "buy_min_applicable_criteria": 2,
+        "buy_min_pass_score_floor": 3,
+        "percentile_window": 2520,
+        "percentile_min_days": 120,
         "buy_max_above_low_pct": 0.07,
-        "sell_spread_percentile_max": 20,
-        "sell_pe_percentile_min": 95,
-        "sell_max_above_low_pct": 0.22,
-    },
-    # 沪深300：2021 年 PE/利差已便宜但距 252 日高点仅回撤约 15%，需更深回撤再买
-    "000300": {
-        "buy_spread_percentile_min": 74,
-        "buy_pe_percentile_max": 58,
         "buy_low_lookback_days": 120,
-        "buy_max_above_low_pct": 0.03,
         "buy_high_lookback_days": 252,
-        "buy_min_drawdown_from_high_pct": 0.18,
-        "sell_spread_percentile_max": 25,
-        "sell_pe_percentile_min": 85,
-        "sell_max_above_low_pct": 0.18,
-    },
-    "000905": {
-        "buy_spread_percentile_min": 66,
-        "buy_pe_percentile_max": 65,
-        "buy_max_above_low_pct": 0.055,
-        "sell_spread_percentile_max": 22,
-        "sell_pe_percentile_min": 95,
-        "sell_max_above_low_pct": 0.24,
-    },
-    "000852": {
-        "buy_spread_percentile_min": 65,
-        "buy_pe_percentile_max": 67,
-        "buy_max_above_low_pct": 0.065,
-        "sell_spread_percentile_max": 25,
-        "sell_pe_percentile_min": 88,
-        "sell_max_above_low_pct": 0.22,
-    },
-    "000688": {
-        "buy_spread_percentile_min": 66,
-        "buy_pe_percentile_max": 62,
-        "buy_max_above_low_pct": 0.055,
-        "sell_spread_percentile_max": 22,
-        "sell_pe_percentile_min": 95,
-        "sell_max_above_low_pct": 0.25,
-    },
+        "buy_min_drawdown_from_high_pct": 0.14,
+        "buy_max_year_range_pct": 0.48,
+        "buy_near_year_low_range_pct": 0.20,
+        "buy_near_year_low_spread_relax": 10.0,
+        "buy_near_year_low_pe_relax": 12.0,
+        "buy_near_year_low_above_low_relax": 0.04,
+        "buy_near_year_low_drawdown_waive_pct": 0.12,
+        "buy_mid_range_position_pct": 0.45,
+        "buy_mid_range_max_above_low_pct": 0.06,
+        "buy_range_lookback_days": 252,
+        "buy_trend_ma_days": 200,
+        "buy_trend_slope_lookback_days": 60,
+        "buy_trend_min_ma_slope_pct": -0.02,
+        "buy_trend_downtrend_max_range_pct": 0.10,
+        "sell_spread_percentile_max": 25.0,
+        "sell_pe_percentile_min": 88.0,
+        "sell_pb_percentile_min": 99.0,
+        "sell_max_above_low_pct": 0.20,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+_CN_BROAD_PER_INDEX_DEFAULTS = {
+    # 中证 A500：2024-09 发布，样本短，阈值略宽
+    "000510": _cn_broad_index_defaults(
+        buy_spread_percentile_min=50,
+        buy_pe_percentile_max=72,
+        buy_pb_percentile_max=68,
+        buy_max_above_low_pct=0.10,
+        buy_low_lookback_days=90,
+        buy_min_drawdown_from_high_pct=None,
+        buy_max_year_range_pct=0.58,
+        buy_mid_range_max_above_low_pct=0.08,
+        sell_spread_percentile_max=22,
+        sell_pe_percentile_min=92,
+        sell_max_above_low_pct=0.22,
+    ),
+    "000300": _cn_broad_index_defaults(
+        buy_spread_percentile_min=58,
+        buy_pe_percentile_max=62,
+        buy_pb_percentile_max=66,
+        buy_max_above_low_pct=0.08,
+        buy_min_drawdown_from_high_pct=0.12,
+        buy_max_year_range_pct=0.45,
+        buy_mid_range_max_above_low_pct=0.06,
+        buy_trend_min_ma_slope_pct=-0.015,
+        buy_trend_downtrend_max_range_pct=0.08,
+        sell_spread_percentile_max=25,
+        sell_pe_percentile_min=85,
+        sell_max_above_low_pct=0.18,
+    ),
+    "000905": _cn_broad_index_defaults(
+        buy_spread_percentile_min=60,
+        buy_pe_percentile_max=64,
+        buy_pb_percentile_max=66,
+        buy_max_above_low_pct=0.08,
+        buy_min_drawdown_from_high_pct=0.10,
+        buy_max_year_range_pct=0.48,
+        buy_mid_range_max_above_low_pct=0.07,
+        sell_spread_percentile_max=22,
+        sell_pe_percentile_min=92,
+        sell_max_above_low_pct=0.24,
+    ),
+    "000852": _cn_broad_index_defaults(
+        buy_spread_percentile_min=60,
+        buy_pe_percentile_max=66,
+        buy_pb_percentile_max=68,
+        buy_max_above_low_pct=0.09,
+        buy_min_drawdown_from_high_pct=0.10,
+        buy_max_year_range_pct=0.46,
+        buy_mid_range_max_above_low_pct=0.07,
+        sell_spread_percentile_max=25,
+        sell_pe_percentile_min=88,
+        sell_max_above_low_pct=0.22,
+    ),
+    "000688": _cn_broad_index_defaults(
+        buy_spread_percentile_min=62,
+        buy_pe_percentile_max=55,
+        buy_pb_percentile_max=62,
+        buy_max_above_low_pct=0.08,
+        buy_min_drawdown_from_high_pct=0.12,
+        buy_max_year_range_pct=0.40,
+        buy_mid_range_max_above_low_pct=0.06,
+        buy_trend_downtrend_max_range_pct=0.08,
+        sell_spread_percentile_max=22,
+        sell_pe_percentile_min=92,
+        sell_max_above_low_pct=0.25,
+    ),
 }
 
 
 def get_cn_broad_signal_config(index_code):
-    """读取单只 A 股宽基指数的买入/卖出阈值（分指数默认 + 环境变量覆盖）。"""
-    per_index = _CN_BROAD_PER_INDEX_DEFAULTS.get(index_code, {})
+    """读取单只 A 股宽基指数的买入/卖出阈值（仅分指数默认 + 分指数环境变量）。"""
+    per_index = _CN_BROAD_PER_INDEX_DEFAULTS.get(index_code)
+    if per_index is None:
+        raise ValueError(f"未知宽基指数代码: {index_code}")
     cfg = {}
     for key, suffix in _CN_BROAD_CFG_SUFFIX.items():
-        default = per_index.get(key, _CN_BROAD_GLOBAL_DEFAULTS[key])
+        default = per_index[key]
+        env_names = [f"CN_BROAD_{index_code}_{suffix}"]
+        if index_code == "000510":
+            env_names.append(f"A500_{suffix}")
         if key == "buy_require_spread":
-            env_names = [
-                f"CN_BROAD_{index_code}_{suffix}",
-                f"CN_BROAD_{suffix}",
-                f"A500_{suffix}",
-            ]
-            raw = os.environ.get(env_names[0]) or os.environ.get(env_names[1])
-            if raw is None:
-                raw = os.environ.get(env_names[2])
+            raw = None
+            for name in env_names:
+                raw = os.environ.get(name)
+                if raw is not None and raw != "":
+                    break
             if raw is None or raw == "":
                 cfg[key] = default
             else:
                 cfg[key] = raw.strip().lower() in ENV_BOOL_TRUE
             continue
-        if key in ("buy_min_applicable_criteria", "buy_min_pass_score_floor"):
-            env_names = [
-                f"CN_BROAD_{index_code}_{suffix}",
-                f"CN_BROAD_{suffix}",
-                f"A500_{suffix}",
-            ]
+        if key in _CN_BROAD_INT_KEYS:
             cfg[key] = _env_int_any(tuple(env_names), default)
             continue
-        if key in ("percentile_window", "percentile_min_days", "buy_low_lookback_days", "buy_high_lookback_days"):
-            env_names = [
-                f"CN_BROAD_{index_code}_{suffix}",
-                f"CN_BROAD_{suffix}",
-                f"A500_{suffix}",
-            ]
-            cfg[key] = _env_int_any(tuple(env_names), default)
-            continue
-        env_names = [
-            f"CN_BROAD_{index_code}_{suffix}",
-            f"CN_BROAD_{suffix}",
-            f"A500_{suffix}",
-        ]
         cfg[key] = _env_float_any(tuple(env_names), default)
     return cfg
+
+
+# 兼容旧变量名（A500 / 指向 000510 默认）
+_a500_defaults = _CN_BROAD_PER_INDEX_DEFAULTS["000510"]
+A500_BUY_SPREAD_PERCENTILE_MIN = _env_float(
+    "A500_BUY_SPREAD_PERCENTILE_MIN", _a500_defaults["buy_spread_percentile_min"]
+)
+A500_BUY_PE_PERCENTILE_MAX = _env_float(
+    "A500_BUY_PE_PERCENTILE_MAX", _a500_defaults["buy_pe_percentile_max"]
+)
+A500_BUY_PB_PERCENTILE_MAX = _env_float(
+    "A500_BUY_PB_PERCENTILE_MAX", _a500_defaults["buy_pb_percentile_max"]
+)
+A500_BUY_REQUIRE_SPREAD = _env_bool(
+    "A500_BUY_REQUIRE_SPREAD", _a500_defaults["buy_require_spread"]
+)
+A500_BUY_MIN_APPLICABLE_CRITERIA = _env_int(
+    "A500_BUY_MIN_APPLICABLE_CRITERIA", _a500_defaults["buy_min_applicable_criteria"]
+)
+A500_BUY_MIN_PASS_SCORE_FLOOR = _env_int(
+    "A500_BUY_MIN_PASS_SCORE_FLOOR", _a500_defaults["buy_min_pass_score_floor"]
+)
+A500_PERCENTILE_WINDOW = _env_int(
+    "A500_PERCENTILE_WINDOW", _a500_defaults["percentile_window"]
+)
+A500_PERCENTILE_MIN_DAYS = _env_int(
+    "A500_PERCENTILE_MIN_DAYS", _a500_defaults["percentile_min_days"]
+)
+A500_BUY_MAX_ABOVE_LOW_PCT = _env_float(
+    "A500_BUY_MAX_ABOVE_LOW_PCT", _a500_defaults["buy_max_above_low_pct"]
+)
+A500_BUY_LOW_LOOKBACK_DAYS = _env_int(
+    "A500_BUY_LOW_LOOKBACK_DAYS", _a500_defaults["buy_low_lookback_days"]
+)
 
 # --- 创业板指（399006）---
 # 买入：加权 PE/PB 分位偏低 + PEG(近5年增速) ≤ 阈值（三项须同时满足）
 CYB_EXPECTED_GROWTH = _env_float("CYB_EXPECTED_GROWTH", 0.3906)
 CYB_HISTORICAL_GROWTH = _env_float("CYB_HISTORICAL_GROWTH", 0.1663)
 CYB_ROE_AVG = _env_float("CYB_ROE_AVG", 0.1229)
-CYB_BUY_PE_PERCENTILE_MAX = _env_float("CYB_BUY_PE_PERCENTILE_MAX", 65)
-CYB_BUY_PB_PERCENTILE_MAX = _env_float("CYB_BUY_PB_PERCENTILE_MAX", 48)
+CYB_BUY_PE_PERCENTILE_MAX = _env_float("CYB_BUY_PE_PERCENTILE_MAX", 50)
+CYB_BUY_PB_PERCENTILE_MAX = _env_float("CYB_BUY_PB_PERCENTILE_MAX", 38)
 CYB_BUY_PEG_EXPECTED_MAX = _env_float("CYB_BUY_PEG_EXPECTED_MAX", 1.1)
-CYB_BUY_PEG_HIST_MAX = _env_float("CYB_BUY_PEG_HIST_MAX", 2.6)
+CYB_BUY_PEG_HIST_MAX = _env_float("CYB_BUY_PEG_HIST_MAX", 2.3)
 CYB_SELL_PE_PERCENTILE_MIN = _env_float("CYB_SELL_PE_PERCENTILE_MIN", 78)
 CYB_SELL_PB_PERCENTILE_MIN = _env_float("CYB_SELL_PB_PERCENTILE_MIN", 78)
 CYB_SELL_PEG_HIST_MIN = _env_float("CYB_SELL_PEG_HIST_MIN", 3.0)
@@ -428,22 +557,82 @@ CYB_SELL_COMBO_PB_PERCENTILE_MIN = _env_float("CYB_SELL_COMBO_PB_PERCENTILE_MIN"
 CYB_PERCENTILE_WINDOW = _env_int("CYB_PERCENTILE_WINDOW", 2520)
 CYB_DIV_PERCENTILE_WINDOW = _env_int("CYB_DIV_PERCENTILE_WINDOW", 1260)
 CYB_PERCENTILE_MIN_DAYS = _env_int("CYB_PERCENTILE_MIN_DAYS", 120)
-CYB_BUY_MAX_ABOVE_LOW_PCT = _env_float("CYB_BUY_MAX_ABOVE_LOW_PCT", 0.06)
-CYB_BUY_LOW_LOOKBACK_DAYS = _env_int("CYB_BUY_LOW_LOOKBACK_DAYS", 60)
+CYB_BUY_MAX_ABOVE_LOW_PCT = _env_float("CYB_BUY_MAX_ABOVE_LOW_PCT", 0.08)
+CYB_BUY_LOW_LOOKBACK_DAYS = _env_int("CYB_BUY_LOW_LOOKBACK_DAYS", 90)
+CYB_BUY_HIGH_LOOKBACK_DAYS = _env_int("CYB_BUY_HIGH_LOOKBACK_DAYS", 252)
+CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
+    "CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.16
+)
+CYB_BUY_MAX_YEAR_RANGE_PCT = _env_float("CYB_BUY_MAX_YEAR_RANGE_PCT", 0.48)
+CYB_BUY_MID_RANGE_POSITION_PCT = _env_float(
+    "CYB_BUY_MID_RANGE_POSITION_PCT", 0.45
+)
+CYB_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT = _env_float(
+    "CYB_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT", 0.06
+)
+CYB_BUY_TREND_MA_DAYS = _env_int("CYB_BUY_TREND_MA_DAYS", BUY_TREND_MA_DAYS)
+CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS = _env_int(
+    "CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS", BUY_TREND_SLOPE_LOOKBACK_DAYS
+)
+CYB_BUY_TREND_MIN_MA_SLOPE_PCT = _env_float(
+    "CYB_BUY_TREND_MIN_MA_SLOPE_PCT", -0.015
+)
+CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT = _env_float(
+    "CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT", 0.08
+)
+CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float(
+    "CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT", BUY_NEAR_YEAR_LOW_RANGE_PCT
+)
+CYB_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
+    "CYB_BUY_NEAR_YEAR_LOW_PE_RELAX", BUY_NEAR_YEAR_LOW_PE_RELAX
+)
 
 # --- 恒生科技指数（HSTECH，2020-07 发布，历史约 5 年）---
 # 买入：PE 分位偏低 + PEG(近5年增速) ≤ 阈值 + 股息率分位偏高 + 价格位置（须同时满足；乐咕暂无 PB/PS 历史）
 HSTECH_HISTORICAL_GROWTH = _env_float("HSTECH_HISTORICAL_GROWTH", 0.15)
-HSTECH_BUY_PE_PERCENTILE_MAX = _env_float("HSTECH_BUY_PE_PERCENTILE_MAX", 55)
-HSTECH_BUY_PEG_HIST_MAX = _env_float("HSTECH_BUY_PEG_HIST_MAX", 2.2)
-HSTECH_BUY_DIV_PERCENTILE_MIN = _env_float("HSTECH_BUY_DIV_PERCENTILE_MIN", 40)
+HSTECH_BUY_PE_PERCENTILE_MAX = _env_float("HSTECH_BUY_PE_PERCENTILE_MAX", 38)
+HSTECH_BUY_PEG_HIST_MAX = _env_float("HSTECH_BUY_PEG_HIST_MAX", 1.6)
+HSTECH_BUY_DIV_PERCENTILE_MIN = _env_float("HSTECH_BUY_DIV_PERCENTILE_MIN", 50)
 HSTECH_SELL_PE_PERCENTILE_MIN = _env_float("HSTECH_SELL_PE_PERCENTILE_MIN", 78)
 HSTECH_SELL_PEG_HIST_MIN = _env_float("HSTECH_SELL_PEG_HIST_MIN", 3.0)
 HSTECH_PERCENTILE_WINDOW = _env_int("HSTECH_PERCENTILE_WINDOW", 1260)
 HSTECH_DIV_PERCENTILE_WINDOW = _env_int("HSTECH_DIV_PERCENTILE_WINDOW", 756)
 HSTECH_PERCENTILE_MIN_DAYS = _env_int("HSTECH_PERCENTILE_MIN_DAYS", 60)
-HSTECH_BUY_MAX_ABOVE_LOW_PCT = _env_float("HSTECH_BUY_MAX_ABOVE_LOW_PCT", 0.06)
-HSTECH_BUY_LOW_LOOKBACK_DAYS = _env_int("HSTECH_BUY_LOW_LOOKBACK_DAYS", 60)
+HSTECH_BUY_MAX_ABOVE_LOW_PCT = _env_float("HSTECH_BUY_MAX_ABOVE_LOW_PCT", 0.08)
+HSTECH_BUY_LOW_LOOKBACK_DAYS = _env_int("HSTECH_BUY_LOW_LOOKBACK_DAYS", 252)
+HSTECH_BUY_HIGH_LOOKBACK_DAYS = _env_int("HSTECH_BUY_HIGH_LOOKBACK_DAYS", 252)
+HSTECH_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
+    "HSTECH_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.28
+)
+HSTECH_BUY_MAX_YEAR_RANGE_PCT = _env_float("HSTECH_BUY_MAX_YEAR_RANGE_PCT", 0.42)
+HSTECH_BUY_MID_RANGE_POSITION_PCT = _env_float(
+    "HSTECH_BUY_MID_RANGE_POSITION_PCT", 0.45
+)
+HSTECH_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT = _env_float(
+    "HSTECH_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT", 0.06
+)
+HSTECH_BUY_TREND_MA_DAYS = _env_int("HSTECH_BUY_TREND_MA_DAYS", BUY_TREND_MA_DAYS)
+HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS = _env_int(
+    "HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS", BUY_TREND_SLOPE_LOOKBACK_DAYS
+)
+HSTECH_BUY_TREND_MIN_MA_SLOPE_PCT = _env_float(
+    "HSTECH_BUY_TREND_MIN_MA_SLOPE_PCT", -0.005
+)
+HSTECH_BUY_TREND_DOWNTREND_MAX_RANGE_PCT = _env_float(
+    "HSTECH_BUY_TREND_DOWNTREND_MAX_RANGE_PCT", 0.04
+)
+HSTECH_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float(
+    "HSTECH_BUY_NEAR_YEAR_LOW_RANGE_PCT", BUY_NEAR_YEAR_LOW_RANGE_PCT
+)
+HSTECH_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
+    "HSTECH_BUY_NEAR_YEAR_LOW_PE_RELAX", 0
+)
+HSTECH_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float(
+    "HSTECH_BUY_NEAR_YEAR_LOW_PEG_RELAX", 0
+)
+HSTECH_BUY_NEAR_YEAR_LOW_DIV_RELAX = _env_float(
+    "HSTECH_BUY_NEAR_YEAR_LOW_DIV_RELAX", 0
+)
 
 # --- 纳斯达克 100（NDX）---
 # 买入：Forward PE 分位偏低 + PEG(Forward) ≤ 阈值 + 10Y 利率分位不高（三项须同时满足）
@@ -457,22 +646,53 @@ NDX_FALLBACK_EXPECTED_GROWTH = _env_float("NDX_FALLBACK_EXPECTED_GROWTH", 0.19)
 NDX_HIGH_GROWTH_THRESHOLD = _env_float("NDX_HIGH_GROWTH_THRESHOLD", 0.20)
 NDX_HIGH_GROWTH_PEG_BONUS = _env_float("NDX_HIGH_GROWTH_PEG_BONUS", 0.2)
 NDX_BUY_TRAILING_PE_PERCENTILE_MAX = _env_float(
-    "NDX_BUY_TRAILING_PE_PERCENTILE_MAX", 72
+    "NDX_BUY_TRAILING_PE_PERCENTILE_MAX", 78
 )
 NDX_BUY_FORWARD_PE_PERCENTILE_MAX = _env_float(
     "NDX_BUY_FORWARD_PE_PERCENTILE_MAX", 75
 )
-NDX_BUY_PEG_FORWARD_MAX = _env_float("NDX_BUY_PEG_FORWARD_MAX", 1.35)
-NDX_BUY_PEG_HIST_MAX = _env_float("NDX_BUY_PEG_HIST_MAX", 1.6)
-NDX_BUY_RATE_PERCENTILE_MAX = _env_float("NDX_BUY_RATE_PERCENTILE_MAX", 92)
+NDX_BUY_PEG_FORWARD_MAX = _env_float("NDX_BUY_PEG_FORWARD_MAX", 1.45)
+NDX_BUY_PEG_HIST_MAX = _env_float("NDX_BUY_PEG_HIST_MAX", 1.5)
+NDX_BUY_RATE_PERCENTILE_MAX = _env_float("NDX_BUY_RATE_PERCENTILE_MAX", 99)
 NDX_HISTORY_YEARS = _env_int("NDX_HISTORY_YEARS", 10)
 NDX_PERCENTILE_WINDOW = _env_int("NDX_PERCENTILE_WINDOW", 120)
 NDX_PERCENTILE_MIN_DAYS = _env_int("NDX_PERCENTILE_MIN_DAYS", 24)
 NDX_DAILY_PERCENTILE_WINDOW = _env_int("NDX_DAILY_PERCENTILE_WINDOW", 2520)
 NDX_DAILY_PERCENTILE_MIN_DAYS = _env_int("NDX_DAILY_PERCENTILE_MIN_DAYS", 252)
 NDX_FRED_NETWORK_TIMEOUT = _env_int("NDX_FRED_NETWORK_TIMEOUT", 10)
-NDX_BUY_MAX_ABOVE_LOW_PCT = _env_float("NDX_BUY_MAX_ABOVE_LOW_PCT", 0.10)
-NDX_BUY_LOW_LOOKBACK_DAYS = _env_int("NDX_BUY_LOW_LOOKBACK_DAYS", 60)
+NDX_BUY_MAX_ABOVE_LOW_PCT = _env_float("NDX_BUY_MAX_ABOVE_LOW_PCT", 0.14)
+NDX_BUY_LOW_LOOKBACK_DAYS = _env_int("NDX_BUY_LOW_LOOKBACK_DAYS", 90)
+NDX_BUY_HIGH_LOOKBACK_DAYS = _env_int("NDX_BUY_HIGH_LOOKBACK_DAYS", 252)
+NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
+    "NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.10
+)
+NDX_BUY_MAX_YEAR_RANGE_PCT = _env_float("NDX_BUY_MAX_YEAR_RANGE_PCT", 0.45)
+NDX_BUY_MID_RANGE_POSITION_PCT = _env_float(
+    "NDX_BUY_MID_RANGE_POSITION_PCT", 0.45
+)
+NDX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT = _env_float(
+    "NDX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT", 0.10
+)
+NDX_BUY_TREND_MA_DAYS = _env_int("NDX_BUY_TREND_MA_DAYS", BUY_TREND_MA_DAYS)
+NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS = _env_int(
+    "NDX_BUY_TREND_SLOPE_LOOKBACK_DAYS", BUY_TREND_SLOPE_LOOKBACK_DAYS
+)
+NDX_BUY_TREND_MIN_MA_SLOPE_PCT = _env_float(
+    "NDX_BUY_TREND_MIN_MA_SLOPE_PCT", BUY_TREND_MIN_MA_SLOPE_PCT
+)
+NDX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT = _env_float(
+    "NDX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT", 0.12
+)
+NDX_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float(
+    "NDX_BUY_NEAR_YEAR_LOW_RANGE_PCT", BUY_NEAR_YEAR_LOW_RANGE_PCT
+)
+NDX_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
+    "NDX_BUY_NEAR_YEAR_LOW_PE_RELAX", BUY_NEAR_YEAR_LOW_PE_RELAX
+)
+NDX_BUY_NEAR_YEAR_LOW_RATE_RELAX = _env_float(
+    "NDX_BUY_NEAR_YEAR_LOW_RATE_RELAX", 12
+)
+NDX_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float("NDX_BUY_NEAR_YEAR_LOW_PEG_RELAX", 0.5)
 
 # --- 标普 500（SPX，逻辑参考纳斯达克 100）---
 SPX_FORWARD_PE_URL = _env_str(
@@ -485,22 +705,53 @@ SPX_FALLBACK_EXPECTED_GROWTH = _env_float("SPX_FALLBACK_EXPECTED_GROWTH", 0.10)
 SPX_HIGH_GROWTH_THRESHOLD = _env_float("SPX_HIGH_GROWTH_THRESHOLD", 0.15)
 SPX_HIGH_GROWTH_PEG_BONUS = _env_float("SPX_HIGH_GROWTH_PEG_BONUS", 0.15)
 SPX_BUY_TRAILING_PE_PERCENTILE_MAX = _env_float(
-    "SPX_BUY_TRAILING_PE_PERCENTILE_MAX", 72
+    "SPX_BUY_TRAILING_PE_PERCENTILE_MAX", 78
 )
 SPX_BUY_FORWARD_PE_PERCENTILE_MAX = _env_float(
-    "SPX_BUY_FORWARD_PE_PERCENTILE_MAX", 74
+    "SPX_BUY_FORWARD_PE_PERCENTILE_MAX", 78
 )
-SPX_BUY_PEG_FORWARD_MAX = _env_float("SPX_BUY_PEG_FORWARD_MAX", 1.25)
-SPX_BUY_PEG_HIST_MAX = _env_float("SPX_BUY_PEG_HIST_MAX", 1.5)
-SPX_BUY_RATE_PERCENTILE_MAX = _env_float("SPX_BUY_RATE_PERCENTILE_MAX", 92)
+SPX_BUY_PEG_FORWARD_MAX = _env_float("SPX_BUY_PEG_FORWARD_MAX", 1.35)
+SPX_BUY_PEG_HIST_MAX = _env_float("SPX_BUY_PEG_HIST_MAX", 1.45)
+SPX_BUY_RATE_PERCENTILE_MAX = _env_float("SPX_BUY_RATE_PERCENTILE_MAX", 99)
 SPX_HISTORY_YEARS = _env_int("SPX_HISTORY_YEARS", 10)
 SPX_PERCENTILE_WINDOW = _env_int("SPX_PERCENTILE_WINDOW", 120)
 SPX_PERCENTILE_MIN_DAYS = _env_int("SPX_PERCENTILE_MIN_DAYS", 24)
 SPX_DAILY_PERCENTILE_WINDOW = _env_int("SPX_DAILY_PERCENTILE_WINDOW", 2520)
 SPX_DAILY_PERCENTILE_MIN_DAYS = _env_int("SPX_DAILY_PERCENTILE_MIN_DAYS", 252)
 SPX_FRED_NETWORK_TIMEOUT = _env_int("SPX_FRED_NETWORK_TIMEOUT", 10)
-SPX_BUY_MAX_ABOVE_LOW_PCT = _env_float("SPX_BUY_MAX_ABOVE_LOW_PCT", 0.08)
-SPX_BUY_LOW_LOOKBACK_DAYS = _env_int("SPX_BUY_LOW_LOOKBACK_DAYS", 60)
+SPX_BUY_MAX_ABOVE_LOW_PCT = _env_float("SPX_BUY_MAX_ABOVE_LOW_PCT", 0.12)
+SPX_BUY_LOW_LOOKBACK_DAYS = _env_int("SPX_BUY_LOW_LOOKBACK_DAYS", 90)
+SPX_BUY_HIGH_LOOKBACK_DAYS = _env_int("SPX_BUY_HIGH_LOOKBACK_DAYS", 252)
+SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
+    "SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.08
+)
+SPX_BUY_MAX_YEAR_RANGE_PCT = _env_float("SPX_BUY_MAX_YEAR_RANGE_PCT", 0.48)
+SPX_BUY_MID_RANGE_POSITION_PCT = _env_float(
+    "SPX_BUY_MID_RANGE_POSITION_PCT", 0.45
+)
+SPX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT = _env_float(
+    "SPX_BUY_MID_RANGE_MAX_ABOVE_LOW_PCT", 0.10
+)
+SPX_BUY_TREND_MA_DAYS = _env_int("SPX_BUY_TREND_MA_DAYS", BUY_TREND_MA_DAYS)
+SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS = _env_int(
+    "SPX_BUY_TREND_SLOPE_LOOKBACK_DAYS", BUY_TREND_SLOPE_LOOKBACK_DAYS
+)
+SPX_BUY_TREND_MIN_MA_SLOPE_PCT = _env_float(
+    "SPX_BUY_TREND_MIN_MA_SLOPE_PCT", BUY_TREND_MIN_MA_SLOPE_PCT
+)
+SPX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT = _env_float(
+    "SPX_BUY_TREND_DOWNTREND_MAX_RANGE_PCT", 0.12
+)
+SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float(
+    "SPX_BUY_NEAR_YEAR_LOW_RANGE_PCT", BUY_NEAR_YEAR_LOW_RANGE_PCT
+)
+SPX_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
+    "SPX_BUY_NEAR_YEAR_LOW_PE_RELAX", BUY_NEAR_YEAR_LOW_PE_RELAX
+)
+SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX = _env_float(
+    "SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX", 12
+)
+SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float("SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX", 0.5)
 
 # --- 其他参考阈值（当前代码未用于主信号逻辑，保留可配置）---
 STRONG_BUY_SPREAD = _env_float("STRONG_BUY_SPREAD", 0.035)
@@ -509,8 +760,14 @@ SELL_SPREAD = _env_float("SELL_SPREAD", 0.01)
 STRONG_SELL_SPREAD = _env_float("STRONG_SELL_SPREAD", 0.005)
 PE_LOW_PERCENTILE = _env_float("PE_LOW_PERCENTILE", 30)
 PE_HIGH_PERCENTILE = _env_float("PE_HIGH_PERCENTILE", 70)
-# 无日度国债数据时按年回填（2024-09 起用接口真实数据）
+# 无日度国债数据时按年回填（2024-09 起用接口真实日度数据）
 BOND_YIELD_FALLBACK_BY_YEAR = {
+    2015: _env_float("BOND_YIELD_2015", 0.0335),
+    2016: _env_float("BOND_YIELD_2016", 0.0305),
+    2017: _env_float("BOND_YIELD_2017", 0.0358),
+    2018: _env_float("BOND_YIELD_2018", 0.0322),
+    2019: _env_float("BOND_YIELD_2019", 0.0318),
+    2020: _env_float("BOND_YIELD_2020", 0.0291),
     2021: _env_float("BOND_YIELD_2021", 0.030),
     2022: _env_float("BOND_YIELD_2022", 0.0295),
     2023: _env_float("BOND_YIELD_2023", 0.024),

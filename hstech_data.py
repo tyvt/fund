@@ -8,6 +8,10 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests as http
 
 from config import (
+    BUY_RANGE_LOOKBACK_DAYS,
+    BUY_TREND_MA_DAYS,
+    BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    HSTECH_BUY_HIGH_LOOKBACK_DAYS,
     HSTECH_BUY_LOW_LOOKBACK_DAYS,
     HSTECH_DIV_PERCENTILE_WINDOW,
     HSTECH_INDEX,
@@ -16,7 +20,13 @@ from config import (
 )
 from data_cache import get_or_fetch_dataframe
 from market_data import compute_percentile
-from price_position import attach_pct_above_low
+from price_position import (
+    attach_ma_trend,
+    attach_pct_above_low,
+    attach_pct_below_high,
+    attach_year_range_position,
+    row_price_position_fields,
+)
 HSTECH_CODE = HSTECH_INDEX["code"]
 HSTECH_NAME = HSTECH_INDEX["name"]
 HSTECH_TENCENT_SYMBOL = "hkHSTECH"
@@ -205,11 +215,32 @@ def fetch_hstech_snapshot(expected_growth=None):
         how="left",
     )
     panel = attach_pct_above_low(panel, lookback_days=HSTECH_BUY_LOW_LOOKBACK_DAYS)
+    panel = attach_pct_below_high(
+        panel, lookback_days=HSTECH_BUY_HIGH_LOOKBACK_DAYS
+    )
+    panel = attach_year_range_position(
+        panel, lookback_days=BUY_RANGE_LOOKBACK_DAYS, date_col="date_only"
+    )
+    panel = attach_ma_trend(
+        panel,
+        ma_days=BUY_TREND_MA_DAYS,
+        slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    )
     latest = panel.iloc[-1]
     volatility = compute_annualized_volatility(price_history)
     pct_above_low = (
         float(latest["pct_above_low"])
         if pd.notna(latest.get("pct_above_low"))
+        else None
+    )
+    pct_below_high = (
+        float(latest["pct_below_high"])
+        if pd.notna(latest.get("pct_below_high"))
+        else None
+    )
+    year_range_position = (
+        float(latest["year_range_position"])
+        if pd.notna(latest.get("year_range_position"))
         else None
     )
 
@@ -222,8 +253,17 @@ def fetch_hstech_snapshot(expected_growth=None):
         "pe_percentile": latest["pe_percentile"],
         "dividend_percentile": latest["dividend_percentile"],
         "pct_above_low": pct_above_low,
+        "pct_below_high": pct_below_high,
+        "year_range_position": year_range_position,
+        "ma_slope_pct": (
+            float(latest["ma_slope_pct"])
+            if pd.notna(latest.get("ma_slope_pct"))
+            else None
+        ),
         "volatility": volatility,
         "history_days": int(panel["pe"].notna().sum()),
         "panel": panel,
         "expected_growth": expected_growth,
+        "high_lookback_days": HSTECH_BUY_HIGH_LOOKBACK_DAYS,
+        **row_price_position_fields(latest),
     }

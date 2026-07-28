@@ -8,8 +8,12 @@ import pandas as pd
 import requests
 
 from config import (
+    BUY_RANGE_LOOKBACK_DAYS,
+    BUY_TREND_MA_DAYS,
+    BUY_TREND_SLOPE_LOOKBACK_DAYS,
     FRED_NASDAQ100_SERIES,
     HEADERS,
+    NDX_BUY_HIGH_LOOKBACK_DAYS,
     NDX_BUY_LOW_LOOKBACK_DAYS,
     NDX_DAILY_PERCENTILE_MIN_DAYS,
     NDX_DAILY_PERCENTILE_WINDOW,
@@ -30,7 +34,13 @@ from data_cache import (
     us_cache_path,
 )
 from market_data import compute_percentile
-from price_position import attach_pct_above_low
+from price_position import (
+    attach_ma_trend,
+    attach_pct_above_low,
+    attach_pct_below_high,
+    attach_year_range_position,
+    row_price_position_fields,
+)
 
 
 NDX_CODE = NDX_INDEX["code"]
@@ -411,6 +421,15 @@ def build_ndx_daily_valuation_panel():
     )
     daily = attach_daily_percentiles(daily)
     daily = attach_pct_above_low(daily, lookback_days=NDX_BUY_LOW_LOOKBACK_DAYS)
+    daily = attach_pct_below_high(
+        daily, lookback_days=NDX_BUY_HIGH_LOOKBACK_DAYS
+    )
+    daily = attach_year_range_position(daily, lookback_days=BUY_RANGE_LOOKBACK_DAYS)
+    daily = attach_ma_trend(
+        daily,
+        ma_days=BUY_TREND_MA_DAYS,
+        slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    )
     return daily, pe_payload
 
 
@@ -470,12 +489,29 @@ def fetch_ndx_snapshot(expected_growth=None):
             if pd.notna(latest.get("pct_above_low"))
             else None
         ),
+        "pct_below_high": (
+            float(latest["pct_below_high"])
+            if pd.notna(latest.get("pct_below_high"))
+            else None
+        ),
+        "year_range_position": (
+            float(latest["year_range_position"])
+            if pd.notna(latest.get("year_range_position"))
+            else None
+        ),
+        "ma_slope_pct": (
+            float(latest["ma_slope_pct"])
+            if pd.notna(latest.get("ma_slope_pct"))
+            else None
+        ),
         "history_years": NDX_HISTORY_YEARS,
         "history_days": int(daily["forward_pe"].notna().sum()),
         "trailing_history_days": int(len(trailing_history)),
         "daily_history_days": int(len(daily)),
         "panel": daily,
         "pe_source": pe_payload.get("source"),
+        "high_lookback_days": NDX_BUY_HIGH_LOOKBACK_DAYS,
+        **row_price_position_fields(latest),
     }
     snapshot["expected_growth"] = _resolve_ndx_expected_growth(snapshot)
     return snapshot

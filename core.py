@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """红利指数：信号生成与报告构建。"""
 
-from config import get_dividend_signal_config, select_indices
+from config import (
+    DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN,
+    get_dividend_signal_config,
+    select_indices,
+)
 from drop_to_buy import dividend_drop_to_buy, format_drop_to_buy_line
 from dividend_data import (
+    assess_spread_10y_level,
     build_signal_history,
     collect_index_results,
     evaluate_buy_signal,
+    format_dividend_spread_10y_line,
 )
 from market_data import get_gov_bond_yield, get_gov_bond_yield_history
 from price_position import make_price_position_criterion
@@ -25,6 +31,8 @@ def build_dividend_signal_eval(index_code, buy_eval, spread, spread_pct, pe_pct)
     cfg = get_dividend_signal_config(index_code)
     pct_above_low = buy_eval.get("pct_above_low")
     max_above_low = cfg.get("buy_max_above_low_pct")
+    spread_10y_pct = buy_eval.get("spread_10y_percentile")
+    spread_10y_ok, spread_10y_verdict = assess_spread_10y_level(spread_10y_pct)
     spread_pct_ok = (
         spread_pct is not None
         and spread_pct >= cfg["buy_spread_percentile_min"]
@@ -48,6 +56,17 @@ def build_dividend_signal_eval(index_code, buy_eval, spread, spread_pct, pe_pct)
             applicable=spread_pct is not None,
         ),
         make_criterion(
+            "近10年利差分位",
+            spread_10y_ok if spread_10y_ok is not None else True,
+            (
+                f"{pct_text(spread_10y_pct)}（偏高线≥{DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN:.0f}%）"
+                if spread_10y_pct is not None
+                else "—"
+            ),
+            "股债利差处于近10年偏高位置",
+            applicable=spread_10y_pct is not None,
+        ),
+        make_criterion(
             "PE 分位",
             pe_ok,
             f"{pct_text(pe_pct)}（需≤{cfg['buy_pe_percentile_max']:.0f}%）",
@@ -58,7 +77,11 @@ def build_dividend_signal_eval(index_code, buy_eval, spread, spread_pct, pe_pct)
     if max_above_low is not None:
         lookback = cfg.get("buy_low_lookback_days", 60)
         price_criterion = make_price_position_criterion(
-            pct_above_low, max_above_low, lookback
+            pct_above_low,
+            max_above_low,
+            lookback,
+            close=buy_eval.get("close"),
+            lookback_low=buy_eval.get("lookback_low_price"),
         )
         if price_criterion is not None:
             buy_criteria.append(price_criterion)
@@ -128,12 +151,22 @@ def build_index_section(
     signal_eval["drop_to_buy"] = drop
     signal_eval["rise_breaks_buy"] = rise_breaks
     signal_eval["drop_to_buy_line"] = format_drop_to_buy_line(
-        drop, is_buy=signal_eval.get("is_buy"), rise_breaks_pct=rise_breaks
+        drop,
+        is_buy=signal_eval.get("is_buy"),
+        rise_breaks_pct=rise_breaks,
+        close=buy_eval.get("close"),
     )
 
     lines = [
         f"{index_code} {index_name}",
         f"利差 {spread:.2%} | 利差分位 {pct_text(spread_pct)} | 股息率 {dividend_yield:.2%}",
+        format_dividend_spread_10y_line(
+            spread,
+            buy_eval.get("spread_10y_percentile"),
+            buy_eval.get("spread_10y_min"),
+            buy_eval.get("spread_10y_max"),
+            buy_eval.get("spread_10y_sample_days"),
+        ),
         f"PE {pe:.2f} | PE分位 {pct_text(pe_pct)}",
     ]
     append_signal_block(lines, signal_eval, "dividend")
@@ -152,7 +185,8 @@ def format_report_header(index_results, bond_yield, bond_date, bond_history):
     return format_module_header(
         "红利指数",
         f"{index_date} | 国债 {bond_text}",
-        "买入: 利差>阈值且利差分位高、PE分位低（各指数阈值见判定行）；展示值与判定均来自估值面板",
+        "买入: 利差>阈值且利差分位高、PE分位低（各指数阈值见判定行）；"
+        "近10年利差分位≥偏高线视为利差偏高；展示值与判定均来自估值面板",
     )
 
 
