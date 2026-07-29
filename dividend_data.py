@@ -15,11 +15,11 @@ from config import (
     get_dividend_signal_config,
 )
 from market_data import (
+    attach_bond_yield,
     compute_percentile,
     get_gov_bond_yield_history,
     get_index_perf_history,
     read_indicator_history,
-    resolve_bond_yield_for_date,
 )
 from price_position import (
     attach_pct_above_low,
@@ -33,6 +33,7 @@ from price_position import (
     row_price_position_fields,
     year_range_ok,
 )
+from signal_format import panel_history_meta
 
 
 def spread_10y_window_stats(spread_series, idx):
@@ -120,7 +121,9 @@ def build_signal_history(
     股息率优先用官方值，缺失时用官方校准系数 / PE 估算。
     """
     if start_date is None:
-        start_date = DIVIDEND_SIGNAL_HISTORY_START
+        from index_meta import get_index_base_date
+
+        start_date = get_index_base_date(index_code) or DIVIDEND_SIGNAL_HISTORY_START
     if end_date is None:
         end_date = date.today().strftime("%Y%m%d")
     if bond_history is None:
@@ -134,10 +137,7 @@ def build_signal_history(
         return None
 
     panel = perf.sort_values("date").reset_index(drop=True)
-    panel["bond_yield"] = panel["date"].apply(
-        lambda d: resolve_bond_yield_for_date(d, bond_history)
-    )
-    panel = panel.dropna(subset=["bond_yield"])
+    panel = attach_bond_yield(panel, bond_history)
 
     panel["date_dt"] = pd.to_datetime(panel["date"])
     if indicator is not None and not indicator.empty:
@@ -333,6 +333,7 @@ def evaluate_buy_signal(index_code, pe, dividend_yield, bond_yield, bond_history
         }
 
     latest = panel.iloc[-1]
+    history_meta = panel_history_meta(panel)
     spread = latest["spread"]
     spread_percentile = latest["spread_percentile"]
     pe_percentile = latest["pe_percentile"]
@@ -385,15 +386,18 @@ def evaluate_buy_signal(index_code, pe, dividend_yield, bond_yield, bond_history
         ),
         "is_buy": is_buy_signal_row(latest, index_code),
         "panel": panel,
+        **history_meta,
         **row_price_position_fields(latest),
     }
 
 
 def collect_index_results(indices, bond_history, bond_yield):
     """拉取指定指数列表的行情。"""
+    from signal_format import log_fetch_start
+
     index_results = []
     for index in indices:
-        print(f"正在获取 {index['code']} {index['name']} ...")
+        log_fetch_start(index["name"], index["code"])
         pe, dividend_yield, index_date = get_index_data(index["code"])
         index_results.append(
             {

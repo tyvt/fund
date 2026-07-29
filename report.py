@@ -5,6 +5,7 @@ import sys
 
 from config import CN_BROAD_INDICES, CYB_EXPECTED_GROWTH, US_INDEX_KEYS
 from market_data import configure_stdout_utf8, get_gov_bond_yield_history
+from signal_format import join_index_sections, log_fetch_done, log_fetch_start
 
 MODULE_DIVIDEND = "dividend"
 MODULE_CN_BROAD = "cn_broad"
@@ -37,10 +38,19 @@ def print_report(report):
     print("----------------")
 
 
+def _log_snapshot_ready(snapshot):
+    log_fetch_done(
+        snapshot.get("name", "—"),
+        code=snapshot.get("code"),
+        data_date=snapshot.get("data_date") or snapshot.get("date"),
+        history_start=snapshot.get("history_start"),
+        history_days=snapshot.get("history_days"),
+    )
+
+
 def generate_dividend_report(index_codes=None):
     from core import generate_report
 
-    print("正在获取红利指数数据，请稍候...")
     return generate_report(index_codes)
 
 
@@ -52,9 +62,10 @@ def generate_cn_broad_report(index_meta):
         format_cn_broad_section,
     )
 
-    print(f"正在获取{index_meta['name']}数据，请稍候...")
+    log_fetch_start(index_meta["name"], index_meta["code"])
     bond_history = get_gov_bond_yield_history()
     snapshot = fetch_cn_broad_snapshot(index_meta["code"], bond_history)
+    _log_snapshot_ready(snapshot)
     buy_eval = evaluate_cn_broad_buy(snapshot)
     module = CN_BROAD_MODULE_BY_CODE.get(index_meta["code"], "cn_broad")
     section = format_cn_broad_section(snapshot, buy_eval, module=module)
@@ -64,15 +75,11 @@ def generate_cn_broad_report(index_meta):
 
 
 def generate_cn_broad_reports():
-    report_parts = []
     sections = []
     for index_meta in CN_BROAD_INDICES:
-        report, section = generate_cn_broad_report(index_meta)
-        if report_parts:
-            report_parts.append("")
-        report_parts.append(report)
+        _, section = generate_cn_broad_report(index_meta)
         sections.append(section)
-    return "\n".join(report_parts), sections
+    return join_index_sections(sections), sections
 
 
 def generate_cyb_report(expected_growth=None):
@@ -81,8 +88,9 @@ def generate_cyb_report(expected_growth=None):
 
     if expected_growth is None:
         expected_growth = CYB_EXPECTED_GROWTH
-    print("正在获取创业板指数据，请稍候...")
+    log_fetch_start("创业板指", "399006")
     snapshot = fetch_cyb_snapshot(expected_growth=expected_growth)
+    _log_snapshot_ready(snapshot)
     signal_eval = evaluate_cyb_signal(snapshot)
     section = format_cyb_section(snapshot, signal_eval)
     return format_cyb_report(snapshot, section)
@@ -96,8 +104,9 @@ def generate_hstech_report(expected_growth=None):
         format_hstech_section,
     )
 
-    print("正在获取恒生科技指数数据，请稍候...")
+    log_fetch_start("恒生科技指数", "HSTECH")
     snapshot = fetch_hstech_snapshot(expected_growth=expected_growth)
+    _log_snapshot_ready(snapshot)
     signal_eval = evaluate_hstech_signal(snapshot)
     section = format_hstech_section(snapshot, signal_eval)
     return format_hstech_report(snapshot, section)
@@ -107,24 +116,22 @@ def generate_us_index_report(key, expected_growth=None):
     from us_index_data import fetch_snapshot
     from us_index_signal import evaluate_signal, format_report, format_section
 
-    index_name = {"ndx": "纳斯达克 100", "spx": "标普 500"}[key]
-    print(f"正在获取{index_name}数据，请稍候...")
+    index_name = {"ndx": "纳斯达克100", "spx": "标普500"}[key]
+    code = {"ndx": "NDX", "spx": "SPX"}[key]
+    log_fetch_start(index_name, code)
     snapshot = fetch_snapshot(key, expected_growth=expected_growth)
+    _log_snapshot_ready(snapshot)
     signal_eval = evaluate_signal(key, snapshot)
     section = format_section(key, snapshot, signal_eval)
     return format_report(key, snapshot, section)
 
 
 def generate_us_reports(expected_growth=None):
-    report_parts = []
     sections = []
     for key in US_INDEX_KEYS:
-        report, section = generate_us_index_report(key, expected_growth=expected_growth)
-        if report_parts:
-            report_parts.append("")
-        report_parts.append(report)
+        _, section = generate_us_index_report(key, expected_growth=expected_growth)
         sections.append(section)
-    return "\n".join(report_parts), sections
+    return join_index_sections(sections), sections
 
 
 def _resolve_modules(modules):
@@ -144,8 +151,7 @@ def generate_reports(
 ):
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
     resolved = _resolve_modules(modules)
-    report_parts = []
-    sections = []
+    all_sections = []
 
     generators = {
         MODULE_DIVIDEND: lambda: generate_dividend_report(index_codes),
@@ -156,16 +162,13 @@ def generate_reports(
     }
 
     for module in resolved:
-        report, module_sections = generators[module]()
-        if report_parts:
-            report_parts.append("")
-        report_parts.append(report)
+        _, module_sections = generators[module]()
         if isinstance(module_sections, list):
-            sections.extend(module_sections)
+            all_sections.extend(module_sections)
         else:
-            sections.append(module_sections)
+            all_sections.append(module_sections)
 
-    return "\n".join(report_parts), sections
+    return join_index_sections(all_sections), all_sections
 
 
 def main(argv=None):

@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -34,6 +35,7 @@ from config import (
     get_backtest_buy_amount,
     resolve_backtest_amounts,
 )
+from index_meta import get_index_base_date
 from buy_amount_config import resolve_simulate_amount
 from cyb_data import attach_percentiles as attach_cyb_percentiles
 from cyb_data import build_cyb_valuation_panel, fetch_cyb_price_history
@@ -73,18 +75,20 @@ class BacktestPanels:
 
     def dividend_panel(self, index_code):
         if index_code not in self._dividend:
+            start = get_index_base_date(index_code) or DIVIDEND_SIGNAL_HISTORY_START
             self._dividend[index_code] = build_signal_history(
                 index_code,
-                start_date=DIVIDEND_SIGNAL_HISTORY_START,
+                start_date=start,
                 bond_history=self.bond_history,
             )
         return self._dividend[index_code]
 
     def cn_broad_panel(self, index_code):
         if index_code not in self._cn_broad:
+            start = get_index_base_date(index_code) or "20150101"
             panel = build_cn_broad_valuation_history(
                 index_code,
-                start_date="20150101",
+                start_date=start,
                 bond_history=self.bond_history,
             )
             self._cn_broad[index_code] = attach_cn_broad_percentiles(
@@ -159,29 +163,74 @@ _PANELS = None
 BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 
 
+@dataclass(frozen=True)
+class BacktestRange:
+    """回测时间区间。"""
+
+    start: str
+    end: str | None
+    label: str
+
+    @property
+    def start_ts(self):
+        return pd.Timestamp(self.start)
+
+    @property
+    def end_ts(self):
+        return pd.Timestamp(self.end) if self.end else None
+
+
+def resolve_backtest_ranges(years=None, start=None, end=None, from_inception=False):
+    """解析 CLI 年份或起止日期为回测区间列表。"""
+    if from_inception:
+        label = f"inception_{end or 'present'}"
+        return [BacktestRange(start="1990-01-01", end=end, label=label)]
+    if start:
+        label = f"{start}_{end or 'present'}"
+        return [BacktestRange(start=start, end=end, label=label)]
+    year_list = years or [2025]
+    return [
+        BacktestRange(
+            start=f"{year}-01-01",
+            end=f"{year}-12-31",
+            label=str(year),
+        )
+        for year in year_list
+    ]
+
+
 def get_panels():
     global _PANELS
     if _PANELS is None:
         _PANELS = BacktestPanels()
     return _PANELS
-def _year_mask(series, year):
-    dates = pd.to_datetime(series)
-    return (dates.dt.year == year).values
 
 
-def _year_price_stats(panel, year, buy_fn, date_col="date", price_col="close"):
-    """统计某年指数收盘价最高/最低，及买入信号日的均价（等额投入加权）。"""
-    if panel is None or panel.empty or price_col not in panel.columns:
-        return None
-
-    work = panel.copy()
+def _attach_dt(work, date_col="date"):
+    work = work.copy()
     if date_col == "date_only":
         work["_dt"] = pd.to_datetime(work["date_only"])
     else:
         work["_dt"] = pd.to_datetime(work[date_col])
+    return work
 
-    sample = work.dropna(subset=[price_col])
-    sample = sample[sample["_dt"].dt.year == year]
+
+def _filter_by_range(work, date_range: BacktestRange, date_col="date"):
+    work = _attach_dt(work, date_col)
+    mask = work["_dt"] >= date_range.start_ts
+    if date_range.end_ts is not None:
+        mask &= work["_dt"] <= date_range.end_ts
+    return work.loc[mask]
+
+
+def _range_price_stats(
+    panel, date_range, buy_fn, date_col="date", price_col="close"
+):
+    """统计区间内指数收盘价最高/最低，及买入信号日的均价。"""
+    if panel is None or panel.empty or price_col not in panel.columns:
+        return None
+
+    sample = _filter_by_range(panel, date_range, date_col).dropna(subset=[price_col])
     if sample.empty:
         return None
 
@@ -204,25 +253,26 @@ def _year_price_stats(panel, year, buy_fn, date_col="date", price_col="close"):
 
 
 def _simulate_dca_returns(
-    panel, year, buy_fn, amount=300.0, date_col="date", price_col="close",
+    panel,
+    date_range,
+    buy_fn,
+    amount=300.0,
+    date_col="date",
+    price_col="close",
     valuation_price_col=None,
 ):
     """每个买入日投入固定金额，按最新收盘价估算持仓市值与收益率。"""
     val_col = valuation_price_col or price_col
-    price_stats = _year_price_stats(panel, year, buy_fn, date_col, price_col)
+    price_stats = _range_price_stats(
+        panel, date_range, buy_fn, date_col, price_col
+    )
     if price_stats is None:
         return None
 
     if panel is None or panel.empty or price_col not in panel.columns:
         return None
 
-    work = panel.copy()
-    if date_col == "date_only":
-        work["_dt"] = pd.to_datetime(work["date_only"])
-    else:
-        work["_dt"] = pd.to_datetime(work[date_col])
-
-    priced = work.dropna(subset=[price_col, val_col])
+    priced = _attach_dt(panel, date_col).dropna(subset=[price_col, val_col])
     if priced.empty:
         return None
 
@@ -230,7 +280,7 @@ def _simulate_dca_returns(
     latest_price = float(latest[val_col])
     latest_date = latest["_dt"]
 
-    sample = priced[priced["_dt"].dt.year == year]
+    sample = _filter_by_range(priced, date_range, date_col)
     if sample.empty:
         return None
 
@@ -283,20 +333,17 @@ def _simulate_dca_returns(
     }
 
 
-def _count_buy_days(panel, year, buy_fn, date_col="date", price_col="close"):
-    """统计某年买入信号天数及有效样本天数。"""
-    price_stats = _year_price_stats(panel, year, buy_fn, date_col, price_col)
+def _count_buy_days(
+    panel, date_range, buy_fn, date_col="date", price_col="close"
+):
+    """统计区间内买入信号天数及有效样本天数。"""
+    price_stats = _range_price_stats(
+        panel, date_range, buy_fn, date_col, price_col
+    )
     if price_stats is None:
         return None
 
-    work = panel.copy()
-    if date_col == "date_only":
-        work["_dt"] = pd.to_datetime(work["date_only"])
-    else:
-        work["_dt"] = pd.to_datetime(work[date_col])
-
-    mask = work["_dt"].dt.year == year
-    sample = work.loc[mask]
+    sample = _filter_by_range(panel, date_range, date_col)
     if sample.empty:
         return None
 
@@ -350,7 +397,9 @@ def _us_buy_snapshot(key, row, historical_growth=None):
     return is_us_index_buy(key, snapshot)
 
 
-def _index_simulate_amount(code, amounts, panel, year, buy_fn, date_col="date"):
+def _index_simulate_amount(
+    code, amounts, panel, date_range, buy_fn, date_col="date"
+):
     """解析单指数回测金额（固定或分档）。"""
     if amounts is None:
         return None
@@ -363,31 +412,40 @@ def _index_simulate_amount(code, amounts, panel, year, buy_fn, date_col="date"):
             base,
             amounts,
             panel,
-            f"{year}-01-01",
-            f"{year}-12-31",
+            date_range.start,
+            date_range.end,
             buy_fn,
             date_col,
         )
     return base
 
 
-def backtest_dividend(year, bond_history=None, amount=None, amounts=None, panels=None):
+def backtest_dividend(
+    date_range, bond_history=None, amount=None, amounts=None, panels=None
+):
     panels = panels or get_panels()
     rows = []
     for item in INDICES:
         panel = panels.dividend_panel(item["code"])
         code = item["code"]
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)  # noqa: E731
-        sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+        sim_amt = (
+            _index_simulate_amount(code, amounts, panel, date_range, buy_fn)
+            if amounts
+            else amount
+        )
         if amounts and sim_amt == 0:
             continue
         if sim_amt is not None:
             result = _simulate_dca_returns(
-                panel, year, buy_fn, amount=sim_amt,
+                panel,
+                date_range,
+                buy_fn,
+                amount=sim_amt,
                 valuation_price_col="total_return_close",
             )
         else:
-            result = _count_buy_days(panel, year, buy_fn)
+            result = _count_buy_days(panel, date_range, buy_fn)
         if result:
             rows.append({"code": code, "name": item["name"], **result})
     return rows
@@ -422,18 +480,26 @@ def _cn_broad_no_data_row(index_meta, amount=None):
     return row
 
 
-def backtest_cn_broad(year, index_meta, amount=None, amounts=None, panels=None):
+def backtest_cn_broad(
+    date_range, index_meta, amount=None, amounts=None, panels=None
+):
     panels = panels or get_panels()
     code = index_meta["code"]
     panel = panels.cn_broad_panel(code)
     buy_fn = lambda r, c=code: _cn_broad_buy_snapshot(r, c)  # noqa: E731
-    sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+    sim_amt = (
+        _index_simulate_amount(code, amounts, panel, date_range, buy_fn)
+        if amounts
+        else amount
+    )
     if amounts and sim_amt == 0:
         return []
     if sim_amt is not None:
-        result = _simulate_dca_returns(panel, year, buy_fn, amount=sim_amt)
+        result = _simulate_dca_returns(
+            panel, date_range, buy_fn, amount=sim_amt
+        )
     else:
-        result = _count_buy_days(panel, year, buy_fn)
+        result = _count_buy_days(panel, date_range, buy_fn)
     if not result:
         return [{"code": code, "name": index_meta["name"], **_cn_broad_no_data_row(index_meta, amount)}]
     return [{"code": code, "name": index_meta["name"], **result}]
@@ -446,21 +512,29 @@ US_INDEX_NOTES = {
 }
 
 
-def backtest_us_index(year, key, amount=None, amounts=None, panels=None):
+def backtest_us_index(
+    date_range, key, amount=None, amounts=None, panels=None
+):
     panels = panels or get_panels()
     daily, historical_growth = panels.us_index_panel(key)
     meta = US_INDEX_META[key]
     code = meta["code"]
     buy_fn = lambda r, k=key, g=historical_growth: _us_buy_snapshot(k, r, g)  # noqa: E731
-    sim_amt = _index_simulate_amount(code, amounts, daily, year, buy_fn) if amounts else amount
+    sim_amt = (
+        _index_simulate_amount(code, amounts, daily, date_range, buy_fn)
+        if amounts
+        else amount
+    )
     if amounts and sim_amt == 0:
         return []
     if sim_amt is not None:
         result = _simulate_dca_returns(
-            daily, year, buy_fn, amount=sim_amt, date_col="date"
+            daily, date_range, buy_fn, amount=sim_amt, date_col="date"
         )
     else:
-        result = _count_buy_days(daily, year, buy_fn, date_col="date")
+        result = _count_buy_days(
+            daily, date_range, buy_fn, date_col="date"
+        )
     if not result:
         return []
     result["note"] = US_INDEX_NOTES[key]
@@ -468,7 +542,7 @@ def backtest_us_index(year, key, amount=None, amounts=None, panels=None):
     return [{"code": meta["code"], "name": meta["name"], **result}]
 
 
-def backtest_cyb(year, amount=None, amounts=None, panels=None):
+def backtest_cyb(date_range, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     panel = panels.cyb_panel()
     code = CYB_INDEX["code"]
@@ -484,23 +558,27 @@ def backtest_cyb(year, amount=None, amounts=None, panels=None):
             "ma_slope_pct": r.get("ma_slope_pct"),
         }
     )["is_buy"]
-    sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+    sim_amt = (
+        _index_simulate_amount(code, amounts, panel, date_range, buy_fn)
+        if amounts
+        else amount
+    )
     if amounts and sim_amt == 0:
         return []
     if sim_amt is not None:
         result = _simulate_dca_returns(
-            panel, year, buy_fn, amount=sim_amt, date_col="date"
+            panel, date_range, buy_fn, amount=sim_amt, date_col="date"
         )
     else:
         result = _count_buy_days(
-            panel, year, buy_fn, date_col="date"
+            panel, date_range, buy_fn, date_col="date"
         )
     if not result:
         return []
     return [{"code": CYB_INDEX["code"], "name": CYB_INDEX["name"], **result}]
 
 
-def backtest_hstech(year, amount=None, amounts=None, panels=None):
+def backtest_hstech(date_range, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     panel = panels.hstech_panel()
     code = HSTECH_INDEX["code"]
@@ -515,34 +593,39 @@ def backtest_hstech(year, amount=None, amounts=None, panels=None):
             "ma_slope_pct": r.get("ma_slope_pct"),
         }
     )["is_buy"]
-    sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+    sim_amt = (
+        _index_simulate_amount(code, amounts, panel, date_range, buy_fn)
+        if amounts
+        else amount
+    )
     if amounts and sim_amt == 0:
         return []
     if sim_amt is not None:
         result = _simulate_dca_returns(
-            panel, year, buy_fn, amount=sim_amt, date_col="date"
+            panel, date_range, buy_fn, amount=sim_amt, date_col="date"
         )
     else:
         result = _count_buy_days(
-            panel, year, buy_fn, date_col="date"
+            panel, date_range, buy_fn, date_col="date"
         )
     if not result:
         return []
     return [{"code": HSTECH_INDEX["code"], "name": HSTECH_INDEX["name"], **result}]
 
 
-def _collect_buy_dates(panel, year, buy_fn, date_col="date"):
+def _collect_buy_dates(panel, date_range, buy_fn, date_col="date"):
     if panel is None or panel.empty:
         return []
-    work = panel.copy()
-    if date_col == "date_only":
-        work["_dt"] = pd.to_datetime(work["date_only"])
-    else:
-        work["_dt"] = pd.to_datetime(work[date_col])
     days = []
-    for _, row in work[work["_dt"].dt.year == year].iterrows():
+    for _, row in _filter_by_range(panel, date_range, date_col).iterrows():
         if buy_fn(row):
-            days.append(pd.Timestamp(row[date_col] if date_col != "date_only" else row["date_only"]).strftime("%Y-%m-%d"))
+            days.append(
+                pd.Timestamp(
+                    row[date_col]
+                    if date_col != "date_only"
+                    else row["date_only"]
+                ).strftime("%Y-%m-%d")
+            )
     return days
 
 
@@ -635,20 +718,24 @@ def _resolve_date_value(row, date_col):
     return row[date_col]
 
 
-def build_daily_table(
-    panel, year, buy_fn, date_col="date", price_col="close"
+def build_daily_table_range(
+    panel,
+    start_date,
+    end_date=None,
+    buy_fn=None,
+    date_col="date",
+    price_col="close",
 ):
-    """构建某年逐交易日表：日期、收盘价、是否买入。"""
+    """构建区间内逐交易日表：日期、收盘价、是否买入。"""
     if panel is None or panel.empty:
         return pd.DataFrame(columns=["date", "close", "buy"])
 
-    work = panel.copy()
-    if date_col == "date_only":
-        work["_dt"] = pd.to_datetime(work["date_only"])
-    else:
-        work["_dt"] = pd.to_datetime(work[date_col])
-
-    sample = work[work["_dt"].dt.year == year].sort_values("_dt")
+    date_range = BacktestRange(
+        start=start_date,
+        end=end_date,
+        label=f"{start_date}_{end_date or 'present'}",
+    )
+    sample = _filter_by_range(panel, date_range, date_col).sort_values("_dt")
     if sample.empty:
         return pd.DataFrame(columns=["date", "close", "buy"])
 
@@ -660,14 +747,30 @@ def build_daily_table(
             {
                 "date": pd.Timestamp(raw_date).strftime("%Y-%m-%d"),
                 "close": float(close_val) if pd.notna(close_val) else None,
-                "buy": "买入" if buy_fn(row) else "",
+                "buy": "买入" if buy_fn and buy_fn(row) else "",
             }
         )
     return pd.DataFrame(rows)
 
 
-def collect_daily_tables(year, panels=None, index_codes=None):
-    """收集各指数全年逐交易日表。"""
+def build_daily_table(
+    panel, year, buy_fn, date_col="date", price_col="close"
+):
+    """构建某年逐交易日表（兼容旧接口）。"""
+    return build_daily_table_range(
+        panel,
+        f"{year}-01-01",
+        f"{year}-12-31",
+        buy_fn,
+        date_col=date_col,
+        price_col=price_col,
+    )
+
+
+def collect_daily_tables(
+    date_range, panels=None, index_codes=None
+):
+    """收集各指数区间内逐交易日表。"""
     panels = panels or get_panels()
     codes = {c.upper() for c in index_codes} if index_codes else None
     tables = []
@@ -675,9 +778,10 @@ def collect_daily_tables(year, panels=None, index_codes=None):
     for cfg in _iter_backtest_configs(panels):
         if codes and cfg["code"].upper() not in codes:
             continue
-        table = build_daily_table(
+        table = build_daily_table_range(
             cfg["panel"],
-            year,
+            date_range.start,
+            date_range.end,
             cfg["buy_fn"],
             date_col=cfg["date_col"],
             price_col=cfg["price_col"],
@@ -705,12 +809,13 @@ def _format_calendar_cell(close, is_buy):
 
 
 def _format_index_calendar_markdown(table):
-    """按月×日网格输出收盘价（纵轴月份，横轴日期）。"""
+    """按月×日网格输出收盘价（纵轴月份，横轴日期）；跨年数据按年分表。"""
     if table is None or table.empty:
         return []
 
     work = table.copy()
     work["_dt"] = pd.to_datetime(work["date"])
+    work["year"] = work["_dt"].dt.year
     work["month"] = work["_dt"].dt.month
     work["day"] = work["_dt"].dt.day
     work["is_buy"] = work["buy"] == "买入"
@@ -718,25 +823,35 @@ def _format_index_calendar_markdown(table):
     days = list(range(1, 32))
     header = "| 月 | " + " | ".join(str(d) for d in days) + " |"
     sep = "| --- | " + " | ".join(["---:"] * len(days)) + " |"
-    lines = [header, sep]
+    years = sorted(work["year"].unique())
+    lines = []
 
-    for month in range(1, 13):
-        month_data = work[work["month"] == month]
-        if month_data.empty:
-            continue
-        by_day = {
-            int(row["day"]): row for _, row in month_data.iterrows()
-        }
-        cells = [f"{month}月"]
-        for day in days:
-            if day in by_day:
-                row = by_day[day]
-                cells.append(
-                    _format_calendar_cell(row["close"], row["is_buy"])
-                )
-            else:
-                cells.append("—")
-        lines.append("| " + " | ".join(cells) + " |")
+    for year in years:
+        year_data = work[work["year"] == year]
+        if len(years) > 1:
+            if lines:
+                lines.append("")
+            lines.append(f"#### {year} 年")
+            lines.append("")
+        lines.extend([header, sep])
+
+        for month in range(1, 13):
+            month_data = year_data[year_data["month"] == month]
+            if month_data.empty:
+                continue
+            by_day = {
+                int(row["day"]): row for _, row in month_data.iterrows()
+            }
+            cells = [f"{month}月"]
+            for day in days:
+                if day in by_day:
+                    row = by_day[day]
+                    cells.append(
+                        _format_calendar_cell(row["close"], row["is_buy"])
+                    )
+                else:
+                    cells.append("—")
+            lines.append("| " + " | ".join(cells) + " |")
 
     lines.append("")
     lines.append("说明：格内为收盘价；**★** 表示买入信号日；非交易日显示 —。")
@@ -763,27 +878,33 @@ def _format_daily_tables_markdown(daily_tables):
     return lines
 
 
-def print_daily_table(year, index_code, panels=None):
-    """在控制台打印指定指数全年逐交易日表。"""
+def print_daily_table(date_range, index_code, panels=None):
+    """在控制台打印指定指数区间内逐交易日表。"""
     panels = panels or get_panels()
     code_key = index_code.upper()
+    end_label = date_range.end or "最新"
     for cfg in _iter_backtest_configs(panels):
         if cfg["code"].upper() != code_key:
             continue
-        table = build_daily_table(
+        table = build_daily_table_range(
             cfg["panel"],
-            year,
+            date_range.start,
+            date_range.end,
             cfg["buy_fn"],
             date_col=cfg["date_col"],
             price_col=cfg["price_col"],
         )
         if table.empty:
-            print(f"{cfg['name']} ({cfg['code']}) 在 {year} 年无交易日数据")
+            print(
+                f"{cfg['name']} ({cfg['code']}) 在 "
+                f"{date_range.start} 至 {end_label} 无交易日数据"
+            )
             return
 
         buy_count = int((table["buy"] == "买入").sum())
         print(
-            f"\n=== {year} 年 {cfg['name']} ({cfg['code']}) 逐交易日 ==="
+            f"\n=== {date_range.start} 至 {end_label} "
+            f"{cfg['name']} ({cfg['code']}) 逐交易日 ==="
             f"（共 {len(table)} 天，买入 {buy_count} 天；★=买入）"
         )
         for line in _format_index_calendar_markdown(table):
@@ -793,34 +914,38 @@ def print_daily_table(year, index_code, panels=None):
     print(f"未找到指数代码: {index_code}")
 
 
-def list_buy_dates(year, panels=None):
-    """列出指定年份各指数买入日期（与 report 共用判定逻辑）。"""
+def list_buy_dates(date_range, panels=None):
+    """列出指定区间各指数买入日期（与 report 共用判定逻辑）。"""
     panels = panels or get_panels()
     out = {}
     for cfg in _iter_backtest_configs(panels):
         key = f"{cfg['name']} ({cfg['code']})"
         out[key] = _collect_buy_dates(
             cfg["panel"],
-            year,
+            date_range,
             cfg["buy_fn"],
             date_col=cfg["date_col"],
         )
     return out
 
 
-def print_buy_dates(years):
+def print_buy_dates(date_ranges):
     panels = get_panels()
     print("正在加载数据（仅首次较慢，后续年份复用缓存）...")
-    for year in years:
-        print(f"\n=== {year} 年买入日期 ===")
-        dates_by_name = list_buy_dates(year, panels=panels)
+    for date_range in date_ranges:
+        end_label = date_range.end or "最新"
+        print(f"\n=== {date_range.start} 至 {end_label} 买入日期 ===")
+        dates_by_name = list_buy_dates(date_range, panels=panels)
         for name, days in dates_by_name.items():
             print(f"\n{name}: {len(days)}天")
             print("  " + (", ".join(days) if days else "—"))
 
 
-def run_backtest(year, amounts=None, panels=None):
-    print(f"正在回测 {year} 年买入信号（使用当前 config 阈值）...")
+def run_backtest(date_range, amounts=None, panels=None):
+    end_label = date_range.end or "最新"
+    print(
+        f"正在回测 {date_range.start} 至 {end_label} 买入信号（使用当前 config 阈值）..."
+    )
     panels = panels or get_panels()
     if amounts and amounts.get("by_code"):
         use_amounts = amounts
@@ -832,25 +957,47 @@ def run_backtest(year, amounts=None, panels=None):
         other_amt = amounts["other"] if amounts else None
 
     rows = []
-    rows.extend(backtest_dividend(year, panels=panels, amount=div_amt, amounts=use_amounts))
+    rows.extend(
+        backtest_dividend(
+            date_range, panels=panels, amount=div_amt, amounts=use_amounts
+        )
+    )
     for item in CN_BROAD_BACKTEST_INDICES:
         rows.extend(
             backtest_cn_broad(
-                year, item, panels=panels, amount=broad_amt, amounts=use_amounts
+                date_range,
+                item,
+                panels=panels,
+                amount=broad_amt,
+                amounts=use_amounts,
             )
         )
-    rows.extend(backtest_cyb(year, panels=panels, amount=other_amt, amounts=use_amounts))
-    rows.extend(backtest_hstech(year, panels=panels, amount=other_amt, amounts=use_amounts))
+    rows.extend(
+        backtest_cyb(
+            date_range, panels=panels, amount=other_amt, amounts=use_amounts
+        )
+    )
+    rows.extend(
+        backtest_hstech(
+            date_range, panels=panels, amount=other_amt, amounts=use_amounts
+        )
+    )
     for key in US_INDEX_KEYS:
         rows.extend(
-            backtest_us_index(year, key, panels=panels, amount=other_amt, amounts=use_amounts)
+            backtest_us_index(
+                date_range,
+                key,
+                panels=panels,
+                amount=other_amt,
+                amounts=use_amounts,
+            )
         )
     return rows
 
 
-def _backtest_result_path(year):
+def _backtest_result_path(date_range, ext="md"):
     BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
-    return BACKTEST_DIR / f"{year}.md"
+    return BACKTEST_DIR / f"{date_range.label}.{ext}"
 
 
 def _md_price(value):
@@ -888,8 +1035,8 @@ def _buy_signal_totals(rows):
     }
 
 
-def _format_backtest_summary_markdown(rows, year, amounts=None):
-    """逐年回测汇总表（合并信号统计、价格与收益）。"""
+def _format_backtest_summary_markdown(rows, date_range, amounts=None):
+    """回测汇总表（合并信号统计、价格与收益）。"""
     val_text = "—"
     if amounts is not None:
         latest_dates = [row.get("latest_date") for row in rows if row.get("latest_date")]
@@ -972,10 +1119,13 @@ def _format_backtest_summary_markdown(rows, year, amounts=None):
     return lines
 
 
-def _format_backtest_markdown(year, rows, amounts=None, daily_tables=None):
+def _format_backtest_markdown(
+    date_range, rows, amounts=None, daily_tables=None
+):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    end_label = date_range.end or "最新"
     lines = [
-        f"# {year} 年买入信号回测",
+        f"# {date_range.start} 至 {end_label} 买入信号回测",
         "",
         f"> 生成时间：{generated_at}  ",
         "> 买入标准：当前 config 阈值  ",
@@ -986,7 +1136,9 @@ def _format_backtest_markdown(year, rows, amounts=None, daily_tables=None):
         lines.append("> 每次买入金额：仅统计次数")
     lines.append("")
 
-    lines.extend(_format_backtest_summary_markdown(rows, year, amounts=amounts))
+    lines.extend(
+        _format_backtest_summary_markdown(rows, date_range, amounts=amounts)
+    )
 
     if daily_tables:
         lines.extend(_format_daily_tables_markdown(daily_tables))
@@ -994,20 +1146,49 @@ def _format_backtest_markdown(year, rows, amounts=None, daily_tables=None):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def save_backtest_result(year, rows, amounts=None, panels=None, index_codes=None):
-    """保存回测结果到本地 Markdown，每年一份，重新运行会覆盖。"""
-    daily_tables = collect_daily_tables(year, panels=panels, index_codes=index_codes)
-    path = _backtest_result_path(year)
+def save_backtest_result(
+    date_range,
+    rows,
+    amounts=None,
+    panels=None,
+    index_codes=None,
+    write_html=True,
+):
+    """保存回测结果到本地 Markdown（及 HTML 折线图），重新运行会覆盖。"""
+    daily_tables = collect_daily_tables(
+        date_range, panels=panels, index_codes=index_codes
+    )
+    chart_tables = collect_daily_tables(date_range, panels=panels)
+    path = _backtest_result_path(date_range, ext="md")
     path.write_text(
         _format_backtest_markdown(
-            year,
+            date_range,
             rows,
             amounts=amounts,
             daily_tables=daily_tables,
         ),
         encoding="utf-8",
     )
-    return path
+    html_path = None
+    if write_html and chart_tables:
+        from backtest_html import save_backtest_html
+
+        end_label = date_range.end or "最新"
+        subtitle = (
+            f"区间 {date_range.start} 至 {end_label}；"
+            f"买入标准：当前 config 阈值"
+        )
+        if amounts is not None:
+            subtitle += f"；{format_backtest_amount_note(amounts)}"
+        html_path = save_backtest_html(
+            _backtest_result_path(date_range, ext="html"),
+            f"{date_range.start} 至 {end_label} 买入信号回测",
+            chart_tables,
+            start_date=date_range.start,
+            end_date=date_range.end,
+            subtitle=subtitle,
+        )
+    return path, html_path
 
 
 def _format_price(value):
@@ -1018,20 +1199,21 @@ def _format_price(value):
     return f"{value:>10.2f}"
 
 
-def print_summary_table(rows, year, amounts=None):
-    """控制台打印合并后的逐年回测汇总表。"""
+def print_summary_table(rows, date_range, amounts=None):
+    """控制台打印合并后的回测汇总表。"""
     if not rows:
         print("无有效回测结果")
         return
 
+    end_label = date_range.end or "最新"
     val_text = "—"
     if amounts is not None:
         latest_dates = [row.get("latest_date") for row in rows if row.get("latest_date")]
         if latest_dates:
             val_text = pd.Timestamp(max(latest_dates)).strftime("%Y-%m-%d")
         print(
-            f"\n=== {year} 年买入信号回测（{format_backtest_amount_note(amounts)}，"
-            f"估值截至 {val_text}） ==="
+            f"\n=== {date_range.start} 至 {end_label} 买入信号回测（"
+            f"{format_backtest_amount_note(amounts)}，估值截至 {val_text}） ==="
         )
         print(
             f"{'指数':<14} {'代码':<8} {'买入':>5} {'样本':>5} {'占比':>6} "
@@ -1068,7 +1250,9 @@ def print_summary_table(rows, year, amounts=None):
         print("-" * 110)
         print(BACKTEST_RETURN_FOOTNOTE)
     else:
-        print(f"\n=== {year} 年买入信号回测（当前买入标准） ===")
+        print(
+            f"\n=== {date_range.start} 至 {end_label} 买入信号回测（当前买入标准） ==="
+        )
         print(
             f"{'指数':<14} {'代码':<8} {'买入':>5} {'样本':>5} {'占比':>6} "
             f"{'年内高':>10} {'年内低':>10} {'均价':>10}"
@@ -1093,18 +1277,28 @@ def print_summary_table(rows, year, amounts=None):
         print("-" * 80)
 
 
-def print_table(rows, year, amounts=None):
-    print_summary_table(rows, year, amounts=amounts)
+def print_table(rows, date_range, amounts=None):
+    print_summary_table(rows, date_range, amounts=amounts)
 
 
 def main(argv=None):
     configure_stdout_utf8()
-    parser = argparse.ArgumentParser(description="回测指定年份买入信号天数")
+    parser = argparse.ArgumentParser(description="回测指定区间买入信号天数")
     parser.add_argument(
         "--year",
         type=int,
         action="append",
         help="回测年份（可多次指定，如 --year 2025 --year 2026）",
+    )
+    parser.add_argument(
+        "--start",
+        default=None,
+        help="起始日期 YYYY-MM-DD（与 --end 配合，优先于 --year）",
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        help="结束日期 YYYY-MM-DD（默认可至最新数据）",
     )
     parser.add_argument(
         "--list-dates",
@@ -1114,7 +1308,7 @@ def main(argv=None):
     parser.add_argument(
         "--daily-table",
         action="store_true",
-        help="打印指定指数全年逐交易日表（需配合 --index）",
+        help="打印指定指数逐交易日表（需配合 --index）",
     )
     parser.add_argument(
         "--index",
@@ -1139,8 +1333,25 @@ def main(argv=None):
         action="store_true",
         help="禁用价格分档，仅使用基准单次金额",
     )
+    parser.add_argument(
+        "--from-inception",
+        action="store_true",
+        help="自各指数基日起回测（使用本地全量缓存，等价于极早起始日）",
+    )
+    parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="不生成 HTML 折线图",
+    )
     args = parser.parse_args(argv)
-    years = args.year or [2025]
+    if args.start and args.year:
+        print("警告：同时指定 --start 与 --year，将使用 --start/--end 区间。")
+    date_ranges = resolve_backtest_ranges(
+        years=args.year,
+        start=args.start,
+        end=args.end,
+        from_inception=args.from_inception,
+    )
     tier_enabled = not args.no_tier
     if args.amount is not None and args.amount <= 0:
         amounts = None
@@ -1155,7 +1366,7 @@ def main(argv=None):
 
     try:
         if args.list_dates:
-            print_buy_dates(years)
+            print_buy_dates(date_ranges)
             return 0
 
         if args.daily_table:
@@ -1163,24 +1374,28 @@ def main(argv=None):
                 print("请使用 --index 指定指数代码，例如: --daily-table --index 000510")
                 return 1
             panels = get_panels()
-            print("正在加载数据（仅首次较慢，后续年份复用缓存）...")
-            for year in years:
+            print("正在加载数据（仅首次较慢，后续区间复用缓存）...")
+            for date_range in date_ranges:
+                end_label = date_range.end or "最新"
                 for code in args.index_codes:
-                    print_daily_table(year, code, panels=panels)
+                    print_daily_table(date_range, code, panels=panels)
             return 0
 
         panels = get_panels()
-        for year in years:
-            rows = run_backtest(year, amounts=amounts, panels=panels)
-            print_table(rows, year, amounts=amounts)
-            saved = save_backtest_result(
-                year,
+        for date_range in date_ranges:
+            rows = run_backtest(date_range, amounts=amounts, panels=panels)
+            print_table(rows, date_range, amounts=amounts)
+            md_path, html_path = save_backtest_result(
+                date_range,
                 rows,
                 amounts=amounts,
                 panels=panels,
                 index_codes=args.index_codes,
+                write_html=not args.no_html,
             )
-            print(f"\n回测结果已保存: {saved}")
+            print(f"\n回测结果已保存: {md_path}")
+            if html_path:
+                print(f"折线图已保存: {html_path}")
     except Exception as exc:
         print(f"回测失败: {exc}")
         return 1

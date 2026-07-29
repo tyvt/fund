@@ -27,7 +27,9 @@ from signal_format import (
     SIGNAL_HOLD,
     SIGNAL_NO_DATA,
     append_signal_block,
-    format_module_header,
+    format_data_meta_line,
+    join_index_sections,
+    log_fetch_done,
     make_criterion,
     pct_text,
 )
@@ -193,8 +195,16 @@ def build_index_section(
 
     signal_eval = enrich_signal_buy_amount(index_code, buy_eval, signal_eval)
 
+    bond_extra = f"国债 {bond_yield:.2%}" if bond_yield is not None else None
+    meta_line = format_data_meta_line(
+        buy_eval.get("data_date") or buy_eval.get("index_date"),
+        buy_eval.get("history_start"),
+        buy_eval.get("history_days"),
+        extras=[bond_extra] if bond_extra else None,
+    )
     lines = [
         f"{index_code} {index_name}",
+        meta_line,
         f"利差 {spread:.2%} | 利差分位 {pct_text(spread_pct)} | 股息率 {dividend_yield:.2%}",
         format_dividend_spread_10y_line(
             spread,
@@ -206,24 +216,22 @@ def build_index_section(
         f"PE {pe:.2f} | PE分位 {pct_text(pe_pct)}",
     ]
     append_signal_block(lines, signal_eval, "dividend")
+    log_fetch_done(
+        index_name,
+        code=index_code,
+        data_date=buy_eval.get("data_date") or buy_eval.get("index_date"),
+        history_start=buy_eval.get("history_start"),
+        history_days=buy_eval.get("history_days"),
+    )
     return {
         "code": index_code,
         "name": index_name,
         "text": "\n".join(lines),
         "signal_short": signal_eval["signal_short"],
+        "data_date": buy_eval.get("data_date") or buy_eval.get("index_date"),
+        "history_start": buy_eval.get("history_start"),
+        "history_days": buy_eval.get("history_days"),
     }
-
-
-def format_report_header(index_results, bond_yield, bond_date, bond_history):
-    index_dates = [item["index_date"] for item in index_results if item.get("index_date")]
-    index_date = max(index_dates) if index_dates else "-"
-    bond_text = f"{bond_yield:.2%}" if bond_yield is not None else "—"
-    return format_module_header(
-        "红利指数",
-        f"{index_date} | 国债 {bond_text}",
-        "买入: 利差>阈值且利差分位高、PE分位低（各指数阈值见判定行）；"
-        "近10年利差分位≥偏高线视为利差偏高；展示值与判定均来自估值面板",
-    )
 
 
 def build_report(index_results, bond_yield, bond_date, bond_history=None):
@@ -239,17 +247,16 @@ def build_report(index_results, bond_yield, bond_date, bond_history=None):
         for item in index_results
     ]
 
-    lines = format_report_header(
-        index_results, bond_yield, bond_date, bond_history
-    )
+    for item, section in zip(index_results, sections):
+        item.update(
+            {
+                k: section.get(k)
+                for k in ("data_date", "history_start", "history_days")
+                if k in section
+            }
+        )
 
-    for index, section in enumerate(sections):
-        if index > 0:
-            lines.append("")
-            lines.append("─" * 24)
-        lines.append(section["text"])
-
-    return "\n".join(lines), sections
+    return join_index_sections(sections), sections
 
 
 def generate_report(index_codes=None):

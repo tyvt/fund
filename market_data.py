@@ -13,6 +13,7 @@ from config import (
     BOND_YIELD_FIELD,
     BOND_YIELD_PARAMS,
     BOND_YIELD_URL,
+    DIVIDEND_TOTAL_RETURN_INDEX,
     HEADERS,
     INDEX_PERF_URL,
     REQUEST_TIMEOUT,
@@ -53,8 +54,13 @@ def _fetch_indicator_history(index_code):
     return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
 
+_TOTAL_RETURN_CODES = frozenset(DIVIDEND_TOTAL_RETURN_INDEX.values())
+
+
 def read_indicator_history(index_code):
     """读取中证指数指标文件中的近期 PE 与股息率。"""
+    if index_code in _TOTAL_RETURN_CODES:
+        return None
     try:
         return get_or_fetch_dataframe(
             f"indicator_{index_code}",
@@ -92,22 +98,76 @@ def _fetch_index_perf_history(index_code, start_date, end_date):
     return history.sort_values("date").reset_index(drop=True)
 
 
+def load_index_perf_history(index_code, force=False):
+    """加载指数全历史 perf（本地缓存 + 增量补齐）。"""
+    from data_cache import cache_path, is_fresh_today, load_dataframe, merge_dataframes_by_date, save_dataframe
+    from index_meta import get_index_base_date
+
+    key = f"index_perf_{index_code}"
+    path = cache_path(key, subdir="cn")
+    cached = load_dataframe(path)
+    if cached is not None and not cached.empty:
+        cached = cached.copy()
+        cached["date"] = pd.to_datetime(cached["date"]).dt.date
+
+    if not force and is_fresh_today(path) and cached is not None and not cached.empty:
+        return cached
+
+    today = date.today().strftime("%Y%m%d")
+    base = get_index_base_date(index_code) or "19900101"
+    segments: list[tuple[str, str]] = []
+
+    if cached is None or cached.empty:
+        segments.append((base, today))
+    else:
+        dmin = pd.to_datetime(cached["date"]).min().date()
+        dmax = pd.to_datetime(cached["date"]).max().date()
+        base_d = pd.Timestamp(base).date()
+        if base_d < dmin:
+            prev = (pd.Timestamp(dmin) - pd.Timedelta(days=1)).strftime("%Y%m%d")
+            segments.append((base, prev))
+        if dmax < date.today():
+            nxt = (pd.Timestamp(dmax) + pd.Timedelta(days=1)).strftime("%Y%m%d")
+            segments.append((nxt, today))
+
+    merged = cached
+    for seg_start, seg_end in segments:
+        if seg_start > seg_end:
+            continue
+        try:
+            chunk = _fetch_index_perf_history(index_code, seg_start, seg_end)
+            if chunk is not None and not chunk.empty:
+                chunk = chunk.copy()
+                chunk["date"] = pd.to_datetime(chunk["date"]).dt.date
+                merged = merge_dataframes_by_date(merged, chunk, date_col="date")
+        except Exception as exc:
+            print(f" 获取 {index_code} {seg_start}-{seg_end} 时出错: {exc}")
+
+    if merged is not None and not merged.empty:
+        save_dataframe(path, merged)
+        return merged
+    return cached
+
+
 def get_index_perf_history(index_code, start_date=None, end_date=None, years=10):
-    """从中证指数 API 获取历史行情与滚动 PE。"""
+    """从中证指数 API 获取历史行情与滚动 PE（优先读本地全量缓存）。"""
     if end_date is None:
         end_date = date.today().strftime("%Y%m%d")
-    if start_date is None:
-        start_date = f"{date.today().year - years}0101"
 
-    try:
-        return get_or_fetch_dataframe(
-            f"index_perf_{index_code}_{start_date}_{end_date}",
-            lambda: _fetch_index_perf_history(index_code, start_date, end_date),
-            subdir="cn",
-        )
-    except Exception as exc:
-        print(f" 获取 {index_code} 历史数据时出错: {exc}")
+    full = load_index_perf_history(index_code)
+    if full is None or full.empty:
         return None
+
+    out = full.copy()
+    out["_dt"] = pd.to_datetime(out["date"])
+    if start_date is not None:
+        out = out[out["_dt"] >= pd.Timestamp(start_date)]
+    elif years is not None:
+        cutoff = pd.Timestamp(date.today()) - pd.DateOffset(years=years)
+        out = out[out["_dt"] >= cutoff]
+    if end_date is not None:
+        out = out[out["_dt"] <= pd.Timestamp(end_date)]
+    return out.drop(columns="_dt").reset_index(drop=True)
 
 
 def _fetch_gov_bond_yield_history():
@@ -135,11 +195,12 @@ def _fetch_gov_bond_yield_history():
 def get_gov_bond_yield_history():
     """从东方财富获取国债收益率历史。"""
     try:
-        return get_or_fetch_dataframe(
+        history = get_or_fetch_dataframe(
             "bond_yield_history",
             _fetch_gov_bond_yield_history,
             subdir="cn",
         )
+        return _normalize_bond_history(history)
     except Exception as exc:
         print(f" 获取国债收益率历史时出错: {exc}")
         return None
@@ -178,21 +239,67 @@ def compute_percentile(series, value):
     return float((values < value).mean() * 100)
 
 
+def _to_date(value):
+    """统一转为 datetime.date 便于对齐。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    return pd.Timestamp(value).date()
+
+
+def _normalize_bond_history(bond_history):
+    if bond_history is None or bond_history.empty:
+        return bond_history
+    out = bond_history.copy()
+    out["date"] = out["date"].map(_to_date)
+    return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+
 def resolve_bond_yield_for_date(target_date, bond_history=None):
     """优先使用日度国债；缺失时按年度回填。"""
+    day = _to_date(target_date)
+    if day is None:
+        return None
     if bond_history is not None and not bond_history.empty:
-        matched = bond_history.loc[bond_history["date"] == target_date, "bond_yield"]
+        bond = _normalize_bond_history(bond_history)
+        matched = bond.loc[bond["date"] == day, "bond_yield"]
         if not matched.empty:
             return float(matched.iloc[0])
-    return BOND_YIELD_FALLBACK_BY_YEAR.get(target_date.year)
+    return BOND_YIELD_FALLBACK_BY_YEAR.get(day.year)
+
+
+def attach_bond_yield(panel, bond_history=None):
+    """将国债收益率对齐到指数面板（日度 merge_asof + 年度回填）。"""
+    if panel is None or panel.empty:
+        return panel
+    out = panel.copy()
+    out["_date_dt"] = pd.to_datetime(out["date"]).dt.normalize()
+
+    if bond_history is not None and not bond_history.empty:
+        bond = _normalize_bond_history(bond_history)
+        bond["_date_dt"] = pd.to_datetime(bond["date"]).dt.normalize()
+        out = pd.merge_asof(
+            out.sort_values("_date_dt"),
+            bond[["_date_dt", "bond_yield"]].sort_values("_date_dt"),
+            on="_date_dt",
+            direction="backward",
+        )
+    else:
+        out["bond_yield"] = pd.NA
+
+    missing = out["bond_yield"].isna()
+    if missing.any():
+        years = pd.to_datetime(out.loc[missing, "date"]).dt.year
+        out.loc[missing, "bond_yield"] = years.map(
+            lambda y: BOND_YIELD_FALLBACK_BY_YEAR.get(int(y))
+        )
+
+    out = out.drop(columns=["_date_dt"], errors="ignore")
+    return out.dropna(subset=["bond_yield"])
 
 
 def merge_index_with_bond(index_history, bond_history):
     """按交易日对齐指数与国债收益率。"""
-    merged = index_history.merge(
-        bond_history[["date", "bond_yield"]],
-        on="date",
-        how="left",
-    )
-    merged["bond_yield"] = merged["bond_yield"].ffill()
+    merged = attach_bond_yield(index_history, bond_history)
+    if "bond_yield" in merged.columns:
+        merged["bond_yield"] = merged["bond_yield"].ffill()
     return merged.dropna(subset=["bond_yield"])

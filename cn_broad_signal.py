@@ -32,7 +32,7 @@ from signal_format import (
     SIGNAL_HOLD,
     SIGNAL_SELL,
     append_signal_block,
-    format_module_header,
+    format_data_meta_line,
     make_criterion,
     pct_text,
 )
@@ -361,8 +361,17 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
         "sell_trigger_line": sell_line,
     }
     buy_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, buy_eval)
+    bond = snapshot.get("bond_yield")
+    bond_extra = f"国债 {bond:.2%}" if bond is not None else None
+    meta_line = format_data_meta_line(
+        snapshot.get("data_date") or snapshot.get("date"),
+        snapshot.get("history_start"),
+        snapshot.get("history_days"),
+        extras=[bond_extra] if bond_extra else None,
+    )
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
+        meta_line,
         (
             f"利差 {spread:.2%} | 利差分位 {pct_text(snapshot.get('spread_percentile'))} | "
             f"股息率 {snapshot['dividend_yield']:.2%}"
@@ -389,15 +398,4 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
 
 
 def format_cn_broad_report(snapshot, section, title=None):
-    bond = snapshot.get("bond_yield")
-    bond_text = f"{bond:.2%}" if bond is not None else "—"
-    hist_days = snapshot.get("history_days", 0)
-    header_title = title or f"{snapshot['name']} 投资信号"
-    lines = format_module_header(
-        header_title,
-        f"{snapshot['date']} | 国债 {bond_text} | 历史样本约 {hist_days} 个交易日",
-        "买入: 股债利差分位达标 + PE 分位偏低 + 价格位置（距低点/高点回撤）；"
-        "卖出: 仅科创50（PE 分位偏高且利差收敛或短期涨幅过大），其余宽基只买不卖",
-    )
-    lines.append(section["text"])
-    return "\n".join(lines), section
+    return section["text"], section

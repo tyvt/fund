@@ -38,6 +38,7 @@ from price_position import (
     attach_year_range_position,
     row_price_position_fields,
 )
+from signal_format import merge_history_meta
 
 FRED_US10Y_SERIES = "DGS10"
 NASDAQ_ETF_SUMMARY_URL = (
@@ -87,10 +88,21 @@ def _history_start(key: str):
     return pd.Timestamp(date.today()) - pd.DateOffset(years=years)
 
 
+def _data_start(key: str):
+    """自基日或配置窗口起算的数据起点。"""
+    from index_meta import get_index_base_date_iso
+
+    code = _spec(key)["index"]["code"]
+    base = get_index_base_date_iso(code)
+    if base:
+        return pd.Timestamp(base)
+    return _history_start(key)
+
+
 def _filter_since(frame, date_col="date", *, key: str):
     if frame is None or frame.empty:
         return frame
-    return frame[frame[date_col] >= _history_start(key)].copy()
+    return frame[frame[date_col] >= _data_start(key)].copy()
 
 
 def _fetch_json(url, timeout=REQUEST_TIMEOUT):
@@ -128,7 +140,7 @@ def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
     frame = frame.dropna(subset=["date", "value"]).sort_values("date")
     if start_date is None:
-        start_date = _history_start("ndx")
+        start_date = _data_start("ndx")
     frame = frame[frame["date"] >= pd.Timestamp(start_date)]
     return frame.reset_index(drop=True)
 
@@ -149,7 +161,7 @@ def _fetch_us10y_from_akshare():
 
 def fetch_us10y_history(*, key: str = "ndx"):
     """美国 10 年期国债收益率。"""
-    start = _history_start(key)
+    start = _data_start(key)
     try:
         history = fetch_fred_series(FRED_US10Y_SERIES, start_date=start)
         history["value"] = history["value"] / 100
@@ -210,7 +222,7 @@ def _fetch_price_from_akshare(key: str):
 
 def fetch_price_history(key: str):
     spec = _spec(key)
-    start = _history_start(key)
+    start = _data_start(key)
     try:
         history = fetch_fred_series(spec["fred_price_series"], start_date=start)
         return history.rename(columns={"value": "close"})
@@ -550,4 +562,4 @@ def fetch_snapshot(key: str, expected_growth=None):
     from us_index_signal import resolve_expected_growth
 
     snapshot["expected_growth"] = resolve_expected_growth(key, snapshot)
-    return snapshot
+    return merge_history_meta(snapshot, daily)

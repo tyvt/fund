@@ -23,15 +23,11 @@ from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
     append_signal_block,
-    format_module_header,
+    format_data_meta_line,
     make_criterion,
     pct_text,
 )
 
-REPORT_TITLES = {
-    "ndx": "纳斯达克100 估值信号",
-    "spx": "标普500 估值信号",
-}
 DIVIDEND_LABELS = {
     "ndx": "股息率(QQQ代理)",
     "spx": "股息率(SPY代理)",
@@ -281,9 +277,17 @@ def format_section(key: str, snapshot, signal_eval):
     div_text = f"{div:.2%}" if div is not None else "—"
     us10y = snapshot.get("us10y")
     us10y_text = f"{us10y:.2%}" if us10y is not None else "—"
+    trailing_days = snapshot.get("trailing_history_days", 0)
+    meta_line = format_data_meta_line(
+        snapshot.get("data_date") or snapshot.get("date"),
+        snapshot.get("history_start"),
+        snapshot.get("daily_history_days", snapshot.get("history_days", 0)),
+        extras=[f"TTM PE 样本 {trailing_days} 日"],
+    )
 
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
+        meta_line,
         (
             f"Forward PE {snapshot.get('forward_pe', 0):.2f} "
             f"(分位 {pct_text(snapshot.get('forward_pe_percentile'))}) | "
@@ -308,16 +312,4 @@ def format_section(key: str, snapshot, signal_eval):
 
 
 def format_report(key: str, snapshot, section):
-    hist_days = snapshot.get("daily_history_days", snapshot.get("history_days", 0))
-    trailing_days = snapshot.get("trailing_history_days", 0)
-    years = snapshot.get("history_years", 10)
-    lines = format_module_header(
-        REPORT_TITLES[key],
-        (
-            f"{snapshot['date']} | 日频样本约 {hist_days} 个交易日 | "
-            f"TTM PE 日频约 {trailing_days} 日 | 近{years}年"
-        ),
-        "买入逻辑: Forward PE分位偏低 + PEG(Forward)≤阈值 + 10Y利率分位不高（三项须同时满足）",
-    )
-    lines.append(section["text"])
-    return "\n".join(lines), section
+    return section["text"], section

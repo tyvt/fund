@@ -28,6 +28,7 @@ from price_position import (
     attach_year_range_position,
     row_price_position_fields,
 )
+from signal_format import merge_history_meta
 HSTECH_CODE = HSTECH_INDEX["code"]
 HSTECH_NAME = HSTECH_INDEX["name"]
 HSTECH_TENCENT_SYMBOL = "hkHSTECH"
@@ -130,20 +131,25 @@ def build_hstech_valuation_panel():
     pe_src = pe.sort_values("date").rename(
         columns={"date": "pe_source_date", "pe": "pe_official", "dividend_yield": "dividend_yield"}
     )
+    anchor = (
+        prices[["date", "close"]]
+        .sort_values("date")
+        .rename(columns={"date": "anchor_date", "close": "close_at_pe_source"})
+    )
+    # 乐咕 PE 为月末日历日，未必是交易日；用 asof 取最近可用收盘价作锚定
+    pe_src = pd.merge_asof(
+        pe_src,
+        anchor,
+        left_on="pe_source_date",
+        right_on="anchor_date",
+        direction="backward",
+    )
     panel = pd.merge_asof(
         panel,
-        pe_src[["pe_source_date", "pe_official", "dividend_yield"]],
+        pe_src[["pe_source_date", "pe_official", "dividend_yield", "close_at_pe_source"]],
         left_on="date",
         right_on="pe_source_date",
         direction="backward",
-    )
-    anchor = prices.rename(
-        columns={"date": "pe_source_date", "close": "close_at_pe_source"}
-    )
-    panel = panel.merge(
-        anchor[["pe_source_date", "close_at_pe_source"]],
-        on="pe_source_date",
-        how="left",
     )
     panel["pe"] = panel["pe_official"] * (
         panel["close"] / panel["close_at_pe_source"]
@@ -252,7 +258,7 @@ def fetch_hstech_snapshot(expected_growth=None):
         else None
     )
 
-    return {
+    snapshot = {
         "code": HSTECH_CODE,
         "name": HSTECH_NAME,
         "date": latest["date_only"],
@@ -281,3 +287,4 @@ def fetch_hstech_snapshot(expected_growth=None):
         "high_lookback_days": HSTECH_BUY_HIGH_LOOKBACK_DAYS,
         **row_price_position_fields(latest),
     }
+    return merge_history_meta(snapshot, panel, date_col="date_only")

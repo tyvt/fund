@@ -59,7 +59,7 @@ from signal_format import (
     SIGNAL_HOLD,
     SIGNAL_SELL,
     append_signal_block,
-    format_module_header,
+    format_data_meta_line,
     make_criterion,
     pct_text,
 )
@@ -348,9 +348,15 @@ def format_hstech_section(snapshot, signal_eval):
     peg_hist = signal_eval.get("peg_historical")
     peg_hist_text = f"{peg_hist:.2f}" if peg_hist is not None else "—"
     div_yield = snapshot.get("dividend_yield")
+    meta_line = format_data_meta_line(
+        snapshot.get("data_date") or snapshot.get("date"),
+        snapshot.get("history_start"),
+        snapshot.get("history_days"),
+    )
 
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
+        meta_line,
         (
             f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | "
             f"股息率 {div_yield * 100:.2f}% | 股息率分位 {pct_text(snapshot.get('dividend_percentile'))}"
@@ -369,12 +375,4 @@ def format_hstech_section(snapshot, signal_eval):
 
 
 def format_hstech_report(snapshot, section):
-    hist_days = snapshot.get("history_days", 0)
-    lines = format_module_header(
-        "恒生科技指数 估值信号",
-        f"{snapshot['date']} | 历史样本约 {hist_days} 个交易日 | 主口径: 乐咕恒生科技 PE/股息率（月度发布并按指数价日度折算）",
-        "买入逻辑: PE 分位偏低 + PEG(5年)≤阈值 + 股息率分位偏高 + 价格位置（须同时满足）；"
-        "卖出: 无（长期持有）",
-    )
-    lines.append(section["text"])
-    return "\n".join(lines), section
+    return section["text"], section

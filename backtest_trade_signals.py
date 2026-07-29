@@ -512,6 +512,104 @@ def backtest_all(
     return results
 
 
+def _append_sell_column(table, panel, start_date, end_date, sell_fn, date_col="date"):
+    if sell_fn is None or table.empty:
+        return table
+    work = _filter_panel(panel, start_date, end_date, date_col=date_col)
+    sell_by_date = {}
+    for _, row in work.iterrows():
+        if sell_fn(row):
+            day = row["_dt"].strftime("%Y-%m-%d")
+            sell_by_date[day] = "卖出"
+    if not sell_by_date:
+        return table
+    out = table.copy()
+    out["sell"] = out["date"].map(lambda d: sell_by_date.get(d, ""))
+    return out
+
+
+def collect_trade_chart_tables(
+    start_date,
+    end_date=None,
+    amounts=None,
+    panels=None,
+):
+    """收集波段回测各指数图表数据（含买卖标记）。"""
+    from backtest_buy_signals import (
+        build_daily_table_range,
+        CYB_INDEX,
+        HSTECH_INDEX,
+        INDICES,
+    )
+
+    if amounts is None:
+        amounts = resolve_backtest_amounts()
+    panels = panels or BacktestPanels()
+    tables = []
+
+    def _maybe_add(panel, code, name, buy_fn, sell_fn=None, date_col="date", price_col="close"):
+        amt = get_backtest_buy_amount(code, amounts)
+        if amt <= 0:
+            return
+        table = build_daily_table_range(
+            panel,
+            start_date,
+            end_date,
+            buy_fn,
+            date_col=date_col,
+            price_col=price_col,
+        )
+        if table.empty:
+            return
+        table = _append_sell_column(
+            table, panel, start_date, end_date, sell_fn, date_col=date_col
+        )
+        tables.append({"name": name, "code": code, "table": table})
+
+    for item in INDICES:
+        code = item["code"]
+        panel = panels.dividend_panel(code)
+        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
+        _maybe_add(panel, code, item["name"], buy_fn)
+
+    for item in CN_BROAD_BACKTEST_INDICES:
+        code = item["code"]
+        panel = panels.cn_broad_panel(code)
+        sell_on = cn_broad_sell_enabled(code)
+        buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
+        sell_fn = (
+            (lambda r, c=code: _cn_broad_signals(r, c)[1]) if sell_on else None
+        )
+        _maybe_add(panel, code, item["name"], buy_fn, sell_fn)
+
+    cyb_panel = panels.cyb_panel()
+    cyb_buy = lambda r: _cyb_signals(r)[0]
+    cyb_sell = lambda r: _cyb_signals(r)[1] if CYB_SELL_ENABLED else None
+    _maybe_add(
+        cyb_panel, CYB_INDEX["code"], CYB_INDEX["name"], cyb_buy, cyb_sell
+    )
+
+    hstech_panel = panels.hstech_panel()
+    hs_buy = lambda r: _hstech_signals(r)[0]
+    hs_sell = lambda r: _hstech_signals(r)[1] if HSTECH_SELL_ENABLED else None
+    _maybe_add(
+        hstech_panel,
+        HSTECH_INDEX["code"],
+        HSTECH_INDEX["name"],
+        hs_buy,
+        hs_sell,
+        date_col="date",
+    )
+
+    for key in US_INDEX_KEYS:
+        daily, growth = panels.us_index_panel(key)
+        meta = US_INDEX_META[key]
+        us_buy = lambda r, k=key, g=growth: _us_buy_snapshot(k, r, g)
+        _maybe_add(daily, meta["code"], meta["name"], us_buy)
+
+    return tables
+
+
 def _md_money(value):
     if value is None:
         return "—"
@@ -835,11 +933,24 @@ def print_table(results, start_date, end_date, amounts):
     print("-" * 88)
 
 
-def save_result(markdown, filename="trade_2015_present.md"):
+def save_result(markdown, filename="trade_2015_present.md", write_html=True, **html_kwargs):
     BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
     path = BACKTEST_DIR / filename
     path.write_text(markdown, encoding="utf-8")
-    return path
+    html_path = None
+    if write_html and html_kwargs.get("daily_tables"):
+        from backtest_html import save_backtest_html
+
+        stem = path.stem
+        html_path = save_backtest_html(
+            BACKTEST_DIR / f"{stem}.html",
+            html_kwargs.get("title", "买卖信号回测"),
+            html_kwargs["daily_tables"],
+            start_date=html_kwargs.get("start_date"),
+            end_date=html_kwargs.get("end_date"),
+            subtitle=html_kwargs.get("subtitle", ""),
+        )
+    return path, html_path
 
 
 def main(argv=None):
@@ -878,6 +989,11 @@ def main(argv=None):
         default="trade_2015_present.md",
         help="输出文件名（保存在 output/backtest/）",
     )
+    parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="不生成 HTML 折线图",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -905,8 +1021,26 @@ def main(argv=None):
         markdown = format_markdown(
             results, args.start, args.end, amounts
         )
-        path = save_result(markdown, filename=args.output)
+        daily_tables = collect_trade_chart_tables(
+            args.start, args.end, amounts=amounts, panels=panels
+        )
+        end_label = args.end or "最新"
+        path, html_path = save_result(
+            markdown,
+            filename=args.output,
+            write_html=not args.no_html,
+            daily_tables=daily_tables,
+            title=f"{args.start} 至 {end_label} 买卖信号回测",
+            start_date=args.start,
+            end_date=args.end,
+            subtitle=(
+                f"区间 {args.start} 至 {end_label}；"
+                f"{format_backtest_amount_note(amounts)}"
+            ),
+        )
         print(f"\n回测结果已保存: {path}")
+        if html_path:
+            print(f"折线图已保存: {html_path}")
     except Exception as exc:
         print(f"回测失败: {exc}")
         raise

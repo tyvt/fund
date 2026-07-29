@@ -1,5 +1,9 @@
 """各模块统一的信号、条件与操作建议输出格式。"""
 
+from __future__ import annotations
+
+import pandas as pd
+
 SIGNAL_BUY = "买入"
 SIGNAL_HOLD = "观望"
 SIGNAL_OVERVALUED = "高估"
@@ -8,6 +12,89 @@ SIGNAL_NO_DATA = "数据不全"
 
 MARK_PASS = "✓"
 MARK_FAIL = "✗"
+
+
+def format_date_label(value) -> str:
+    """统一日期展示：YYYY-MM-DD。"""
+    if value is None:
+        return "—"
+    try:
+        if pd.isna(value):
+            return "—"
+    except (TypeError, ValueError):
+        pass
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
+def panel_history_meta(panel, date_col="date") -> dict:
+    """从估值面板提取数据截至日、历史起点与样本天数。"""
+    if panel is None or panel.empty or date_col not in panel.columns:
+        return {"data_date": None, "history_start": None, "history_days": 0}
+    dates = pd.to_datetime(panel[date_col], errors="coerce").dropna()
+    if dates.empty:
+        return {"data_date": None, "history_start": None, "history_days": 0}
+    return {
+        "data_date": dates.max().date(),
+        "history_start": dates.min().date(),
+        "history_days": int(len(dates)),
+    }
+
+
+def merge_history_meta(snapshot: dict, panel, date_col="date") -> dict:
+    """将历史样本元数据写入 snapshot。"""
+    meta = panel_history_meta(panel, date_col=date_col)
+    snapshot.update(meta)
+    if snapshot.get("date") is None and meta.get("data_date"):
+        snapshot["date"] = meta["data_date"]
+    return snapshot
+
+
+def format_data_meta_line(
+    data_date=None,
+    history_start=None,
+    history_days=None,
+    *,
+    extras: list[str] | None = None,
+) -> str:
+    """统一报告元信息行。"""
+    parts: list[str] = []
+    if data_date is not None:
+        parts.append(f"数据截至 {format_date_label(data_date)}")
+    if history_start is not None and data_date is not None:
+        days = history_days if history_days is not None else 0
+        parts.append(
+            f"历史 {format_date_label(history_start)} 至 {format_date_label(data_date)}"
+            f"（{days} 个交易日）"
+        )
+    elif history_days:
+        parts.append(f"历史样本 {history_days} 个交易日")
+    if extras:
+        parts.extend(str(x) for x in extras if x)
+    return " | ".join(parts) if parts else "—"
+
+
+def log_fetch_start(name: str, code: str | None = None) -> None:
+    label = f"{name} ({code})" if code else name
+    print(f"正在拉取 {label} ...")
+
+
+def log_fetch_done(
+    name: str,
+    *,
+    code: str | None = None,
+    data_date=None,
+    history_start=None,
+    history_days=None,
+    extra: str | None = None,
+) -> None:
+    label = f"{name} ({code})" if code else name
+    meta = format_data_meta_line(
+        data_date,
+        history_start,
+        history_days,
+        extras=[extra] if extra else None,
+    )
+    print(f"{label} 就绪 | {meta}")
 
 
 def pct_text(value):
@@ -116,3 +203,14 @@ def format_module_header(title, meta_line, source_line=None):
     lines.append("")
     lines.append("─" * 24)
     return lines
+
+
+def join_index_sections(sections) -> str:
+    """将各指数 section 拼接为扁平报告正文。"""
+    parts = []
+    for index, section in enumerate(sections):
+        if index > 0:
+            parts.append("")
+            parts.append("─" * 24)
+        parts.append(section["text"])
+    return "\n".join(parts)

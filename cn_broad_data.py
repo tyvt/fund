@@ -13,13 +13,14 @@ from config import (
     ZZ500_INDEX,
 )
 from market_data import (
+    attach_bond_yield,
     compute_percentile,
     get_gov_bond_yield_history,
     get_index_perf_history,
     read_indicator_history,
-    resolve_bond_yield_for_date,
 )
 from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_below_high, attach_year_range_position, row_price_position_fields
+from signal_format import merge_history_meta
 
 CN_BROAD_INDEX_BY_CODE = {
     A500_INDEX["code"]: A500_INDEX,
@@ -51,9 +52,13 @@ def _rolling_pe_calibration_scale(panel):
 
 
 def build_cn_broad_valuation_history(
-    index_code, start_date="20150101", end_date=None, bond_history=None
+    index_code, start_date=None, end_date=None, bond_history=None
 ):
     """构建含 PE、股息率、股债利差的历史序列。"""
+    from index_meta import get_index_base_date
+
+    if start_date is None:
+        start_date = get_index_base_date(index_code) or "20150101"
     if end_date is None:
         end_date = date.today().strftime("%Y%m%d")
     if bond_history is None:
@@ -67,10 +72,7 @@ def build_cn_broad_valuation_history(
         return None
 
     panel = perf.sort_values("date").reset_index(drop=True)
-    panel["bond_yield"] = panel["date"].apply(
-        lambda d: resolve_bond_yield_for_date(d, bond_history)
-    )
-    panel = panel.dropna(subset=["bond_yield"])
+    panel = attach_bond_yield(panel, bond_history)
 
     panel["date_dt"] = pd.to_datetime(panel["date"])
     if indicator is not None and not indicator.empty:
@@ -191,7 +193,7 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
     bond_yield = float(latest_row["bond_yield"])
     spread = float(latest_row["spread"])
 
-    return {
+    snapshot = {
         "code": meta["code"],
         "name": meta["name"],
         "date": latest_row["date"],
@@ -234,3 +236,4 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
         "panel": panel,
         **row_price_position_fields(latest_row),
     }
+    return merge_history_meta(snapshot, panel)

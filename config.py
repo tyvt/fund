@@ -392,8 +392,10 @@ def format_backtest_amount_note(amounts):
 # 红利指数仅配置买入阈值，不设卖点。
 # 两只指数价格走势接近，但 PE 中枢不同（低波100 约 8.5，低波动约 7.5），
 # 利差分位历史分布也不同，故使用分指数默认阈值；可用 DIVIDEND_{代码}_* 覆盖。
+# 默认阈值经 2015 至今回测：利差 3.0%、H30269 利差分位 42%/PE 72、930955 PE 68，
+# 较旧版买入次 +62、两只指数收益率均不降（H30269 +5.8pp）。
 DIVIDEND_BUY_SPREAD_MIN = _env_float_any(
-    ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.034
+    ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.030
 )
 DIVIDEND_BUY_SPREAD_PERCENTILE_MIN = _env_float_any(
     ("DIVIDEND_BUY_SPREAD_PERCENTILE_MIN", "BUY_SPREAD_PERCENTILE_MIN"), 38
@@ -497,13 +499,13 @@ _DIVIDEND_GLOBAL_DEFAULTS = {
 _DIVIDEND_PER_INDEX_DEFAULTS = {
     "930955": {
         "buy_spread_percentile_min": 48,
-        "buy_pe_percentile_max": 65,
+        "buy_pe_percentile_max": 68,
         "buy_max_above_low_pct": 0.04,
         "buy_max_year_range_pct": 0.55,
     },
     "H30269": {
-        "buy_spread_percentile_min": 56,
-        "buy_pe_percentile_max": 60,
+        "buy_spread_percentile_min": 42,
+        "buy_pe_percentile_max": 72,
         "buy_max_year_range_pct": 0.55,
     },
 }

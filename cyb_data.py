@@ -24,6 +24,7 @@ from price_position import (
     attach_year_range_position,
     row_price_position_fields,
 )
+from signal_format import merge_history_meta
 
 CYB_CODE = CYB_INDEX["code"]
 CYB_NAME = CYB_INDEX["name"]
@@ -249,7 +250,7 @@ def fetch_cyb_snapshot(expected_growth=None):
     pb_median = float(latest["pb_median"])
     dividend_yield = float(latest["dividend_yield"])
 
-    return {
+    snapshot = {
         "code": CYB_CODE,
         "name": CYB_NAME,
         "date": latest["date_only"],
@@ -286,3 +287,4 @@ def fetch_cyb_snapshot(expected_growth=None):
         "high_lookback_days": CYB_BUY_HIGH_LOOKBACK_DAYS,
         **row_price_position_fields(latest),
     }
+    return merge_history_meta(snapshot, panel, date_col="date_only")

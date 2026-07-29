@@ -120,6 +120,19 @@ def format_buy_amount_scenarios(snapshot, base: float, scheme: str) -> str | Non
     return "；".join(parts)
 
 
+BUY_REFERENCE_MAX_TRIGGER_GAP = 0.10
+
+
+def _show_buy_amount_line(signal_eval) -> bool:
+    """未触发买入时，触发跌幅超过阈值则不展示买入参考。"""
+    if signal_eval.get("is_buy"):
+        return True
+    drop = signal_eval.get("drop_to_buy")
+    if drop is None:
+        return False
+    return drop <= BUY_REFERENCE_MAX_TRIGGER_GAP
+
+
 def enrich_signal_buy_amount(index_code, snapshot, signal_eval):
     """为信号评估附加基准/分档买入金额，供报告展示。"""
     from config import BUY_AMOUNT_TIER_ENABLED, BUY_AMOUNT_TIER_SCHEME, get_buy_amount_base
@@ -130,6 +143,9 @@ def enrich_signal_buy_amount(index_code, snapshot, signal_eval):
 
     out = dict(signal_eval)
     out["buy_amount_base"] = base
+
+    if not _show_buy_amount_line(out):
+        return out
 
     if BUY_AMOUNT_TIER_ENABLED:
         scenario_line = format_buy_amount_scenarios(snapshot, base, BUY_AMOUNT_TIER_SCHEME)
