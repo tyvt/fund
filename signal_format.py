@@ -85,6 +85,10 @@ def append_signal_block(lines, signal_eval, module):
     if drop_line:
         lines.append(drop_line)
 
+    buy_amount_line = signal_eval.get("buy_amount_line")
+    if buy_amount_line:
+        lines.append(buy_amount_line)
+
     sell_line = signal_eval.get("sell_trigger_line")
     if sell_line:
         lines.append(sell_line)

@@ -42,6 +42,7 @@ from config import (
     resolve_backtest_amounts,
     US_INDEX_KEYS,
 )
+from buy_amount_config import resolve_simulate_amount
 from cyb_signal import evaluate_cyb_signal
 from hstech_signal import evaluate_hstech_signal
 from dividend_data import is_buy_signal_row
@@ -179,6 +180,12 @@ def _attach_risk_metrics(
     )
 
 
+def _resolve_buy_amount(amount, row):
+    if callable(amount):
+        return float(amount(row))
+    return float(amount)
+
+
 def simulate_trades(
     panel,
     start_date,
@@ -190,7 +197,10 @@ def simulate_trades(
     has_sell=False,
     valuation_price_col=None,
 ):
-    """按日模拟买入/卖出；has_sell=False 时仅买入持有。"""
+    """按日模拟买入/卖出；has_sell=False 时仅买入持有。
+
+    amount 可为固定金额（float），或 amount_fn(row) 按行计算分档金额。
+    """
     val_col = valuation_price_col or "close"
     sample = _filter_panel(panel, start_date, end_date, date_col=date_col)
     if sample.empty:
@@ -218,10 +228,11 @@ def simulate_trades(
         is_buy = buy_fn(row) if buy_fn else False
         is_sell = sell_fn(row) if sell_fn and has_sell else False
 
-        if is_buy and amount > 0:
-            units += amount / price
-            buy_only_units += amount / price
-            total_bought += amount
+        buy_amount = _resolve_buy_amount(amount, row) if is_buy else 0.0
+        if is_buy and buy_amount > 0:
+            units += buy_amount / price
+            buy_only_units += buy_amount / price
+            total_bought += buy_amount
             buy_count += 1
             buy_dates.append(day)
         elif is_sell and units > 0:
@@ -259,6 +270,21 @@ def simulate_trades(
     }
 
 
+def _resolve_trade_amount(
+    code,
+    base_amt,
+    amounts,
+    panel,
+    start_date,
+    end_date,
+    buy_fn,
+    date_col="date",
+):
+    return resolve_simulate_amount(
+        code, base_amt, amounts, panel, start_date, end_date, buy_fn, date_col
+    )
+
+
 def backtest_all(
     start_date=DEFAULT_START,
     end_date=None,
@@ -277,11 +303,14 @@ def backtest_all(
         if amt <= 0:
             continue
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
+        sim_amt = _resolve_trade_amount(
+            code, amt, amounts, panel, start_date, end_date, buy_fn
+        )
         stats = simulate_trades(
             panel,
             start_date,
             end_date,
-            amount=amt,
+            amount=sim_amt,
             buy_fn=buy_fn,
             has_sell=False,
             valuation_price_col="total_return_close",
@@ -319,11 +348,14 @@ def backtest_all(
         sell_on = cn_broad_sell_enabled(code)
         buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
         sell_fn = lambda r, c=code: _cn_broad_signals(r, c)[1]
+        sim_amt = _resolve_trade_amount(
+            code, amt, amounts, panel, start_date, end_date, buy_fn
+        )
         stats = simulate_trades(
             panel,
             start_date,
             end_date,
-            amount=amt,
+            amount=sim_amt,
             buy_fn=buy_fn,
             sell_fn=sell_fn,
             has_sell=sell_on,
@@ -357,11 +389,14 @@ def backtest_all(
     cyb_buy = lambda r: _cyb_signals(r)[0]
     cyb_sell = lambda r: _cyb_signals(r)[1]
     if cyb_amt > 0:
+        sim_amt = _resolve_trade_amount(
+            cyb_code, cyb_amt, amounts, cyb_panel, start_date, end_date, cyb_buy
+        )
         stats = simulate_trades(
             cyb_panel,
             start_date,
             end_date,
-            amount=cyb_amt,
+            amount=sim_amt,
             buy_fn=cyb_buy,
             sell_fn=cyb_sell,
             has_sell=CYB_SELL_ENABLED,
@@ -395,11 +430,14 @@ def backtest_all(
     if hs_amt > 0:
         hs_buy = lambda r: _hstech_signals(r)[0]
         hs_sell = lambda r: _hstech_signals(r)[1]
+        sim_amt = _resolve_trade_amount(
+            hs_code, hs_amt, amounts, hstech_panel, start_date, end_date, hs_buy
+        )
         stats = simulate_trades(
             hstech_panel,
             start_date,
             end_date,
-            amount=hs_amt,
+            amount=sim_amt,
             buy_fn=hs_buy,
             sell_fn=hs_sell,
             has_sell=HSTECH_SELL_ENABLED,
@@ -436,11 +474,14 @@ def backtest_all(
         if us_amt <= 0:
             continue
         us_buy = lambda r, k=key, g=growth: _us_buy_snapshot(k, r, g)
+        sim_amt = _resolve_trade_amount(
+            meta["code"], us_amt, amounts, daily, start_date, end_date, us_buy
+        )
         stats = simulate_trades(
             daily,
             start_date,
             end_date,
-            amount=us_amt,
+            amount=sim_amt,
             buy_fn=us_buy,
             has_sell=False,
         )
@@ -595,6 +636,28 @@ def _format_portfolio_snapshot(amounts):
     return lines
 
 
+def _format_amount_snapshot(amounts):
+    if amounts.get("return_max") and amounts.get("by_code"):
+        by_code = amounts.get("by_code") or {}
+        tier = amounts.get("tier_scheme")
+        lines = [
+            "## 买入金额配置（收益最大化）",
+            "",
+            f"> 总预算 **{amounts.get('total_budget', PORTFOLIO_TOTAL_BUDGET):,.0f}** 元"
+            + (f"；分档 **{tier}**" if tier else ""),
+            "",
+            "| 代码 | 基准单次（元） |",
+            "| --- | ---: |",
+        ]
+        for code in sorted(by_code.keys()):
+            amt = by_code.get(code, 0)
+            if amt > 0:
+                lines.append(f"| {code} | {amt:.0f} |")
+        lines.append("")
+        return lines
+    return _format_portfolio_snapshot(amounts)
+
+
 def format_markdown(results, start_date, end_date, amounts):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     val_dates = [r.final_date for r in results if r.final_date is not None]
@@ -617,7 +680,7 @@ def format_markdown(results, start_date, end_date, amounts):
         "同一指数的「买入次数」应等于各年买入次数之和（区间相同、阈值相同）。",
         "",
         *_format_config_snapshot(),
-        *_format_portfolio_snapshot(amounts),
+        *_format_amount_snapshot(amounts),
         "## 交易统计",
         "",
         "| 指数 | 代码 | 策略 | 买入次 | 卖出次 | 总投入 | 备注 |",
@@ -803,7 +866,12 @@ def main(argv=None):
     parser.add_argument(
         "--portfolio",
         action="store_true",
-        help="使用组合仓位分指数买入金额（默认：全指数统一金额）",
+        help="使用组合仓位分指数买入金额（默认：收益最大化分指数+分档）",
+    )
+    parser.add_argument(
+        "--no-tier",
+        action="store_true",
+        help="禁用价格分档，仅使用基准单次金额",
     )
     parser.add_argument(
         "--output",
@@ -813,10 +881,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
+        tier_enabled = not args.no_tier
         if args.amount is not None and args.amount > 0:
-            amounts = resolve_backtest_amounts(args.amount)
+            amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
+        elif args.portfolio:
+            amounts = resolve_backtest_amounts(
+                portfolio_mode=True, tier_enabled=tier_enabled
+            )
         else:
-            amounts = resolve_backtest_amounts(portfolio_mode=args.portfolio)
+            amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
         print(
             f"正在回测 {args.start} 至 {args.end or '最新'} "
             f"（买入/卖出按当前 config 阈值）..."

@@ -182,7 +182,30 @@ PORTFOLIO_IN_GROUP_SPLIT = _env_str("PORTFOLIO_IN_GROUP_SPLIT", "return_weighted
 PORTFOLIO_US_NDX_SHARE = _env_float("PORTFOLIO_US_NDX_SHARE", 0.85)
 PORTFOLIO_SAT_CYB_SHARE = _env_float("PORTFOLIO_SAT_CYB_SHARE", 0.80)
 
-# 各指数单次买入金额（元）；总投入约 31.62 万（50/20/10/20 权重 + 组内收益倾斜）
+# --- 买入金额分档（回测/实盘参考，见 buy_amount_tiers.py）---
+# 按年区间位置：越低（近年内低点）投入越多；归一化后总投入接近 PORTFOLIO_TOTAL_BUDGET
+BUY_AMOUNT_TIER_SCHEME = _env_str("BUY_AMOUNT_TIER_SCHEME", "range_4_mild")
+BUY_AMOUNT_TIER_ENABLED = _env_bool("BUY_AMOUNT_TIER_ENABLED", True)
+# 默认使用收益最大化分指数金额（非组合 50/20/10/20）；设为 false 则回退模块统一金额
+BUY_AMOUNT_RETURN_MAX = _env_bool("BUY_AMOUNT_RETURN_MAX", True)
+
+# 收益最大化基准单次买入（元）；optimize_return_max_amounts.py 2016–2025
+# 美股 NDX/SPX 经 optimize_us_quota_friendly.py 调整为限购友好（放宽标准+降低单次金额）
+BUY_AMOUNT_BASE_BY_CODE = {
+    "NDX": 880,
+    "SPX": 210,
+    "399006": 118,
+    "000688": 38,
+    "930955": 28,
+    "H30269": 28,
+    "000510": 28,
+    "000300": 28,
+    "000905": 28,
+    "000852": 28,
+    "HSTECH": 28,
+}
+
+# 组合模式分指数金额（--portfolio）；与收益最大化配置独立
 _BACKTEST_BUY_AMOUNT_DEFAULTS = {
     "930955": 944,
     "H30269": 902,
@@ -202,6 +225,12 @@ def _env_buy_amount_for_code(code, default):
     return _env_float_any((f"{code}_BUY_AMOUNT", f"BACKTEST_{code}_BUY_AMOUNT"), default)
 
 
+def get_buy_amount_base(index_code):
+    """单只指数基准单次买入金额（元）。"""
+    default = BUY_AMOUNT_BASE_BY_CODE.get(index_code, 0)
+    return _env_buy_amount_for_code(index_code, default)
+
+
 def get_backtest_buy_amount(index_code, amounts=None):
     """读取单只指数单次买入金额（元）；0 表示不买入。"""
     if amounts is not None:
@@ -217,8 +246,7 @@ def get_backtest_buy_amount(index_code, amounts=None):
         if index_code in {i["code"] for i in CN_BROAD_INDICES}:
             return float(amounts.get("cn_broad", CN_BROAD_BUY_AMOUNT))
         return float(amounts.get("other", BACKTEST_OTHER_BUY_AMOUNT))
-    default = _BACKTEST_BUY_AMOUNT_DEFAULTS.get(index_code, 0)
-    return _env_buy_amount_for_code(index_code, default)
+    return get_buy_amount_base(index_code)
 
 
 def _build_portfolio_by_code(buy_counts, index_returns, total_budget=None):
@@ -253,8 +281,15 @@ def _build_portfolio_by_code(buy_counts, index_returns, total_budget=None):
     return by_code
 
 
-def resolve_backtest_amounts(unified_amount=None, portfolio_mode=False):
-    """回测买入金额。默认全指数统一金额；portfolio_mode=True 时使用组合分指数金额。"""
+def resolve_backtest_amounts(
+    unified_amount=None,
+    portfolio_mode=False,
+    return_max_mode=None,
+    tier_enabled=None,
+):
+    """回测买入金额。默认收益最大化分指数 + 分档；portfolio_mode 为组合权重模式。"""
+    if tier_enabled is None:
+        tier_enabled = BUY_AMOUNT_TIER_ENABLED
     if unified_amount is not None and unified_amount > 0:
         return {
             "dividend": unified_amount,
@@ -262,30 +297,12 @@ def resolve_backtest_amounts(unified_amount=None, portfolio_mode=False):
             "other": unified_amount,
             "unified": True,
             "portfolio": False,
+            "return_max": False,
             "by_code": None,
+            "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
+            "tier_normalize": tier_enabled,
         }
     if portfolio_mode:
-        # 默认收益率用于冷启动；优化脚本会写入 _BACKTEST_BUY_AMOUNT_DEFAULTS
-        _ref_returns = {
-            "930955": 43.5,
-            "H30269": 41.6,
-            "000510": 29.4,
-            "NDX": 151.7,
-            "SPX": 105.0,
-            "000688": 66.1,
-            "399006": 87.8,
-            "000852": 34.2,
-        }
-        _ref_buys = {
-            "930955": 47,
-            "H30269": 119,
-            "000510": 10,
-            "NDX": 210,
-            "SPX": 152,
-            "000688": 204,
-            "399006": 212,
-            "000852": 260,
-        }
         by_code = {
             code: _env_buy_amount_for_code(code, amt)
             for code, amt in _BACKTEST_BUY_AMOUNT_DEFAULTS.items()
@@ -298,9 +315,30 @@ def resolve_backtest_amounts(unified_amount=None, portfolio_mode=False):
             "other": BACKTEST_OTHER_BUY_AMOUNT,
             "unified": False,
             "portfolio": True,
+            "return_max": False,
             "by_code": by_code,
             "total_budget": PORTFOLIO_TOTAL_BUDGET,
             "group_weights": dict(PORTFOLIO_GROUP_WEIGHTS),
+            "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
+            "tier_normalize": tier_enabled,
+        }
+    if return_max_mode is None:
+        return_max_mode = BUY_AMOUNT_RETURN_MAX
+    if return_max_mode:
+        from buy_amount_config import ALL_BUY_INDEX_CODES
+
+        by_code = {code: get_buy_amount_base(code) for code in ALL_BUY_INDEX_CODES}
+        return {
+            "dividend": DIVIDEND_BUY_AMOUNT,
+            "cn_broad": CN_BROAD_BUY_AMOUNT,
+            "other": BACKTEST_OTHER_BUY_AMOUNT,
+            "unified": False,
+            "portfolio": False,
+            "return_max": True,
+            "by_code": by_code,
+            "total_budget": PORTFOLIO_TOTAL_BUDGET,
+            "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
+            "tier_normalize": tier_enabled,
         }
     return {
         "dividend": DIVIDEND_BUY_AMOUNT,
@@ -308,7 +346,10 @@ def resolve_backtest_amounts(unified_amount=None, portfolio_mode=False):
         "other": BACKTEST_OTHER_BUY_AMOUNT,
         "unified": False,
         "portfolio": False,
+        "return_max": False,
         "by_code": None,
+        "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
+        "tier_normalize": tier_enabled,
     }
 
 
@@ -316,8 +357,16 @@ def format_backtest_amount_note(amounts):
     """Markdown/控制台用的买入金额说明。"""
     if amounts is None:
         return "仅统计次数"
+    tier = amounts.get("tier_scheme")
+    tier_suffix = f" + 分档 **{tier}**" if tier else ""
     if amounts.get("unified"):
-        return f"每次买入 **{amounts['dividend']:.0f}** 元"
+        return f"每次买入 **{amounts['dividend']:.0f}** 元{tier_suffix}"
+    if amounts.get("return_max") and amounts.get("by_code"):
+        active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
+        parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
+        budget = amounts.get("total_budget")
+        head = f"收益最大化分指数（总预算 **{budget:,.0f}** 元）" if budget else "收益最大化分指数"
+        return head + tier_suffix + "：" + "；".join(parts)
     if amounts.get("portfolio") and amounts.get("by_code"):
         active = {
             c: a for c, a in amounts["by_code"].items() if a and a > 0
@@ -325,7 +374,7 @@ def format_backtest_amount_note(amounts):
         parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
         budget = amounts.get("total_budget")
         head = f"组合模式（总预算 **{budget:,.0f}** 元）" if budget else "组合模式"
-        return head + "：" + "；".join(parts)
+        return head + tier_suffix + "：" + "；".join(parts)
     parts = [
         f"红利每次 **{amounts['dividend']:.0f}** 元",
         f"宽基每次 **{amounts['cn_broad']:.0f}** 元",
@@ -818,12 +867,12 @@ NDX_FALLBACK_EXPECTED_GROWTH = _env_float("NDX_FALLBACK_EXPECTED_GROWTH", 0.19)
 NDX_HIGH_GROWTH_THRESHOLD = _env_float("NDX_HIGH_GROWTH_THRESHOLD", 0.20)
 NDX_HIGH_GROWTH_PEG_BONUS = _env_float("NDX_HIGH_GROWTH_PEG_BONUS", 0.2)
 NDX_BUY_TRAILING_PE_PERCENTILE_MAX = _env_float(
-    "NDX_BUY_TRAILING_PE_PERCENTILE_MAX", 78
+    "NDX_BUY_TRAILING_PE_PERCENTILE_MAX", 87
 )
 NDX_BUY_FORWARD_PE_PERCENTILE_MAX = _env_float(
-    "NDX_BUY_FORWARD_PE_PERCENTILE_MAX", 75
+    "NDX_BUY_FORWARD_PE_PERCENTILE_MAX", 85
 )
-NDX_BUY_PEG_FORWARD_MAX = _env_float("NDX_BUY_PEG_FORWARD_MAX", 1.45)
+NDX_BUY_PEG_FORWARD_MAX = _env_float("NDX_BUY_PEG_FORWARD_MAX", 1.72)
 NDX_BUY_PEG_HIST_MAX = _env_float("NDX_BUY_PEG_HIST_MAX", 1.5)
 NDX_BUY_RATE_PERCENTILE_MAX = _env_float("NDX_BUY_RATE_PERCENTILE_MAX", 99)
 NDX_HISTORY_YEARS = _env_int("NDX_HISTORY_YEARS", 10)
@@ -832,13 +881,13 @@ NDX_PERCENTILE_MIN_DAYS = _env_int("NDX_PERCENTILE_MIN_DAYS", 24)
 NDX_DAILY_PERCENTILE_WINDOW = _env_int("NDX_DAILY_PERCENTILE_WINDOW", 2520)
 NDX_DAILY_PERCENTILE_MIN_DAYS = _env_int("NDX_DAILY_PERCENTILE_MIN_DAYS", 252)
 NDX_FRED_NETWORK_TIMEOUT = _env_int("NDX_FRED_NETWORK_TIMEOUT", 10)
-NDX_BUY_MAX_ABOVE_LOW_PCT = _env_float("NDX_BUY_MAX_ABOVE_LOW_PCT", 0.14)
+NDX_BUY_MAX_ABOVE_LOW_PCT = _env_float("NDX_BUY_MAX_ABOVE_LOW_PCT", 0.19)
 NDX_BUY_LOW_LOOKBACK_DAYS = _env_int("NDX_BUY_LOW_LOOKBACK_DAYS", 90)
 NDX_BUY_HIGH_LOOKBACK_DAYS = _env_int("NDX_BUY_HIGH_LOOKBACK_DAYS", 252)
 NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
-    "NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.10
+    "NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.07
 )
-NDX_BUY_MAX_YEAR_RANGE_PCT = _env_float("NDX_BUY_MAX_YEAR_RANGE_PCT", 0.45)
+NDX_BUY_MAX_YEAR_RANGE_PCT = _env_float("NDX_BUY_MAX_YEAR_RANGE_PCT", 0.58)
 NDX_BUY_MID_RANGE_POSITION_PCT = _env_float(
     "NDX_BUY_MID_RANGE_POSITION_PCT", 0.45
 )
@@ -877,12 +926,12 @@ SPX_FALLBACK_EXPECTED_GROWTH = _env_float("SPX_FALLBACK_EXPECTED_GROWTH", 0.10)
 SPX_HIGH_GROWTH_THRESHOLD = _env_float("SPX_HIGH_GROWTH_THRESHOLD", 0.15)
 SPX_HIGH_GROWTH_PEG_BONUS = _env_float("SPX_HIGH_GROWTH_PEG_BONUS", 0.15)
 SPX_BUY_TRAILING_PE_PERCENTILE_MAX = _env_float(
-    "SPX_BUY_TRAILING_PE_PERCENTILE_MAX", 78
+    "SPX_BUY_TRAILING_PE_PERCENTILE_MAX", 87
 )
 SPX_BUY_FORWARD_PE_PERCENTILE_MAX = _env_float(
-    "SPX_BUY_FORWARD_PE_PERCENTILE_MAX", 78
+    "SPX_BUY_FORWARD_PE_PERCENTILE_MAX", 87
 )
-SPX_BUY_PEG_FORWARD_MAX = _env_float("SPX_BUY_PEG_FORWARD_MAX", 1.35)
+SPX_BUY_PEG_FORWARD_MAX = _env_float("SPX_BUY_PEG_FORWARD_MAX", 1.62)
 SPX_BUY_PEG_HIST_MAX = _env_float("SPX_BUY_PEG_HIST_MAX", 1.45)
 SPX_BUY_RATE_PERCENTILE_MAX = _env_float("SPX_BUY_RATE_PERCENTILE_MAX", 99)
 SPX_HISTORY_YEARS = _env_int("SPX_HISTORY_YEARS", 10)
@@ -891,13 +940,13 @@ SPX_PERCENTILE_MIN_DAYS = _env_int("SPX_PERCENTILE_MIN_DAYS", 24)
 SPX_DAILY_PERCENTILE_WINDOW = _env_int("SPX_DAILY_PERCENTILE_WINDOW", 2520)
 SPX_DAILY_PERCENTILE_MIN_DAYS = _env_int("SPX_DAILY_PERCENTILE_MIN_DAYS", 252)
 SPX_FRED_NETWORK_TIMEOUT = _env_int("SPX_FRED_NETWORK_TIMEOUT", 10)
-SPX_BUY_MAX_ABOVE_LOW_PCT = _env_float("SPX_BUY_MAX_ABOVE_LOW_PCT", 0.12)
+SPX_BUY_MAX_ABOVE_LOW_PCT = _env_float("SPX_BUY_MAX_ABOVE_LOW_PCT", 0.17)
 SPX_BUY_LOW_LOOKBACK_DAYS = _env_int("SPX_BUY_LOW_LOOKBACK_DAYS", 90)
 SPX_BUY_HIGH_LOOKBACK_DAYS = _env_int("SPX_BUY_HIGH_LOOKBACK_DAYS", 252)
 SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
-    "SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.08
+    "SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.05
 )
-SPX_BUY_MAX_YEAR_RANGE_PCT = _env_float("SPX_BUY_MAX_YEAR_RANGE_PCT", 0.48)
+SPX_BUY_MAX_YEAR_RANGE_PCT = _env_float("SPX_BUY_MAX_YEAR_RANGE_PCT", 0.60)
 SPX_BUY_MID_RANGE_POSITION_PCT = _env_float(
     "SPX_BUY_MID_RANGE_POSITION_PCT", 0.45
 )

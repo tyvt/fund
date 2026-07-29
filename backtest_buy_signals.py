@@ -31,8 +31,10 @@ from config import (
     SPX_INDEX,
     US_INDEX_KEYS,
     format_backtest_amount_note,
+    get_backtest_buy_amount,
     resolve_backtest_amounts,
 )
+from buy_amount_config import resolve_simulate_amount
 from cyb_data import attach_percentiles as attach_cyb_percentiles
 from cyb_data import build_cyb_valuation_panel, fetch_cyb_price_history
 from cyb_signal import evaluate_cyb_signal
@@ -233,9 +235,14 @@ def _simulate_dca_returns(
         return None
 
     buy_prices = []
+    buy_amounts = []
     for _, row in sample.iterrows():
         if buy_fn(row):
             buy_prices.append(float(row[val_col]))
+            if callable(amount):
+                buy_amounts.append(float(amount(row)))
+            else:
+                buy_amounts.append(float(amount))
 
     buy_days = len(buy_prices)
     total_days = len(sample)
@@ -258,8 +265,8 @@ def _simulate_dca_returns(
             **base_stats,
         }
 
-    total_units = sum(amount / price for price in buy_prices)
-    invested = buy_days * amount
+    total_units = sum(amt / price for amt, price in zip(buy_amounts, buy_prices))
+    invested = sum(buy_amounts)
     market_value = total_units * latest_price
     profit = market_value - invested
     return {
@@ -343,21 +350,46 @@ def _us_buy_snapshot(key, row, historical_growth=None):
     return is_us_index_buy(key, snapshot)
 
 
-def backtest_dividend(year, bond_history=None, amount=None, panels=None):
+def _index_simulate_amount(code, amounts, panel, year, buy_fn, date_col="date"):
+    """解析单指数回测金额（固定或分档）。"""
+    if amounts is None:
+        return None
+    base = get_backtest_buy_amount(code, amounts)
+    if base <= 0:
+        return 0
+    if amounts.get("tier_scheme"):
+        return resolve_simulate_amount(
+            code,
+            base,
+            amounts,
+            panel,
+            f"{year}-01-01",
+            f"{year}-12-31",
+            buy_fn,
+            date_col,
+        )
+    return base
+
+
+def backtest_dividend(year, bond_history=None, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     rows = []
     for item in INDICES:
         panel = panels.dividend_panel(item["code"])
-        buy_fn = lambda r, code=item["code"]: is_buy_signal_row(r, code)  # noqa: E731
-        if amount is not None:
+        code = item["code"]
+        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)  # noqa: E731
+        sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+        if amounts and sim_amt == 0:
+            continue
+        if sim_amt is not None:
             result = _simulate_dca_returns(
-                panel, year, buy_fn, amount=amount,
+                panel, year, buy_fn, amount=sim_amt,
                 valuation_price_col="total_return_close",
             )
         else:
             result = _count_buy_days(panel, year, buy_fn)
         if result:
-            rows.append({"code": item["code"], "name": item["name"], **result})
+            rows.append({"code": code, "name": item["name"], **result})
     return rows
 
 
@@ -390,13 +422,16 @@ def _cn_broad_no_data_row(index_meta, amount=None):
     return row
 
 
-def backtest_cn_broad(year, index_meta, amount=None, panels=None):
+def backtest_cn_broad(year, index_meta, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     code = index_meta["code"]
     panel = panels.cn_broad_panel(code)
     buy_fn = lambda r, c=code: _cn_broad_buy_snapshot(r, c)  # noqa: E731
-    if amount is not None:
-        result = _simulate_dca_returns(panel, year, buy_fn, amount=amount)
+    sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+    if amounts and sim_amt == 0:
+        return []
+    if sim_amt is not None:
+        result = _simulate_dca_returns(panel, year, buy_fn, amount=sim_amt)
     else:
         result = _count_buy_days(panel, year, buy_fn)
     if not result:
@@ -411,13 +446,18 @@ US_INDEX_NOTES = {
 }
 
 
-def backtest_us_index(year, key, amount=None, panels=None):
+def backtest_us_index(year, key, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     daily, historical_growth = panels.us_index_panel(key)
+    meta = US_INDEX_META[key]
+    code = meta["code"]
     buy_fn = lambda r, k=key, g=historical_growth: _us_buy_snapshot(k, r, g)  # noqa: E731
-    if amount is not None:
+    sim_amt = _index_simulate_amount(code, amounts, daily, year, buy_fn) if amounts else amount
+    if amounts and sim_amt == 0:
+        return []
+    if sim_amt is not None:
         result = _simulate_dca_returns(
-            daily, year, buy_fn, amount=amount, date_col="date"
+            daily, year, buy_fn, amount=sim_amt, date_col="date"
         )
     else:
         result = _count_buy_days(daily, year, buy_fn, date_col="date")
@@ -428,9 +468,10 @@ def backtest_us_index(year, key, amount=None, panels=None):
     return [{"code": meta["code"], "name": meta["name"], **result}]
 
 
-def backtest_cyb(year, amount=None, panels=None):
+def backtest_cyb(year, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     panel = panels.cyb_panel()
+    code = CYB_INDEX["code"]
     buy_fn = lambda r: evaluate_cyb_signal(  # noqa: E731
         {
             "pe": r["pe"],
@@ -443,9 +484,12 @@ def backtest_cyb(year, amount=None, panels=None):
             "ma_slope_pct": r.get("ma_slope_pct"),
         }
     )["is_buy"]
-    if amount is not None:
+    sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+    if amounts and sim_amt == 0:
+        return []
+    if sim_amt is not None:
         result = _simulate_dca_returns(
-            panel, year, buy_fn, amount=amount, date_col="date"
+            panel, year, buy_fn, amount=sim_amt, date_col="date"
         )
     else:
         result = _count_buy_days(
@@ -456,9 +500,10 @@ def backtest_cyb(year, amount=None, panels=None):
     return [{"code": CYB_INDEX["code"], "name": CYB_INDEX["name"], **result}]
 
 
-def backtest_hstech(year, amount=None, panels=None):
+def backtest_hstech(year, amount=None, amounts=None, panels=None):
     panels = panels or get_panels()
     panel = panels.hstech_panel()
+    code = HSTECH_INDEX["code"]
     buy_fn = lambda r: evaluate_hstech_signal(  # noqa: E731
         {
             "pe": r["pe"],
@@ -470,9 +515,12 @@ def backtest_hstech(year, amount=None, panels=None):
             "ma_slope_pct": r.get("ma_slope_pct"),
         }
     )["is_buy"]
-    if amount is not None:
+    sim_amt = _index_simulate_amount(code, amounts, panel, year, buy_fn) if amounts else amount
+    if amounts and sim_amt == 0:
+        return []
+    if sim_amt is not None:
         result = _simulate_dca_returns(
-            panel, year, buy_fn, amount=amount, date_col="date"
+            panel, year, buy_fn, amount=sim_amt, date_col="date"
         )
     else:
         result = _count_buy_days(
@@ -774,18 +822,29 @@ def print_buy_dates(years):
 def run_backtest(year, amounts=None, panels=None):
     print(f"正在回测 {year} 年买入信号（使用当前 config 阈值）...")
     panels = panels or get_panels()
-    div_amt = amounts["dividend"] if amounts else None
-    broad_amt = amounts["cn_broad"] if amounts else None
-    other_amt = amounts["other"] if amounts else None
+    if amounts and amounts.get("by_code"):
+        use_amounts = amounts
+        div_amt = broad_amt = other_amt = None
+    else:
+        use_amounts = None
+        div_amt = amounts["dividend"] if amounts else None
+        broad_amt = amounts["cn_broad"] if amounts else None
+        other_amt = amounts["other"] if amounts else None
 
     rows = []
-    rows.extend(backtest_dividend(year, panels=panels, amount=div_amt))
+    rows.extend(backtest_dividend(year, panels=panels, amount=div_amt, amounts=use_amounts))
     for item in CN_BROAD_BACKTEST_INDICES:
-        rows.extend(backtest_cn_broad(year, item, panels=panels, amount=broad_amt))
-    rows.extend(backtest_cyb(year, panels=panels, amount=other_amt))
-    rows.extend(backtest_hstech(year, panels=panels, amount=other_amt))
+        rows.extend(
+            backtest_cn_broad(
+                year, item, panels=panels, amount=broad_amt, amounts=use_amounts
+            )
+        )
+    rows.extend(backtest_cyb(year, panels=panels, amount=other_amt, amounts=use_amounts))
+    rows.extend(backtest_hstech(year, panels=panels, amount=other_amt, amounts=use_amounts))
     for key in US_INDEX_KEYS:
-        rows.extend(backtest_us_index(year, key, panels=panels, amount=other_amt))
+        rows.extend(
+            backtest_us_index(year, key, panels=panels, amount=other_amt, amounts=use_amounts)
+        )
     return rows
 
 
@@ -1068,16 +1127,31 @@ def main(argv=None):
         "--amount",
         type=float,
         default=None,
-        help="统一覆盖所有指数单次买入金额（元；默认红利300、宽基100、其他300；设为0则只统计次数）",
+        help="统一覆盖所有指数单次买入金额（元；设为0则只统计次数）",
+    )
+    parser.add_argument(
+        "--portfolio",
+        action="store_true",
+        help="使用组合仓位分指数金额（默认：收益最大化分指数+分档）",
+    )
+    parser.add_argument(
+        "--no-tier",
+        action="store_true",
+        help="禁用价格分档，仅使用基准单次金额",
     )
     args = parser.parse_args(argv)
     years = args.year or [2025]
+    tier_enabled = not args.no_tier
     if args.amount is not None and args.amount <= 0:
         amounts = None
     elif args.amount is not None:
-        amounts = resolve_backtest_amounts(args.amount)
+        amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
+    elif args.portfolio:
+        amounts = resolve_backtest_amounts(
+            portfolio_mode=True, tier_enabled=tier_enabled
+        )
     else:
-        amounts = resolve_backtest_amounts()
+        amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
 
     try:
         if args.list_dates:

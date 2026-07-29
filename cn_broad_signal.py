@@ -1,5 +1,6 @@
 """A 股宽基指数买入/卖出信号与报告格式化。"""
 
+from buy_amount_config import enrich_signal_buy_amount
 from config import cn_broad_sell_enabled, get_cn_broad_signal_config
 from drop_to_buy import (
     cn_broad_drop_to_buy,
@@ -359,6 +360,7 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
+    buy_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, buy_eval)
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
         (

@@ -189,6 +189,10 @@ def build_index_section(
     signal_eval["drop_to_buy_line"] = buy_line
     signal_eval["buy_trigger_line"] = buy_line
 
+    from buy_amount_config import enrich_signal_buy_amount
+
+    signal_eval = enrich_signal_buy_amount(index_code, buy_eval, signal_eval)
+
     lines = [
         f"{index_code} {index_name}",
         f"利差 {spread:.2%} | 利差分位 {pct_text(spread_pct)} | 股息率 {dividend_yield:.2%}",

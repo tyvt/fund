@@ -1,5 +1,6 @@
 """美股指数（纳指 100 / 标普 500）估值信号与报告格式化。"""
 
+from buy_amount_config import enrich_signal_buy_amount
 import config
 from config import BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX, BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT, BUY_RANGE_LOOKBACK_DAYS
 from drop_to_buy import format_buy_trigger_line, us_index_drop_to_buy
@@ -296,6 +297,7 @@ def format_section(key: str, snapshot, signal_eval):
         f"{DIVIDEND_LABELS[key]} {div_text}"
     )
     lines.append(format_price_position_line(snapshot, _cfg(key, "BUY_LOW_LOOKBACK_DAYS")))
+    signal_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, signal_eval)
     append_signal_block(lines, signal_eval, key)
     return {
         "code": snapshot["code"],

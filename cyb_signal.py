@@ -1,5 +1,6 @@
 """创业板指估值信号与报告格式化（加权 PE/PB 为主）。"""
 
+from buy_amount_config import enrich_signal_buy_amount
 from config import (
     BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
     BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT,
@@ -286,6 +287,7 @@ def format_cyb_section(snapshot, signal_eval):
         f"PEG(5年) {peg_hist_text} | 近5年增速 {signal_eval['historical_growth']:.1%}",
     ]
     lines.append(format_price_position_line(snapshot, CYB_BUY_LOW_LOOKBACK_DAYS))
+    signal_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, signal_eval)
     append_signal_block(lines, signal_eval, "cyb")
     return {
         "code": snapshot["code"],
