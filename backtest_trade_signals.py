@@ -1,7 +1,5 @@
-"""按当前买入/卖出标准回测指定区间内的波段交易收益。"""
+"""按当前买入/卖出标准回测波段交易收益（库模块，供优化脚本等调用）。"""
 
-import argparse
-import sys
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -26,27 +24,32 @@ from config import (
     CYB_BUY_PEG_HIST_MAX,
     CYB_INDEX,
     CYB_SELL_ENABLED,
+    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+    CYB_SELL_TRAILING_DRAWDOWN_PCT,
+    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     cn_broad_sell_enabled,
     format_backtest_amount_note,
     get_backtest_buy_amount,
     get_cn_broad_signal_config,
     HSTECH_INDEX,
     HSTECH_SELL_ENABLED,
+    HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT,
+    HSTECH_SELL_TRAILING_DRAWDOWN_PCT,
+    HSTECH_SELL_TRAILING_MIN_HOLD_DAYS,
     INDICES,
     BACKTEST_OUTPUT_DIR,
     PORTFOLIO_EXCLUDED_CODES,
     PORTFOLIO_GROUP_WEIGHTS,
     PORTFOLIO_INDEX_GROUPS,
     PORTFOLIO_TOTAL_BUDGET,
-    PROJECT_DIR,
     resolve_backtest_amounts,
     US_INDEX_KEYS,
 )
 from buy_amount_config import resolve_simulate_amount
 from cyb_signal import evaluate_cyb_signal
 from hstech_signal import evaluate_hstech_signal
+from sell_trailing import simulate_trades_trailing, valuation_sell_hit_cn_broad
 from dividend_data import is_buy_signal_row
-from market_data import configure_stdout_utf8
 
 BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 DEFAULT_START = "2015-01-01"
@@ -93,10 +96,106 @@ def _filter_panel(panel, start_date, end_date, date_col="date"):
         work["_dt"] = pd.to_datetime(work["date_only"])
     else:
         work["_dt"] = pd.to_datetime(work[date_col])
-    mask = work["_dt"] >= pd.Timestamp(start_date)
+    mask = pd.Series(True, index=work.index)
+    if start_date:
+        mask &= work["_dt"] >= pd.Timestamp(start_date)
     if end_date:
         mask &= work["_dt"] <= pd.Timestamp(end_date)
     return work.loc[mask].dropna(subset=["close"])
+
+
+def _cn_broad_trailing_cfg(code):
+    cfg = get_cn_broad_signal_config(code)
+    if cfg.get("sell_trailing_drawdown_pct") is None:
+        return None
+    return {
+        "trailing_drawdown_pct": cfg["sell_trailing_drawdown_pct"],
+        "min_unrealized_gain_pct": cfg["sell_min_unrealized_gain_pct"],
+        "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
+    }
+
+
+def _cn_broad_valuation_sell_fn(code):
+    cfg = get_cn_broad_signal_config(code)
+
+    def _sell(row):
+        snap = {
+            "code": code,
+            "pe_percentile": row.get("pe_percentile"),
+            "pb_percentile": row.get("pb_percentile"),
+            "spread_percentile": row.get("spread_percentile"),
+            "pct_above_low": row.get("pct_above_low"),
+        }
+        buy_ev = evaluate_cn_broad_buy(
+            {
+                **snap,
+                "pct_below_high": row.get("pct_below_high"),
+                "year_range_position": row.get("year_range_position"),
+                "ma_slope_pct": row.get("ma_slope_pct"),
+            }
+        )
+        return valuation_sell_hit_cn_broad(snap, cfg) and not buy_ev["is_buy"]
+
+    return _sell
+
+
+def _cyb_trailing_cfg():
+    if not CYB_SELL_ENABLED or CYB_SELL_TRAILING_DRAWDOWN_PCT is None:
+        return None
+    return {
+        "trailing_drawdown_pct": CYB_SELL_TRAILING_DRAWDOWN_PCT,
+        "min_unrealized_gain_pct": CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+        "min_hold_days": CYB_SELL_TRAILING_MIN_HOLD_DAYS,
+    }
+
+
+def _run_index_trades(
+    panel,
+    code,
+    start_date,
+    end_date,
+    sim_amt,
+    buy_fn,
+    sell_fn,
+    has_sell,
+    trailing_cfg=None,
+    valuation_sell_fn=None,
+    date_col="date",
+    valuation_price_col=None,
+):
+    if has_sell and trailing_cfg is not None:
+        return simulate_trades_trailing(
+            panel,
+            start_date,
+            end_date,
+            amount=sim_amt,
+            date_col=date_col,
+            buy_fn=buy_fn,
+            valuation_sell_fn=valuation_sell_fn,
+            trailing_cfg=trailing_cfg,
+            valuation_price_col=valuation_price_col,
+        )
+    return simulate_trades(
+        panel,
+        start_date,
+        end_date,
+        amount=sim_amt,
+        buy_fn=buy_fn,
+        sell_fn=sell_fn,
+        has_sell=has_sell,
+        date_col=date_col,
+        valuation_price_col=valuation_price_col,
+    )
+
+
+def _hstech_trailing_cfg():
+    if not HSTECH_SELL_ENABLED or HSTECH_SELL_TRAILING_DRAWDOWN_PCT is None:
+        return None
+    return {
+        "trailing_drawdown_pct": HSTECH_SELL_TRAILING_DRAWDOWN_PCT,
+        "min_unrealized_gain_pct": HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT,
+        "min_hold_days": HSTECH_SELL_TRAILING_MIN_HOLD_DAYS,
+    }
 
 
 def _cn_broad_signals(row, index_code):
@@ -348,17 +447,21 @@ def backtest_all(
         sell_on = cn_broad_sell_enabled(code)
         buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
         sell_fn = lambda r, c=code: _cn_broad_signals(r, c)[1]
+        trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
-        stats = simulate_trades(
+        stats = _run_index_trades(
             panel,
+            code,
             start_date,
             end_date,
-            amount=sim_amt,
-            buy_fn=buy_fn,
-            sell_fn=sell_fn,
-            has_sell=sell_on,
+            sim_amt,
+            buy_fn,
+            sell_fn,
+            sell_on,
+            trailing_cfg=trail_cfg,
+            valuation_sell_fn=None,
         )
         if stats:
             ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
@@ -392,14 +495,18 @@ def backtest_all(
         sim_amt = _resolve_trade_amount(
             cyb_code, cyb_amt, amounts, cyb_panel, start_date, end_date, cyb_buy
         )
-        stats = simulate_trades(
+        trail_cfg = _cyb_trailing_cfg()
+        stats = _run_index_trades(
             cyb_panel,
+            cyb_code,
             start_date,
             end_date,
-            amount=sim_amt,
-            buy_fn=cyb_buy,
-            sell_fn=cyb_sell,
-            has_sell=CYB_SELL_ENABLED,
+            sim_amt,
+            cyb_buy,
+            cyb_sell,
+            CYB_SELL_ENABLED,
+            trailing_cfg=trail_cfg,
+            date_col="date",
         )
         if stats:
             ret = stats.get("buy_only_return_pct")
@@ -430,21 +537,24 @@ def backtest_all(
     if hs_amt > 0:
         hs_buy = lambda r: _hstech_signals(r)[0]
         hs_sell = lambda r: _hstech_signals(r)[1]
+        trail_cfg = _hstech_trailing_cfg()
         sim_amt = _resolve_trade_amount(
             hs_code, hs_amt, amounts, hstech_panel, start_date, end_date, hs_buy
         )
-        stats = simulate_trades(
+        stats = _run_index_trades(
             hstech_panel,
+            hs_code,
             start_date,
             end_date,
-            amount=sim_amt,
-            buy_fn=hs_buy,
-            sell_fn=hs_sell,
-            has_sell=HSTECH_SELL_ENABLED,
+            sim_amt,
+            hs_buy,
+            hs_sell,
+            HSTECH_SELL_ENABLED,
+            trailing_cfg=trail_cfg,
             date_col="date",
         )
         if stats:
-            ret = stats.get("buy_only_return_pct")
+            ret = stats.get("return_pct") if HSTECH_SELL_ENABLED else stats.get("buy_only_return_pct")
             metrics = _attach_risk_metrics(
                 hstech_panel,
                 start_date,
@@ -512,6 +622,114 @@ def backtest_all(
     return results
 
 
+def _append_sell_dates_column(table, sell_dates):
+    from backtest_html import append_sell_dates_column
+
+    return append_sell_dates_column(table, sell_dates)
+
+
+def resolve_chart_sell_dates(
+    code,
+    panel,
+    start_date,
+    end_date,
+    amounts,
+    buy_fn,
+    date_col="date",
+    price_col="close",
+):
+    """按波段回测模拟结果返回图表用卖出日期（移动止盈与回测收益一致）。"""
+    amt = get_backtest_buy_amount(code, amounts)
+    if amt <= 0:
+        return []
+    sim_amt = _resolve_trade_amount(
+        code, amt, amounts, panel, start_date, end_date, buy_fn, date_col
+    )
+    if sim_amt == 0:
+        return []
+
+    if cn_broad_sell_enabled(code):
+        trail_cfg = _cn_broad_trailing_cfg(code)
+        if trail_cfg:
+            stats = _run_index_trades(
+                panel,
+                code,
+                start_date,
+                end_date,
+                sim_amt,
+                buy_fn,
+                lambda r: False,
+                True,
+                trailing_cfg=trail_cfg,
+                date_col=date_col,
+                valuation_price_col=price_col,
+            )
+            return stats.get("sell_dates", []) if stats else []
+
+    if code == CYB_INDEX["code"] and CYB_SELL_ENABLED:
+        trail_cfg = _cyb_trailing_cfg()
+        if trail_cfg:
+            stats = _run_index_trades(
+                panel,
+                code,
+                start_date,
+                end_date,
+                sim_amt,
+                buy_fn,
+                lambda r: False,
+                True,
+                trailing_cfg=trail_cfg,
+                date_col=date_col,
+                valuation_price_col=price_col,
+            )
+            return stats.get("sell_dates", []) if stats else []
+
+    if code == HSTECH_INDEX["code"] and HSTECH_SELL_ENABLED:
+        trail_cfg = _hstech_trailing_cfg()
+        if trail_cfg:
+            stats = _run_index_trades(
+                panel,
+                code,
+                start_date,
+                end_date,
+                sim_amt,
+                buy_fn,
+                lambda r: False,
+                True,
+                trailing_cfg=trail_cfg,
+                date_col=date_col,
+                valuation_price_col=price_col,
+            )
+            return stats.get("sell_dates", []) if stats else []
+
+    return []
+
+
+def append_sell_dates_to_chart_table(
+    table,
+    code,
+    panel,
+    start_date,
+    end_date,
+    amounts,
+    buy_fn,
+    date_col="date",
+    price_col="close",
+):
+    """为图表逐日表附加波段回测卖出日期列。"""
+    sell_dates = resolve_chart_sell_dates(
+        code,
+        panel,
+        start_date,
+        end_date,
+        amounts,
+        buy_fn,
+        date_col=date_col,
+        price_col=price_col,
+    )
+    return _append_sell_dates_column(table, sell_dates)
+
+
 def _append_sell_column(table, panel, start_date, end_date, sell_fn, date_col="date"):
     if sell_fn is None or table.empty:
         return table
@@ -547,7 +765,15 @@ def collect_trade_chart_tables(
     panels = panels or BacktestPanels()
     tables = []
 
-    def _maybe_add(panel, code, name, buy_fn, sell_fn=None, date_col="date", price_col="close"):
+    def _maybe_add(
+        panel,
+        code,
+        name,
+        buy_fn,
+        sell_dates_fn=None,
+        date_col="date",
+        price_col="close",
+    ):
         from backtest_buy_signals import BacktestRange, _index_simulate_amount
 
         if amounts is not None:
@@ -577,43 +803,89 @@ def collect_trade_chart_tables(
         )
         if table.empty:
             return
-        table = _append_sell_column(
-            table, panel, start_date, end_date, sell_fn, date_col=date_col
-        )
+        if sell_dates_fn:
+            sell_dates = sell_dates_fn()
+            table = _append_sell_dates_column(table, sell_dates)
         tables.append({"name": name, "code": code, "table": table})
 
     for item in INDICES:
         code = item["code"]
         panel = panels.dividend_panel(code)
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
-        _maybe_add(panel, code, item["name"], buy_fn)
+        _maybe_add(
+            panel,
+            code,
+            item["name"],
+            buy_fn,
+            price_col="total_return_close",
+        )
 
     for item in CN_BROAD_BACKTEST_INDICES:
         code = item["code"]
         panel = panels.cn_broad_panel(code)
-        sell_on = cn_broad_sell_enabled(code)
         buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
-        sell_fn = (
-            (lambda r, c=code: _cn_broad_signals(r, c)[1]) if sell_on else None
+        sell_on = cn_broad_sell_enabled(code)
+
+        def _cn_sell_dates(c=code, p=panel, bf=buy_fn, enabled=sell_on):
+            if not enabled:
+                return []
+            return resolve_chart_sell_dates(
+                c, p, start_date, end_date, amounts, bf,
+            )
+
+        _maybe_add(
+            panel,
+            code,
+            item["name"],
+            buy_fn,
+            sell_dates_fn=_cn_sell_dates if sell_on else None,
         )
-        _maybe_add(panel, code, item["name"], buy_fn, sell_fn)
 
     cyb_panel = panels.cyb_panel()
     cyb_buy = lambda r: _cyb_signals(r)[0]
-    cyb_sell = lambda r: _cyb_signals(r)[1] if CYB_SELL_ENABLED else None
+
+    def _cyb_sell_dates():
+        if not CYB_SELL_ENABLED:
+            return []
+        return resolve_chart_sell_dates(
+            CYB_INDEX["code"],
+            cyb_panel,
+            start_date,
+            end_date,
+            amounts,
+            cyb_buy,
+        )
+
     _maybe_add(
-        cyb_panel, CYB_INDEX["code"], CYB_INDEX["name"], cyb_buy, cyb_sell
+        cyb_panel,
+        CYB_INDEX["code"],
+        CYB_INDEX["name"],
+        cyb_buy,
+        sell_dates_fn=_cyb_sell_dates if CYB_SELL_ENABLED else None,
     )
 
     hstech_panel = panels.hstech_panel()
     hs_buy = lambda r: _hstech_signals(r)[0]
-    hs_sell = lambda r: _hstech_signals(r)[1] if HSTECH_SELL_ENABLED else None
+
+    def _hs_sell_dates():
+        if not HSTECH_SELL_ENABLED:
+            return []
+        return resolve_chart_sell_dates(
+            HSTECH_INDEX["code"],
+            hstech_panel,
+            start_date,
+            end_date,
+            amounts,
+            hs_buy,
+            date_col="date",
+        )
+
     _maybe_add(
         hstech_panel,
         HSTECH_INDEX["code"],
         HSTECH_INDEX["name"],
         hs_buy,
-        hs_sell,
+        sell_dates_fn=_hs_sell_dates if HSTECH_SELL_ENABLED else None,
         date_col="date",
     )
 
@@ -690,7 +962,7 @@ def _format_config_snapshot():
     ]
     for item in CN_BROAD_BACKTEST_INDICES:
         cfg = get_cn_broad_signal_config(item["code"])
-        sell = "科创50卖出" if cn_broad_sell_enabled(item["code"]) else "无"
+        sell = "移动止盈" if cn_broad_sell_enabled(item["code"]) else "无"
         lines.append(
             f"| {item['name']} | {item['code']} | "
             f"≥{cfg['buy_spread_percentile_min']:.0f}% | "
@@ -703,7 +975,7 @@ def _format_config_snapshot():
         f"| 创业板指 | {CYB_INDEX['code']} | — | "
         f"≤{CYB_BUY_PE_PERCENTILE_MAX:.0f}% | ≤{CYB_BUY_PB_PERCENTILE_MAX:.0f}% | "
         f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | "
-        f"≤{CYB_BUY_MAX_YEAR_RANGE_PCT * 100:.0f}% | 无 |",
+        f"≤{CYB_BUY_MAX_YEAR_RANGE_PCT * 100:.0f}% | 移动止盈 |",
         "",
         f"创业板 PEG(5年) ≤ {CYB_BUY_PEG_HIST_MAX}；完整阈值见 `config.py` / `README.md`。",
         "",
@@ -784,14 +1056,10 @@ def format_markdown(results, start_date, end_date, amounts):
         f"> 生成时间：{generated_at}  ",
         "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
-        "> 卖出规则：仅科创50 触发卖点时清仓；其余模块只买不卖  ",
+        "> 卖出规则：沪深300/中证500/科创50/创业板/恒科启用移动止盈；其余只买不卖  ",
         "> 红利/美股：仅买入持有，不设卖点",
         "",
         f"估值截至 **{val_date}**。{BACKTEST_RETURN_FOOTNOTE}",
-        "",
-        f"> **与按年回测的关系**：本报告为 **{start_date} 至 {end_label} 连续区间** 的买卖模拟；"
-        "各年 `YYYY.md` 为 **按自然年切片** 的买入统计与定投收益。"
-        "同一指数的「买入次数」应等于各年买入次数之和（区间相同、阈值相同）。",
         "",
         *_format_config_snapshot(),
         *_format_amount_snapshot(amounts),
@@ -949,7 +1217,11 @@ def print_table(results, start_date, end_date, amounts):
     print("-" * 88)
 
 
-def save_result(markdown, filename="trade_2015_present.md", write_html=True, **html_kwargs):
+def save_result(markdown, filename=None, write_html=True, **html_kwargs):
+    from config import BACKTEST_PRESENT_LABEL
+
+    if filename is None:
+        filename = f"{BACKTEST_PRESENT_LABEL}.md"
     BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
     path = BACKTEST_DIR / filename
     path.write_text(markdown, encoding="utf-8")
@@ -967,101 +1239,3 @@ def save_result(markdown, filename="trade_2015_present.md", write_html=True, **h
             subtitle=html_kwargs.get("subtitle", ""),
         )
     return path, html_path
-
-
-def main(argv=None):
-    configure_stdout_utf8()
-    parser = argparse.ArgumentParser(
-        description="回测指定区间内的买入/卖出信号交易收益"
-    )
-    parser.add_argument(
-        "--start",
-        default=DEFAULT_START,
-        help=f"起始日期（默认 {DEFAULT_START}）",
-    )
-    parser.add_argument(
-        "--end",
-        default=None,
-        help="结束日期（默认至最新数据）",
-    )
-    parser.add_argument(
-        "--amount",
-        type=float,
-        default=None,
-        help="统一覆盖所有指数单次买入金额（元；默认红利300、宽基100、其他300）",
-    )
-    parser.add_argument(
-        "--portfolio",
-        action="store_true",
-        help="使用组合仓位分指数买入金额（默认：收益最大化分指数+分档）",
-    )
-    parser.add_argument(
-        "--no-tier",
-        action="store_true",
-        help="禁用价格分档，仅使用基准单次金额",
-    )
-    parser.add_argument(
-        "--output",
-        default="trade_2015_present.md",
-        help="输出文件名（保存在 output/backtest/）",
-    )
-    parser.add_argument(
-        "--no-html",
-        action="store_true",
-        help="不生成 HTML 折线图",
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        tier_enabled = not args.no_tier
-        if args.amount is not None and args.amount > 0:
-            amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
-        elif args.portfolio:
-            amounts = resolve_backtest_amounts(
-                portfolio_mode=True, tier_enabled=tier_enabled
-            )
-        else:
-            amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
-        print(
-            f"正在回测 {args.start} 至 {args.end or '最新'} "
-            f"（买入/卖出按当前 config 阈值）..."
-        )
-        panels = BacktestPanels()
-        results = backtest_all(
-            start_date=args.start,
-            end_date=args.end,
-            amounts=amounts,
-            panels=panels,
-        )
-        print_table(results, args.start, args.end, amounts)
-        markdown = format_markdown(
-            results, args.start, args.end, amounts
-        )
-        daily_tables = collect_trade_chart_tables(
-            args.start, args.end, amounts=amounts, panels=panels
-        )
-        end_label = args.end or "最新"
-        path, html_path = save_result(
-            markdown,
-            filename=args.output,
-            write_html=not args.no_html,
-            daily_tables=daily_tables,
-            title=f"{args.start} 至 {end_label} 买卖信号回测",
-            start_date=args.start,
-            end_date=args.end,
-            subtitle=(
-                f"区间 {args.start} 至 {end_label}；"
-                f"{format_backtest_amount_note(amounts)}"
-            ),
-        )
-        print(f"\n回测结果已保存: {path}")
-        if html_path:
-            print(f"折线图已保存: {html_path}")
-    except Exception as exc:
-        print(f"回测失败: {exc}")
-        raise
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

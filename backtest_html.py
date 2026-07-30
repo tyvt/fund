@@ -1,9 +1,20 @@
 """回测 HTML 折线图：收盘价走势 + 买入/卖出标记，支持时间范围筛选。"""
 
 import json
+from datetime import date
 from html import escape
 
 import pandas as pd
+
+
+def append_sell_dates_column(table: pd.DataFrame, sell_dates: list) -> pd.DataFrame:
+    """在逐日表上标注实际卖出日期（与波段回测一致）。"""
+    if table is None or table.empty or not sell_dates:
+        return table
+    sell_set = set(sell_dates)
+    out = table.copy()
+    out["sell"] = out["date"].map(lambda d: "卖出" if d in sell_set else "")
+    return out
 
 
 def _table_to_series(table: pd.DataFrame) -> dict:
@@ -80,12 +91,13 @@ def render_backtest_html(
     all_dates = sorted(
         {d for s in payload.values() for d in s["dates"] if d}
     )
-    range_start = start_date or (all_dates[0] if all_dates else "")
-    range_end = end_date or (all_dates[-1] if all_dates else "")
+    today = date.today()
+    default_filter_start = all_dates[0] if all_dates else today.isoformat()
+    default_filter_end = all_dates[-1] if all_dates else today.isoformat()
 
     data_json = json.dumps(payload, ensure_ascii=False)
-    title_esc = escape(title)
-    subtitle_esc = escape(subtitle)
+    page_title = title
+    page_subtitle = subtitle or "买入标准：当前 config 阈值"
     options_html = "\n".join(
         f'<option value="{escape(c)}">{escape(payload[c]["name"])} ({escape(c)})</option>'
         for c in codes
@@ -96,7 +108,7 @@ def render_backtest_html(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title_esc}</title>
+  <title>{escape(page_title)}</title>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
   <style>
     * {{ box-sizing: border-box; }}
@@ -127,8 +139,8 @@ def render_backtest_html(
   </style>
 </head>
 <body>
-  <h1>{title_esc}</h1>
-  <p class="meta">{subtitle_esc}</p>
+  <h1 id="pageTitle">{escape(page_title)}</h1>
+  <p class="meta" id="pageMeta">{escape(page_subtitle)}</p>
   <div class="toolbar">
     <label>指数
       <select id="indexSelect">{options_html}</select>
@@ -136,12 +148,23 @@ def render_backtest_html(
     <label>横轴
       <select id="granularitySelect">
         <option value="year">年</option>
-        <option value="month" selected>月</option>
-        <option value="day">日</option>
+        <option value="month">月</option>
+        <option value="day" selected>日</option>
       </select>
     </label>
-    <label>起始 <input type="date" id="startDate" value="{escape(range_start)}"></label>
-    <label>结束 <input type="date" id="endDate" value="{escape(range_end)}"></label>
+    <label>区间
+      <select id="periodSelect">
+        <option value="all" selected>全量</option>
+        <option value="ytd">当年</option>
+        <option value="1y">近一年</option>
+        <option value="3y">近三年</option>
+        <option value="5y">近五年</option>
+        <option value="10y">近十年</option>
+        <option value="custom">自定义</option>
+      </select>
+    </label>
+    <label>起始 <input type="date" id="startDate" value="{escape(default_filter_start)}"></label>
+    <label>结束 <input type="date" id="endDate" value="{escape(default_filter_end)}"></label>
     <button type="button" id="applyBtn">筛选</button>
     <button type="button" id="resetBtn">重置</button>
   </div>
@@ -149,22 +172,111 @@ def render_backtest_html(
   <p class="legend-hint">蓝线：收盘价；绿点：买入信号；红点：卖出信号（如有）。横轴可选年/月/日聚合；可拖拽下方滑块缩放，或使用日期筛选。</p>
   <script>
     const ALL_DATA = {data_json};
+    const PAGE_TITLE = {json.dumps(page_title, ensure_ascii=False)};
+    const PAGE_SUBTITLE = {json.dumps(page_subtitle, ensure_ascii=False)};
     const DEFAULT_CODE = {json.dumps(default_code)};
-    const DEFAULT_START = {json.dumps(range_start)};
-    const DEFAULT_END = {json.dumps(range_end)};
-    const DEFAULT_GRANULARITY = 'month';
+    const DEFAULT_START = {json.dumps(default_filter_start)};
+    const DEFAULT_END = {json.dumps(default_filter_end)};
+    const DEFAULT_GRANULARITY = 'day';
+    const DEFAULT_PERIOD = 'all';
 
     const chartEl = document.getElementById('chart');
     const chart = echarts.init(chartEl);
+    const pageTitleEl = document.getElementById('pageTitle');
+    const pageMetaEl = document.getElementById('pageMeta');
     const indexSelect = document.getElementById('indexSelect');
     const granularitySelect = document.getElementById('granularitySelect');
+    const periodSelect = document.getElementById('periodSelect');
     const startInput = document.getElementById('startDate');
     const endInput = document.getElementById('endDate');
 
     indexSelect.value = DEFAULT_CODE;
     granularitySelect.value = DEFAULT_GRANULARITY;
+    periodSelect.value = DEFAULT_PERIOD;
 
     const GRANULARITY_LABELS = {{ year: '年', month: '月', day: '日' }};
+    const PERIOD_LABELS = {{
+      all: '全量',
+      ytd: '当年',
+      '1y': '近一年',
+      '3y': '近三年',
+      '5y': '近五年',
+      '10y': '近十年',
+      custom: '自定义',
+    }};
+
+    function getSeriesStartDate(series) {{
+      const dates = series.dates;
+      return dates.length ? dates[0] : DEFAULT_START;
+    }}
+
+    function getSeriesEndDate(series) {{
+      const dates = series.dates;
+      return dates.length ? dates[dates.length - 1] : DEFAULT_END;
+    }}
+
+    function shiftYears(dateStr, years) {{
+      const parts = dateStr.split('-').map(Number);
+      const d = new Date(parts[0], parts[1] - 1, parts[2]);
+      d.setFullYear(d.getFullYear() - years);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return y + '-' + m + '-' + day;
+    }}
+
+    function applyPeriod(period, series) {{
+      const end = getSeriesEndDate(series);
+      let start = end;
+      if (period === 'ytd') {{
+        start = end.slice(0, 4) + '-01-01';
+      }} else if (period === '1y') {{
+        start = shiftYears(end, 1);
+      }} else if (period === '3y') {{
+        start = shiftYears(end, 3);
+      }} else if (period === '5y') {{
+        start = shiftYears(end, 5);
+      }} else if (period === '10y') {{
+        start = shiftYears(end, 10);
+      }} else if (period === 'all') {{
+        start = getSeriesStartDate(series);
+      }} else {{
+        return;
+      }}
+      startInput.value = start;
+      endInput.value = end;
+    }}
+
+    function expectedRange(period, series) {{
+      const end = getSeriesEndDate(series);
+      let start = end;
+      if (period === 'ytd') start = end.slice(0, 4) + '-01-01';
+      else if (period === '1y') start = shiftYears(end, 1);
+      else if (period === '3y') start = shiftYears(end, 3);
+      else if (period === '5y') start = shiftYears(end, 5);
+      else if (period === '10y') start = shiftYears(end, 10);
+      else if (period === 'all') start = getSeriesStartDate(series);
+      return {{ start, end }};
+    }}
+
+    function detectPeriod(start, end, series) {{
+      for (const key of ['all', 'ytd', '1y', '3y', '5y', '10y']) {{
+        const exp = expectedRange(key, series);
+        if (start === exp.start && end === exp.end) return key;
+      }}
+      return 'custom';
+    }}
+
+    function periodLabel(period) {{
+      return PERIOD_LABELS[period] || '自定义';
+    }}
+
+    function describeRange(start, end, period) {{
+      if (period && period !== 'custom') {{
+        return periodLabel(period) + '（' + start + ' 至 ' + end + '）';
+      }}
+      return start + ' 至 ' + end;
+    }}
 
     function filterSeries(series, start, end) {{
       const out = {{ dates: [], closes: [], buys: [], sells: [], buy_amounts: [] }};
@@ -186,6 +298,86 @@ def render_backtest_html(
       if (!value || value <= 0) return '';
       if (value >= 10000) return (value / 10000).toFixed(2) + ' 万元';
       return Math.round(value).toLocaleString('zh-CN') + ' 元';
+    }}
+
+    function formatSignedMoney(value) {{
+      if (value == null || Number.isNaN(value)) return '—';
+      const sign = value >= 0 ? '+' : '';
+      return sign + Math.round(value).toLocaleString('zh-CN') + ' 元';
+    }}
+
+    function formatPct(value) {{
+      if (value == null || Number.isNaN(value)) return '—';
+      const sign = value >= 0 ? '+' : '';
+      return sign + value.toFixed(1) + '%';
+    }}
+
+    function simulateTradeStats(filtered) {{
+      let units = 0;
+      let totalBought = 0;
+      let totalSold = 0;
+      let buyCount = 0;
+      let sellCount = 0;
+      let lastClose = null;
+      for (let i = 0; i < filtered.dates.length; i++) {{
+        const c = filtered.closes[i];
+        if (c == null) continue;
+        lastClose = c;
+        if (filtered.buys[i]) {{
+          const amt = filtered.buy_amounts[i] || 0;
+          buyCount += 1;
+          if (amt > 0) {{
+            units += amt / c;
+            totalBought += amt;
+          }}
+        }}
+        if (filtered.sells[i] && units > 0) {{
+          totalSold += units * c;
+          units = 0;
+          sellCount += 1;
+        }}
+      }}
+      let profit = null;
+      let returnPct = null;
+      let marketValue = null;
+      if (lastClose != null && totalBought > 0) {{
+        marketValue = totalSold + units * lastClose;
+        profit = marketValue - totalBought;
+        returnPct = profit / totalBought * 100;
+      }}
+      return {{
+        buyCount,
+        sellCount,
+        totalBought,
+        totalSold,
+        marketValue,
+        profit,
+        returnPct,
+      }};
+    }}
+
+    function buildStatsText(stats) {{
+      const parts = [];
+      parts.push('买入 ' + stats.buyCount + ' 次');
+      if (stats.totalBought > 0) {{
+        parts.push('投入 ' + formatBuyAmount(stats.totalBought));
+      }}
+      if (stats.sellCount > 0) {{
+        parts.push('卖出 ' + stats.sellCount + ' 次');
+      }}
+      if (stats.profit != null) {{
+        parts.push('盈亏 ' + formatSignedMoney(stats.profit));
+        parts.push('收益率 ' + formatPct(stats.returnPct));
+      }}
+      return parts.join(' · ');
+    }}
+
+    function updatePageHeader(series, code, start, end, period, stats) {{
+      const rangeText = describeRange(start, end, period);
+      const periodText = period === 'custom' ? rangeText : periodLabel(period);
+      pageTitleEl.textContent = PAGE_TITLE + ' · ' + series.name + '（' + code + '）· ' + periodText;
+      document.title = pageTitleEl.textContent;
+      pageMetaEl.textContent = PAGE_SUBTITLE + ' · ' + rangeText + ' · ' + buildStatsText(stats);
     }}
 
     function periodKey(dateStr, granularity) {{
@@ -306,21 +498,20 @@ def render_backtest_html(
       if (!series) return;
       const start = startInput.value || null;
       const end = endInput.value || null;
+      const period = periodSelect.value || DEFAULT_PERIOD;
       const granularity = granularitySelect.value || DEFAULT_GRANULARITY;
       const filtered = filterSeries(series, start, end);
+      const stats = simulateTradeStats(filtered);
       const chartData = aggregateSeries(filtered, granularity);
-      const buyCount = chartData.buyCount;
-      const sellCount = chartData.sellCount;
-      const buyAmountTotal = chartData.buyAmountTotal;
       const unit = chartData.unit;
-      const buyAmountText = formatBuyAmount(buyAmountTotal);
+      const statsText = buildStatsText(stats);
+
+      updatePageHeader(series, code, start, end, period, stats);
 
       chart.setOption({{
         title: {{
           text: series.name + ' (' + code + ')',
-          subtext: '样本 ' + chartData.labels.length + ' ' + unit + ' · 买入 ' + buyCount + ' 次'
-            + (buyAmountText ? ' · ' + buyAmountText : '')
-            + (sellCount ? ' · 卖出 ' + sellCount + ' 次' : ''),
+          subtext: '样本 ' + chartData.labels.length + ' ' + unit + ' · ' + statsText,
           left: 'center',
           textStyle: {{ fontSize: 15 }},
           subtextStyle: {{ fontSize: 12, color: '#888' }},
@@ -378,16 +569,32 @@ def render_backtest_html(
       }}, true);
     }}
 
-    indexSelect.addEventListener('change', render);
+    indexSelect.addEventListener('change', () => {{
+      const series = ALL_DATA[indexSelect.value];
+      if (periodSelect.value !== 'custom') {{
+        applyPeriod(periodSelect.value, series);
+      }}
+      render();
+    }});
     granularitySelect.addEventListener('change', render);
-    document.getElementById('applyBtn').addEventListener('click', render);
+    periodSelect.addEventListener('change', () => {{
+      if (periodSelect.value === 'custom') return;
+      applyPeriod(periodSelect.value, ALL_DATA[indexSelect.value]);
+      render();
+    }});
+    document.getElementById('applyBtn').addEventListener('click', () => {{
+      const series = ALL_DATA[indexSelect.value];
+      periodSelect.value = detectPeriod(startInput.value, endInput.value, series);
+      render();
+    }});
     document.getElementById('resetBtn').addEventListener('click', () => {{
-      startInput.value = DEFAULT_START;
-      endInput.value = DEFAULT_END;
       granularitySelect.value = DEFAULT_GRANULARITY;
+      periodSelect.value = DEFAULT_PERIOD;
+      applyPeriod(DEFAULT_PERIOD, ALL_DATA[indexSelect.value]);
       render();
     }});
     window.addEventListener('resize', () => chart.resize());
+    applyPeriod(DEFAULT_PERIOD, ALL_DATA[DEFAULT_CODE]);
     render();
   </script>
 </body>

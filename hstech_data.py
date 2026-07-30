@@ -215,14 +215,44 @@ def fetch_hstech_snapshot(expected_growth=None):
         ma_days=BUY_TREND_MA_DAYS,
         slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
     )
-    from hstech_signal import compute_recent_signal_buy_avg
+    from hstech_signal import compute_recent_signal_buy_avg, evaluate_hstech_signal
+    from sell_trailing import compute_peak_since_last_buy
+
+    latest = panel.iloc[-1]
+
+    def _row_snap(row):
+        return {
+            "pe": row["pe"],
+            "pe_percentile": row.get("pe_percentile"),
+            "dividend_percentile": row.get("dividend_percentile"),
+            "pct_above_low": row.get("pct_above_low"),
+            "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
+            "close": row.get("close"),
+        }
 
     recent_signal_buy_avg = compute_recent_signal_buy_avg(
         panel,
         lookback_days=HSTECH_SELL_COST_LOOKBACK_DAYS,
         close_col="close",
     )
-    latest = panel.iloc[-1]
+    peak_since_last_buy = compute_peak_since_last_buy(
+        panel,
+        lambda s: evaluate_hstech_signal(s),
+        _row_snap,
+        date_col="date_only",
+        close_col="close",
+    )
+    last_buy_date = None
+    for _, row in panel.iterrows():
+        if evaluate_hstech_signal(_row_snap(row))["is_buy"]:
+            last_buy_date = pd.Timestamp(row["date_only"])
+    days_since_last_buy = None
+    if last_buy_date is not None:
+        days_since_last_buy = (
+            pd.Timestamp(latest["date_only"]) - last_buy_date
+        ).days
     volatility = compute_annualized_volatility(price_history)
     pct_above_low = (
         float(latest["pct_above_low"])
@@ -264,6 +294,8 @@ def fetch_hstech_snapshot(expected_growth=None):
         "volatility": volatility,
         "history_days": int(panel["pe"].notna().sum()),
         "recent_signal_buy_avg": recent_signal_buy_avg,
+        "peak_since_last_buy": peak_since_last_buy,
+        "days_since_last_buy": days_since_last_buy,
         "panel": panel,
         "expected_growth": expected_growth,
         "high_lookback_days": HSTECH_BUY_HIGH_LOOKBACK_DAYS,

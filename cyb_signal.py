@@ -28,6 +28,9 @@ from config import (
     CYB_SELL_PE_PERCENTILE_MIN,
     CYB_SELL_PEG_HIST_MIN,
     CYB_SELL_ENABLED,
+    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+    CYB_SELL_TRAILING_DRAWDOWN_PCT,
+    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
 )
 from drop_to_buy import (
     cyb_drop_to_buy,
@@ -49,6 +52,7 @@ from price_position import (
     trend_filter_ok,
     year_range_ok,
 )
+from sell_trailing import trailing_sell_hit
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -185,6 +189,19 @@ def evaluate_cyb_signal(snapshot):
     is_sell = False
     sell_reasons = []
     if CYB_SELL_ENABLED:
+        close = snapshot.get("close")
+        recent_avg = snapshot.get("recent_signal_buy_avg")
+        peak_price = snapshot.get("peak_since_last_buy")
+        days_since_buy = snapshot.get("days_since_last_buy")
+        trail_hit = trailing_sell_hit(
+            close=close,
+            cost_basis=recent_avg,
+            peak_price=peak_price,
+            min_unrealized_gain_pct=CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+            trailing_drawdown_pct=CYB_SELL_TRAILING_DRAWDOWN_PCT,
+            min_hold_days=CYB_SELL_TRAILING_MIN_HOLD_DAYS,
+            days_since_buy=days_since_buy,
+        )
         pe_high = pe_pct is not None and pe_pct >= CYB_SELL_PE_PERCENTILE_MIN
         pb_high = pb_pct is not None and pb_pct >= CYB_SELL_PB_PERCENTILE_MIN
         peg_combo = (
@@ -195,7 +212,10 @@ def evaluate_cyb_signal(snapshot):
             and pe_pct >= CYB_SELL_COMBO_PE_PERCENTILE_MIN
             and pb_pct >= CYB_SELL_COMBO_PB_PERCENTILE_MIN
         )
-        if pe_high and pb_high:
+        if trail_hit:
+            is_sell = True
+            sell_reasons.append("移动止盈触发")
+        elif pe_high and pb_high:
             is_sell = True
             sell_reasons.append(f"PE分位{pct_text(pe_pct)}、PB分位{pct_text(pb_pct)}均偏高")
         elif peg_combo:

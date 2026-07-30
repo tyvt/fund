@@ -28,7 +28,11 @@ from data_cache import (
     get_or_fetch_us_dataframe,
     get_or_fetch_us_json,
     is_fresh_today,
+    load_json,
     load_text,
+    merge_dataframes_by_date,
+    save_dataframe,
+    save_json,
     save_text,
     us_cache_path,
 )
@@ -105,6 +109,71 @@ def _filter_since(frame, date_col="date", *, key: str):
     if frame is None or frame.empty:
         return frame
     return frame[frame[date_col] >= _data_start(key)].copy()
+
+
+def trim_us_index_cache() -> list[str]:
+    """裁剪美股指数本地缓存：删除各指数基日前的历史数据。"""
+    from index_meta import get_index_base_date_iso
+
+    lines: list[str] = []
+    ndx_cut = pd.Timestamp(get_index_base_date_iso(NDX_INDEX["code"]))
+    spx_cut = pd.Timestamp(get_index_base_date_iso(SPX_INDEX["code"]))
+    earliest_us = min(ndx_cut, spx_cut)
+
+    def _trim_csv(name: str, cutoff: pd.Timestamp, date_col: str | None = None):
+        path = us_cache_path(name)
+        if not path.exists():
+            return
+        try:
+            frame = pd.read_csv(path)
+        except Exception:
+            return
+        if frame is None or frame.empty:
+            return
+        col = date_col or (
+            "observation_date" if "observation_date" in frame.columns else "date"
+        )
+        before = len(frame)
+        frame[col] = pd.to_datetime(frame[col], errors="coerce")
+        trimmed = frame[frame[col] >= cutoff].reset_index(drop=True)
+        if len(trimmed) < before:
+            save_dataframe(path, trimmed)
+            lines.append(
+                f"  {name}: {before} -> {len(trimmed)} 行（自 {cutoff.date()}）"
+            )
+
+    def _trim_pe_json(name: str, cutoff: pd.Timestamp):
+        path = us_cache_path(name)
+        payload = load_json(path)
+        if not payload:
+            return
+        changed = False
+        for series_key in ("trailing", "forward"):
+            rows = payload.get(series_key) or []
+            if not rows:
+                continue
+            kept = [
+                row for row in rows if pd.Timestamp(row["date"]) >= cutoff
+            ]
+            if len(kept) < len(rows):
+                payload[series_key] = kept
+                changed = True
+        if changed:
+            save_json(path, payload)
+            lines.append(f"  {name}: 已裁剪至 {cutoff.date()}")
+
+    _trim_csv("fred_NASDAQ100.csv", ndx_cut, "observation_date")
+    _trim_csv("ndx_price_akshare.csv", ndx_cut)
+    _trim_pe_json("ndx_forward_pe.json", ndx_cut)
+
+    _trim_csv("fred_SP500.csv", spx_cut, "observation_date")
+    _trim_csv("spx_price_akshare.csv", spx_cut)
+    _trim_pe_json("spx_forward_pe.json", spx_cut)
+
+    _trim_csv("fred_DGS10.csv", earliest_us, "observation_date")
+    _trim_csv("us10y_akshare.csv", earliest_us)
+
+    return lines
 
 
 def _fetch_json(url, timeout=REQUEST_TIMEOUT):
@@ -239,14 +308,36 @@ def _fetch_price_from_akshare(key: str):
 
 
 def fetch_price_history(key: str):
+    """价格历史：FRED 覆盖基日起始段，akshare 补齐并覆盖近期（更新更及时）。"""
     spec = _spec(key)
-    start = _data_start(key)
+    start = pd.Timestamp(_data_start(key))
+    merged = None
+
     try:
-        history = fetch_fred_series(spec["fred_price_series"], start_date=start)
-        return history.rename(columns={"value": "close"})
+        fred = fetch_fred_series(spec["fred_price_series"], start_date=start)
+        fred = fred.rename(columns={"value": "close"})
+        merged = fred
     except (requests.RequestException, RuntimeError):
-        out = _fetch_price_from_akshare(key)
-        return out[out["date"] >= pd.Timestamp(start)].reset_index(drop=True)
+        pass
+
+    try:
+        ak = _fetch_price_from_akshare(key)
+        ak = ak[ak["date"] >= start].copy()
+        if not ak.empty:
+            merged = (
+                merge_dataframes_by_date(merged, ak, date_col="date")
+                if merged is not None and not merged.empty
+                else ak
+            )
+    except Exception:
+        pass
+
+    if merged is None or merged.empty:
+        raise RuntimeError(f"无法获取{spec['index']['name']}价格历史")
+
+    out = merged.sort_values("date").reset_index(drop=True)
+    out["date"] = pd.to_datetime(out["date"])
+    return out
 
 
 def fetch_dividend_yield_proxy(key: str):

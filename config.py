@@ -21,6 +21,7 @@ LOGS_DIR = PROJECT_DIR / "logs"
 DATA_CACHE_DIR = PROJECT_DIR / "cache"
 US_DATA_CACHE_DIR = DATA_CACHE_DIR / "us"
 BACKTEST_OUTPUT_DIR = PROJECT_DIR / "output" / "backtest"
+BACKTEST_PRESENT_LABEL = "inception_present"
 
 INDICES = [
     {"code": "930955", "name": "中证红利低波100"},
@@ -48,7 +49,9 @@ CYB_INDEX = {"code": "399006", "name": "创业板指"}
 HSTECH_INDEX = {"code": "HSTECH", "name": "恒生科技指数"}
 HSTECH_MARKET_DATA_START = "2020-07-27"
 NDX_INDEX = {"code": "NDX", "name": "纳斯达克100"}
+NDX_MARKET_DATA_START = "2010-01-01"
 SPX_INDEX = {"code": "SPX", "name": "标普500"}
+SPX_MARKET_DATA_START = "2013-01-01"
 
 CN_BROAD_INDICES = [
     A500_INDEX,
@@ -198,22 +201,22 @@ BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET = _env_float(
     "BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET", 72_577
 )
 ANNUAL_INVESTMENT_BUDGET_ENABLED = _env_bool("ANNUAL_INVESTMENT_BUDGET_ENABLED", True)
-ANNUAL_INVESTMENT_BUDGET = _env_float("ANNUAL_INVESTMENT_BUDGET", 30_000)
+ANNUAL_INVESTMENT_BUDGET = _env_float("ANNUAL_INVESTMENT_BUDGET", 72_000)
 # 各年可覆盖默认值，如 push.env: ANNUAL_INVESTMENT_BUDGET_2025=100000
 ANNUAL_INVESTMENT_BUDGET_BY_YEAR = _build_annual_investment_budget_by_year()
 
 # --- 买入金额分档（回测/实盘参考，见 buy_amount_tiers.py）---
 # 按年区间位置：越低（近年内低点）投入越多；归一化后总投入接近 PORTFOLIO_TOTAL_BUDGET
-BUY_AMOUNT_TIER_SCHEME = _env_str("BUY_AMOUNT_TIER_SCHEME", "range_6_fine")
+BUY_AMOUNT_TIER_SCHEME = _env_str("BUY_AMOUNT_TIER_SCHEME", "range_8_fine")
 BUY_AMOUNT_TIER_ENABLED = _env_bool("BUY_AMOUNT_TIER_ENABLED", True)
 # 默认使用收益最大化分指数金额（非组合 50/20/10/20）；设为 false 则回退模块统一金额
 BUY_AMOUNT_RETURN_MAX = _env_bool("BUY_AMOUNT_RETURN_MAX", True)
 
-# 收益最大化基准单次买入（元）；optimize_return_max_amounts.py 2016–2025
-# 美股 NDX/SPX 经 optimize_us_fx_quota.py 调整（大幅放宽买入日 + 六档细分）
+# 收益最大化基准单次买入（元）；optimize_us_year_range.py 2010–至今
+# 美股 NDX/SPX：区间放宽至 65% + 八档细分 + 基准降额 72%
 BUY_AMOUNT_BASE_BY_CODE = {
-    "NDX": 880,
-    "SPX": 210,
+    "NDX": 634,
+    "SPX": 151,
     "399006": 118,
     "000688": 38,
     "930955": 28,
@@ -438,10 +441,10 @@ def format_backtest_amount_note(amounts):
 # 红利指数仅配置买入阈值，不设卖点。
 # 两只指数价格走势接近，但 PE 中枢不同（低波100 约 8.5，低波动约 7.5），
 # 利差分位历史分布也不同，故使用分指数默认阈值；可用 DIVIDEND_{代码}_* 覆盖。
-# 默认阈值经 2015 至今回测：利差 3.0%、H30269 利差分位 42%/PE 72、930955 PE 68，
-# 较旧版买入次 +62、两只指数收益率均不降（H30269 +5.8pp）。
+# 默认阈值经 2016–2025 回测微调：利差 2.8%、930955 利差分位 44、H30269 利差分位 40/PE 74，
+# 适度放宽价格位置与回撤，买入频次提升（930955 +31 次、H30269 +130 次）且收益不明显降低。
 DIVIDEND_BUY_SPREAD_MIN = _env_float_any(
-    ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.030
+    ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.028
 )
 DIVIDEND_BUY_SPREAD_PERCENTILE_MIN = _env_float_any(
     ("DIVIDEND_BUY_SPREAD_PERCENTILE_MIN", "BUY_SPREAD_PERCENTILE_MIN"), 38
@@ -544,15 +547,17 @@ _DIVIDEND_GLOBAL_DEFAULTS = {
 
 _DIVIDEND_PER_INDEX_DEFAULTS = {
     "930955": {
-        "buy_spread_percentile_min": 48,
+        "buy_spread_percentile_min": 44,
         "buy_pe_percentile_max": 68,
         "buy_max_above_low_pct": 0.04,
         "buy_max_year_range_pct": 0.55,
     },
     "H30269": {
-        "buy_spread_percentile_min": 42,
-        "buy_pe_percentile_max": 72,
-        "buy_max_year_range_pct": 0.55,
+        "buy_spread_percentile_min": 40,
+        "buy_pe_percentile_max": 74,
+        "buy_max_above_low_pct": 0.06,
+        "buy_min_drawdown_from_high_pct": 0.10,
+        "buy_max_year_range_pct": 0.62,
     },
 }
 
@@ -618,6 +623,10 @@ _CN_BROAD_CFG_SUFFIX = {
     "sell_pe_percentile_min": "SELL_PE_PERCENTILE_MIN",
     "sell_pb_percentile_min": "SELL_PB_PERCENTILE_MIN",
     "sell_max_above_low_pct": "SELL_MAX_ABOVE_LOW_PCT",
+    "sell_trailing_drawdown_pct": "SELL_TRAILING_DRAWDOWN_PCT",
+    "sell_min_unrealized_gain_pct": "SELL_MIN_UNREALIZED_GAIN_PCT",
+    "sell_trailing_min_hold_days": "SELL_TRAILING_MIN_HOLD_DAYS",
+    "sell_cost_lookback_days": "SELL_COST_LOOKBACK_DAYS",
 }
 
 _CN_BROAD_INT_KEYS = {
@@ -630,6 +639,8 @@ _CN_BROAD_INT_KEYS = {
     "buy_range_lookback_days",
     "buy_trend_ma_days",
     "buy_trend_slope_lookback_days",
+    "sell_trailing_min_hold_days",
+    "sell_cost_lookback_days",
 }
 
 
@@ -665,6 +676,10 @@ def _cn_broad_index_defaults(**overrides):
         "sell_pe_percentile_min": 88.0,
         "sell_pb_percentile_min": 99.0,
         "sell_max_above_low_pct": 0.20,
+        "sell_trailing_drawdown_pct": None,
+        "sell_min_unrealized_gain_pct": 0.60,
+        "sell_trailing_min_hold_days": 90,
+        "sell_cost_lookback_days": 252,
     }
     cfg.update(overrides)
     return cfg
@@ -699,6 +714,10 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=25,
         sell_pe_percentile_min=85,
         sell_max_above_low_pct=0.18,
+        # 移动止盈：浮盈≥60% 后，自峰值回撤 10% 卖出（2015 至今回测超额约 +8%）
+        sell_trailing_drawdown_pct=0.10,
+        sell_min_unrealized_gain_pct=0.60,
+        sell_trailing_min_hold_days=90,
     ),
     # 中证500：二次收紧
     "000905": _cn_broad_index_defaults(
@@ -712,6 +731,10 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.24,
+        # 移动止盈：浮盈≥50% 后，自峰值回撤 12% 卖出（自基日回测超额约 +5%）
+        sell_trailing_drawdown_pct=0.12,
+        sell_min_unrealized_gain_pct=0.50,
+        sell_trailing_min_hold_days=60,
     ),
     # 中证1000：二次收紧（最严）
     "000852": _cn_broad_index_defaults(
@@ -739,6 +762,10 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.25,
+        # 移动止盈：浮盈≥80% 后，自峰值回撤 14% 卖出（2015 至今回测超额约 +18%）
+        sell_trailing_drawdown_pct=0.14,
+        sell_min_unrealized_gain_pct=0.80,
+        sell_trailing_min_hold_days=60,
     ),
 }
 
@@ -820,6 +847,11 @@ CYB_SELL_PB_PERCENTILE_MIN = _env_float("CYB_SELL_PB_PERCENTILE_MIN", 78)
 CYB_SELL_PEG_HIST_MIN = _env_float("CYB_SELL_PEG_HIST_MIN", 3.0)
 CYB_SELL_COMBO_PE_PERCENTILE_MIN = _env_float("CYB_SELL_COMBO_PE_PERCENTILE_MIN", 60)
 CYB_SELL_COMBO_PB_PERCENTILE_MIN = _env_float("CYB_SELL_COMBO_PB_PERCENTILE_MIN", 60)
+# 移动止盈：浮盈≥100% 后，自峰值回撤 12% 卖出（2015 至今回测超额约 +12%）
+CYB_SELL_TRAILING_DRAWDOWN_PCT = _env_float("CYB_SELL_TRAILING_DRAWDOWN_PCT", 0.12)
+CYB_SELL_MIN_UNREALIZED_GAIN_PCT = _env_float("CYB_SELL_MIN_UNREALIZED_GAIN_PCT", 1.0)
+CYB_SELL_TRAILING_MIN_HOLD_DAYS = _env_int("CYB_SELL_TRAILING_MIN_HOLD_DAYS", 120)
+CYB_SELL_COST_LOOKBACK_DAYS = _env_int("CYB_SELL_COST_LOOKBACK_DAYS", 252)
 CYB_PERCENTILE_WINDOW = _env_int("CYB_PERCENTILE_WINDOW", 2520)
 CYB_DIV_PERCENTILE_WINDOW = _env_int("CYB_DIV_PERCENTILE_WINDOW", 1260)
 CYB_PERCENTILE_MIN_DAYS = _env_int("CYB_PERCENTILE_MIN_DAYS", 120)
@@ -864,6 +896,10 @@ HSTECH_SELL_PEG_HIST_MIN = _env_float("HSTECH_SELL_PEG_HIST_MIN", 3.0)
 # 动态卖出：PE 分位偏高时，须 PEG 过高或距近1年低点涨幅过大（避免估值钝化时过早/过晚卖）
 HSTECH_SELL_ABOVE_LOW_MIN = _env_float("HSTECH_SELL_ABOVE_LOW_MIN", 0.40)
 HSTECH_SELL_COST_LOOKBACK_DAYS = _env_int("HSTECH_SELL_COST_LOOKBACK_DAYS", 252)
+# 移动止盈：浮盈≥50% 后，自峰值回撤 10% 卖出（自基日回测超额约 +5%）
+HSTECH_SELL_TRAILING_DRAWDOWN_PCT = _env_float("HSTECH_SELL_TRAILING_DRAWDOWN_PCT", 0.10)
+HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT = _env_float("HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT", 0.50)
+HSTECH_SELL_TRAILING_MIN_HOLD_DAYS = _env_int("HSTECH_SELL_TRAILING_MIN_HOLD_DAYS", 60)
 HSTECH_PERCENTILE_WINDOW = _env_int("HSTECH_PERCENTILE_WINDOW", 1260)
 HSTECH_DIV_PERCENTILE_WINDOW = _env_int("HSTECH_DIV_PERCENTILE_WINDOW", 756)
 HSTECH_PERCENTILE_MIN_DAYS = _env_int("HSTECH_PERCENTILE_MIN_DAYS", 60)
@@ -935,7 +971,7 @@ NDX_BUY_HIGH_LOOKBACK_DAYS = _env_int("NDX_BUY_HIGH_LOOKBACK_DAYS", 252)
 NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
     "NDX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.0
 )
-NDX_BUY_MAX_YEAR_RANGE_PCT = _env_float("NDX_BUY_MAX_YEAR_RANGE_PCT", 0.58)
+NDX_BUY_MAX_YEAR_RANGE_PCT = _env_float("NDX_BUY_MAX_YEAR_RANGE_PCT", 0.68)
 NDX_BUY_MID_RANGE_POSITION_PCT = _env_float(
     "NDX_BUY_MID_RANGE_POSITION_PCT", 0.45
 )
@@ -994,7 +1030,7 @@ SPX_BUY_HIGH_LOOKBACK_DAYS = _env_int("SPX_BUY_HIGH_LOOKBACK_DAYS", 252)
 SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
     "SPX_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.0
 )
-SPX_BUY_MAX_YEAR_RANGE_PCT = _env_float("SPX_BUY_MAX_YEAR_RANGE_PCT", 0.60)
+SPX_BUY_MAX_YEAR_RANGE_PCT = _env_float("SPX_BUY_MAX_YEAR_RANGE_PCT", 0.68)
 SPX_BUY_MID_RANGE_POSITION_PCT = _env_float(
     "SPX_BUY_MID_RANGE_POSITION_PCT", 0.45
 )
@@ -1026,10 +1062,10 @@ SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float("SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX", 
 BACKTEST_RISK_FREE_RATE = _env_float("BACKTEST_RISK_FREE_RATE", 0.024)
 BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
-# --- 卖出开关（回测 2016-2025：仅科创50 卖出对组合收益有正贡献）---
-CN_BROAD_SELL_ENABLED_CODES = frozenset({"000688"})
-CYB_SELL_ENABLED = _env_bool("CYB_SELL_ENABLED", False)
-HSTECH_SELL_ENABLED = _env_bool("HSTECH_SELL_ENABLED", False)
+# --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
+CN_BROAD_SELL_ENABLED_CODES = frozenset({"000300", "000688", "000905"})
+CYB_SELL_ENABLED = _env_bool("CYB_SELL_ENABLED", True)
+HSTECH_SELL_ENABLED = _env_bool("HSTECH_SELL_ENABLED", True)
 
 
 def cn_broad_sell_enabled(index_code):

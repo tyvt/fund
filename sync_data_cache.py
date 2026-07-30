@@ -28,6 +28,7 @@ from us_index_data import (
     fetch_pe_payload,
     fetch_price_history,
     fetch_us10y_history,
+    trim_us_index_cache,
 )
 
 
@@ -79,7 +80,7 @@ def sync_hstech(force: bool = False) -> list[str]:
 
 
 def sync_us(force: bool = False) -> list[str]:
-    lines = []
+    lines = list(trim_us_index_cache())
     for key in US_INDEX_KEYS:
         fetch_pe_payload(key)
         prices = fetch_price_history(key)

@@ -29,8 +29,11 @@ from config import (
     HSTECH_SELL_ABOVE_LOW_MIN,
     HSTECH_SELL_COST_LOOKBACK_DAYS,
     HSTECH_SELL_ENABLED,
+    HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT,
     HSTECH_SELL_PE_PERCENTILE_MIN,
     HSTECH_SELL_PEG_HIST_MIN,
+    HSTECH_SELL_TRAILING_DRAWDOWN_PCT,
+    HSTECH_SELL_TRAILING_MIN_HOLD_DAYS,
 )
 from drop_to_buy import (
     format_buy_trigger_line,
@@ -54,6 +57,7 @@ from price_position import (
     trend_filter_ok,
     year_range_ok,
 )
+from sell_trailing import trailing_sell_hit
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -267,10 +271,18 @@ def evaluate_hstech_signal(snapshot):
     sell_reasons = []
     val_sell = {"triggered": False, "reasons": []}
     if HSTECH_SELL_ENABLED:
-        val_sell = valuation_sell_triggered(snapshot)
-        if val_sell["triggered"]:
+        trail_hit = trailing_sell_hit(
+            close=snapshot.get("close"),
+            cost_basis=snapshot.get("recent_signal_buy_avg"),
+            peak_price=snapshot.get("peak_since_last_buy"),
+            min_unrealized_gain_pct=HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT,
+            trailing_drawdown_pct=HSTECH_SELL_TRAILING_DRAWDOWN_PCT,
+            min_hold_days=HSTECH_SELL_TRAILING_MIN_HOLD_DAYS,
+            days_since_buy=snapshot.get("days_since_last_buy"),
+        )
+        if trail_hit:
             is_sell = True
-            sell_reasons.extend(val_sell["reasons"])
+            sell_reasons.append("移动止盈触发")
 
     if is_buy:
         signal_short = SIGNAL_BUY

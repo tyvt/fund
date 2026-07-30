@@ -179,6 +179,7 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
         "code": meta["code"],
         "name": meta["name"],
         "date": latest_row["date"],
+        "close": float(latest_row["close"]),
         "pe": pe,
         "dividend_yield": dividend_yield,
         "bond_yield": bond_yield,
@@ -218,4 +219,39 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
         "panel": panel,
         **row_price_position_fields(latest_row),
     }
+    from cn_broad_signal import evaluate_cn_broad_buy
+    from sell_trailing import compute_peak_since_last_buy, compute_recent_signal_buy_avg
+
+    def _row_snap(row):
+        return {
+            "code": index_code,
+            "pe_percentile": row.get("pe_percentile"),
+            "pb_percentile": row.get("pb_percentile"),
+            "spread_percentile": row.get("spread_percentile"),
+            "pct_above_low": row.get("pct_above_low"),
+            "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
+        }
+
+    lookback = cfg.get("sell_cost_lookback_days", 252)
+    snapshot["recent_signal_buy_avg"] = compute_recent_signal_buy_avg(
+        panel,
+        lambda s: evaluate_cn_broad_buy({**s, "code": index_code}),
+        _row_snap,
+        lookback_days=lookback,
+    )
+    snapshot["peak_since_last_buy"] = compute_peak_since_last_buy(
+        panel,
+        lambda s: evaluate_cn_broad_buy({**s, "code": index_code}),
+        _row_snap,
+    )
+    last_buy_date = None
+    for _, row in panel.iterrows():
+        if evaluate_cn_broad_buy({**_row_snap(row), "code": index_code})["is_buy"]:
+            last_buy_date = pd.Timestamp(row["date"])
+    if last_buy_date is not None:
+        snapshot["days_since_last_buy"] = (
+            pd.Timestamp(latest_row["date"]) - last_buy_date
+        ).days
     return merge_history_meta(snapshot, panel)

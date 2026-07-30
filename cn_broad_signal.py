@@ -27,6 +27,7 @@ from price_position import (
     trend_filter_ok,
     year_range_ok,
 )
+from sell_trailing import trailing_sell_hit, valuation_sell_hit_cn_broad
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -47,7 +48,7 @@ def _resolve_cn_broad_signal_short(is_buy, is_sell):
 
 
 def evaluate_cn_broad_sell(snapshot):
-    """波段卖出：PE 分位偏高，且利差收敛或短期涨幅过大（须同时满足）。"""
+    """波段卖出：移动止盈（浮盈达标后峰值回撤）或估值偏高。"""
     index_code = snapshot.get("code")
     if not cn_broad_sell_enabled(index_code):
         return {
@@ -56,6 +57,21 @@ def evaluate_cn_broad_sell(snapshot):
             "sell_summary": None,
         }
     cfg = get_cn_broad_signal_config(index_code)
+
+    close = snapshot.get("close")
+    recent_avg = snapshot.get("recent_signal_buy_avg")
+    peak_price = snapshot.get("peak_since_last_buy")
+    days_since_buy = snapshot.get("days_since_last_buy")
+
+    trail_hit = trailing_sell_hit(
+        close=close,
+        cost_basis=recent_avg,
+        peak_price=peak_price,
+        min_unrealized_gain_pct=cfg.get("sell_min_unrealized_gain_pct"),
+        trailing_drawdown_pct=cfg.get("sell_trailing_drawdown_pct"),
+        min_hold_days=cfg.get("sell_trailing_min_hold_days"),
+        days_since_buy=days_since_buy,
+    )
 
     pe_pct = snapshot.get("pe_percentile")
     pb_pct = snapshot.get("pb_percentile")
@@ -74,8 +90,28 @@ def evaluate_cn_broad_sell(snapshot):
     price_hit = price_position_sell_hit(
         pct_above_low, cfg["sell_max_above_low_pct"]
     )
+    val_hit = valuation_sell_hit_cn_broad(snapshot, cfg)
 
-    sell_criteria = [
+    sell_criteria = []
+    if cfg.get("sell_trailing_drawdown_pct") is not None:
+        gain_pct = None
+        if close is not None and recent_avg is not None and recent_avg > 0:
+            gain_pct = (close - recent_avg) / recent_avg * 100
+        sell_criteria.append(
+            make_criterion(
+                "移动止盈",
+                trail_hit,
+                (
+                    f"浮盈 {gain_pct:.0f}%（需≥{cfg['sell_min_unrealized_gain_pct']*100:.0f}%）"
+                    f"，峰值回撤≥{cfg['sell_trailing_drawdown_pct']*100:.0f}%"
+                    if gain_pct is not None
+                    else "—"
+                ),
+                "浮盈未达移动止盈门槛或峰值回撤不足",
+                applicable=recent_avg is not None and peak_price is not None,
+            )
+        )
+    sell_criteria.extend([
         make_criterion(
             "PE 分位",
             pe_hit,
@@ -90,7 +126,7 @@ def evaluate_cn_broad_sell(snapshot):
             "股债优势尚未明显收敛",
             applicable=spread_pct is not None,
         ),
-    ]
+    ])
     price_criterion = make_sell_price_position_criterion(
         pct_above_low,
         cfg["sell_max_above_low_pct"],
@@ -111,27 +147,29 @@ def evaluate_cn_broad_sell(snapshot):
             )
         )
 
-    # PE 偏高为前提，再叠加利差收敛或短期涨幅过大，避免熊市低 PE 反弹误卖
-    is_sell = pe_hit and (spread_hit or price_hit or pb_hit)
+    is_sell = trail_hit
 
     reasons = []
-    if pe_hit:
-        reasons.append("PE分位过高")
-    if spread_hit:
-        reasons.append("利差分位过低")
-    if price_hit:
-        close = snapshot.get("close")
-        low = snapshot.get("lookback_low_price")
-        sell_pct = cfg["sell_max_above_low_pct"]
-        if close is not None and low is not None and sell_pct is not None:
-            min_close = low * (1 + sell_pct)
-            reasons.append(
-                f"收盘 {format_index_price(close)} 高于卖出线 {format_index_price(min_close)}"
-            )
-        else:
-            reasons.append(f"距{lookback}日低点涨幅过大")
-    if pb_hit and cfg["sell_pb_percentile_min"] < 95:
-        reasons.append("PB分位过高")
+    if trail_hit:
+        reasons.append("移动止盈触发")
+    elif val_hit:
+        if pe_hit:
+            reasons.append("PE分位过高")
+        if spread_hit:
+            reasons.append("利差分位过低")
+        if price_hit:
+            close_val = snapshot.get("close")
+            low = snapshot.get("lookback_low_price")
+            sell_pct = cfg["sell_max_above_low_pct"]
+            if close_val is not None and low is not None and sell_pct is not None:
+                min_close = low * (1 + sell_pct)
+                reasons.append(
+                    f"收盘 {format_index_price(close_val)} 高于卖出线 {format_index_price(min_close)}"
+                )
+            else:
+                reasons.append(f"距{lookback}日低点涨幅过大")
+        if pb_hit and cfg["sell_pb_percentile_min"] < 95:
+            reasons.append("PB分位过高")
 
     return {
         "is_sell": is_sell,

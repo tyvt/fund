@@ -28,6 +28,7 @@ from config import (
     INDICES,
     NDX_INDEX,
     BACKTEST_OUTPUT_DIR,
+    BACKTEST_PRESENT_LABEL,
     PROJECT_DIR,
     SPX_INDEX,
     US_INDEX_KEYS,
@@ -168,36 +169,34 @@ BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 class BacktestRange:
     """回测时间区间。"""
 
-    start: str
+    start: str | None
     end: str | None
     label: str
 
     @property
     def start_ts(self):
-        return pd.Timestamp(self.start)
+        return pd.Timestamp(self.start) if self.start else None
 
     @property
     def end_ts(self):
         return pd.Timestamp(self.end) if self.end else None
 
 
-def resolve_backtest_ranges(years=None, start=None, end=None, from_inception=False):
-    """解析 CLI 年份或起止日期为回测区间列表。"""
-    if from_inception:
-        label = f"inception_{end or 'present'}"
-        return [BacktestRange(start="1990-01-01", end=end, label=label)]
-    if start:
-        label = f"{start}_{end or 'present'}"
-        return [BacktestRange(start=start, end=end, label=label)]
-    year_list = years or [2025]
-    return [
-        BacktestRange(
-            start=f"{year}-01-01",
-            end=f"{year}-12-31",
-            label=str(year),
-        )
-        for year in year_list
-    ]
+def format_backtest_range_label(date_range: BacktestRange) -> str:
+    """对外展示的区间文案。"""
+    end_label = date_range.end or "最新"
+    if not date_range.start:
+        return f"自基日至 {end_label}"
+    return f"{date_range.start} 至 {end_label}"
+
+
+def default_backtest_range():
+    """全量回测区间：自各指数基日起至最新数据。"""
+    return BacktestRange(
+        start=None,
+        end=None,
+        label=BACKTEST_PRESENT_LABEL,
+    )
 
 
 def get_panels():
@@ -218,7 +217,9 @@ def _attach_dt(work, date_col="date"):
 
 def _filter_by_range(work, date_range: BacktestRange, date_col="date"):
     work = _attach_dt(work, date_col)
-    mask = work["_dt"] >= date_range.start_ts
+    mask = pd.Series(True, index=work.index)
+    if date_range.start_ts is not None:
+        mask &= work["_dt"] >= date_range.start_ts
     if date_range.end_ts is not None:
         mask &= work["_dt"] <= date_range.end_ts
     return work.loc[mask]
@@ -752,7 +753,7 @@ def build_daily_table_range(
     date_range = BacktestRange(
         start=start_date,
         end=end_date,
-        label=f"{start_date}_{end_date or 'present'}",
+        label=f"{start_date or 'inception'}_{end_date or 'present'}",
     )
     sample = _filter_by_range(panel, date_range, date_col).sort_values("_dt")
     if sample.empty:
@@ -772,20 +773,6 @@ def build_daily_table_range(
             entry["buy_amount"] = _resolve_row_buy_amount(amount, row, is_buy)
         rows.append(entry)
     return pd.DataFrame(rows)
-
-
-def build_daily_table(
-    panel, year, buy_fn, date_col="date", price_col="close"
-):
-    """构建某年逐交易日表（兼容旧接口）。"""
-    return build_daily_table_range(
-        panel,
-        f"{year}-01-01",
-        f"{year}-12-31",
-        buy_fn,
-        date_col=date_col,
-        price_col=price_col,
-    )
 
 
 def collect_daily_tables(
@@ -822,6 +809,22 @@ def collect_daily_tables(
         )
         if table.empty:
             continue
+        if amounts is not None:
+            from backtest_trade_signals import (
+                append_sell_dates_to_chart_table,
+            )
+
+            table = append_sell_dates_to_chart_table(
+                table,
+                cfg["code"],
+                cfg["panel"],
+                date_range.start,
+                date_range.end,
+                amounts,
+                cfg["buy_fn"],
+                date_col=cfg["date_col"],
+                price_col=cfg["price_col"],
+            )
         tables.append(
             {
                 "name": cfg["name"],
@@ -916,7 +919,6 @@ def print_daily_table(date_range, index_code, panels=None):
     """在控制台打印指定指数区间内逐交易日表。"""
     panels = panels or get_panels()
     code_key = index_code.upper()
-    end_label = date_range.end or "最新"
     for cfg in _iter_backtest_configs(panels):
         if cfg["code"].upper() != code_key:
             continue
@@ -931,13 +933,13 @@ def print_daily_table(date_range, index_code, panels=None):
         if table.empty:
             print(
                 f"{cfg['name']} ({cfg['code']}) 在 "
-                f"{date_range.start} 至 {end_label} 无交易日数据"
+                f"{format_backtest_range_label(date_range)} 无交易日数据"
             )
             return
 
         buy_count = int((table["buy"] == "买入").sum())
         print(
-            f"\n=== {date_range.start} 至 {end_label} "
+            f"\n=== {format_backtest_range_label(date_range)} "
             f"{cfg['name']} ({cfg['code']}) 逐交易日 ==="
             f"（共 {len(table)} 天，买入 {buy_count} 天；★=买入）"
         )
@@ -967,8 +969,7 @@ def print_buy_dates(date_ranges):
     panels = get_panels()
     print("正在加载数据（仅首次较慢，后续年份复用缓存）...")
     for date_range in date_ranges:
-        end_label = date_range.end or "最新"
-        print(f"\n=== {date_range.start} 至 {end_label} 买入日期 ===")
+        print(f"\n=== {format_backtest_range_label(date_range)} 买入日期 ===")
         dates_by_name = list_buy_dates(date_range, panels=panels)
         for name, days in dates_by_name.items():
             print(f"\n{name}: {len(days)}天")
@@ -976,9 +977,8 @@ def print_buy_dates(date_ranges):
 
 
 def run_backtest(date_range, amounts=None, panels=None):
-    end_label = date_range.end or "最新"
     print(
-        f"正在回测 {date_range.start} 至 {end_label} 买入信号（使用当前 config 阈值）..."
+        f"正在回测 {format_backtest_range_label(date_range)} 买入信号（使用当前 config 阈值）..."
     )
     panels = panels or get_panels()
     if amounts and amounts.get("by_code"):
@@ -1157,11 +1157,11 @@ def _format_backtest_markdown(
     date_range, rows, amounts=None, daily_tables=None
 ):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-    end_label = date_range.end or "最新"
     lines = [
-        f"# {date_range.start} 至 {end_label} 买入信号回测",
+        "# 自基日全量买入信号回测",
         "",
         f"> 生成时间：{generated_at}  ",
+        "> 区间：各指数自基日起至最新数据  ",
         "> 买入标准：当前 config 阈值  ",
     ]
     if amounts is not None:
@@ -1211,16 +1211,16 @@ def save_backtest_result(
 
         end_label = date_range.end or "最新"
         subtitle = (
-            f"区间 {date_range.start} 至 {end_label}；"
+            f"区间：{format_backtest_range_label(date_range)}；"
             f"买入标准：当前 config 阈值"
         )
         if amounts is not None:
             subtitle += f"；{format_backtest_amount_note(amounts)}"
         html_path = save_backtest_html(
             _backtest_result_path(date_range, ext="html"),
-            f"{date_range.start} 至 {end_label} 买入信号回测",
+            "自基日全量买入信号回测",
             chart_tables,
-            start_date=date_range.start,
+            start_date=None,
             end_date=date_range.end,
             subtitle=subtitle,
         )
@@ -1241,14 +1241,14 @@ def print_summary_table(rows, date_range, amounts=None):
         print("无有效回测结果")
         return
 
-    end_label = date_range.end or "最新"
+    range_label = format_backtest_range_label(date_range)
     val_text = "—"
     if amounts is not None:
         latest_dates = [row.get("latest_date") for row in rows if row.get("latest_date")]
         if latest_dates:
             val_text = pd.Timestamp(max(latest_dates)).strftime("%Y-%m-%d")
         print(
-            f"\n=== {date_range.start} 至 {end_label} 买入信号回测（"
+            f"\n=== {range_label} 买入信号回测（"
             f"{format_backtest_amount_note(amounts)}，估值截至 {val_text}） ==="
         )
         print(
@@ -1287,7 +1287,7 @@ def print_summary_table(rows, date_range, amounts=None):
         print(BACKTEST_RETURN_FOOTNOTE)
     else:
         print(
-            f"\n=== {date_range.start} 至 {end_label} 买入信号回测（当前买入标准） ==="
+            f"\n=== {range_label} 买入信号回测（当前买入标准） ==="
         )
         print(
             f"{'指数':<14} {'代码':<8} {'买入':>5} {'样本':>5} {'占比':>6} "
@@ -1319,22 +1319,8 @@ def print_table(rows, date_range, amounts=None):
 
 def main(argv=None):
     configure_stdout_utf8()
-    parser = argparse.ArgumentParser(description="回测指定区间买入信号天数")
-    parser.add_argument(
-        "--year",
-        type=int,
-        action="append",
-        help="回测年份（可多次指定，如 --year 2025 --year 2026）",
-    )
-    parser.add_argument(
-        "--start",
-        default=None,
-        help="起始日期 YYYY-MM-DD（与 --end 配合，优先于 --year）",
-    )
-    parser.add_argument(
-        "--end",
-        default=None,
-        help="结束日期 YYYY-MM-DD（默认可至最新数据）",
+    parser = argparse.ArgumentParser(
+        description="自各指数基日起全量回测买入信号，输出 inception_present.md/html"
     )
     parser.add_argument(
         "--list-dates",
@@ -1370,24 +1356,12 @@ def main(argv=None):
         help="禁用价格分档，仅使用基准单次金额",
     )
     parser.add_argument(
-        "--from-inception",
-        action="store_true",
-        help="自各指数基日起回测（使用本地全量缓存，等价于极早起始日）",
-    )
-    parser.add_argument(
         "--no-html",
         action="store_true",
         help="不生成 HTML 折线图",
     )
     args = parser.parse_args(argv)
-    if args.start and args.year:
-        print("警告：同时指定 --start 与 --year，将使用 --start/--end 区间。")
-    date_ranges = resolve_backtest_ranges(
-        years=args.year,
-        start=args.start,
-        end=args.end,
-        from_inception=args.from_inception,
-    )
+    date_range = default_backtest_range()
     tier_enabled = not args.no_tier
     if args.amount is not None and args.amount <= 0:
         amounts = None
@@ -1402,7 +1376,7 @@ def main(argv=None):
 
     try:
         if args.list_dates:
-            print_buy_dates(date_ranges)
+            print_buy_dates([date_range])
             return 0
 
         if args.daily_table:
@@ -1411,27 +1385,25 @@ def main(argv=None):
                 return 1
             panels = get_panels()
             print("正在加载数据（仅首次较慢，后续区间复用缓存）...")
-            for date_range in date_ranges:
-                end_label = date_range.end or "最新"
-                for code in args.index_codes:
-                    print_daily_table(date_range, code, panels=panels)
+            end_label = date_range.end or "最新"
+            for code in args.index_codes:
+                print_daily_table(date_range, code, panels=panels)
             return 0
 
         panels = get_panels()
-        for date_range in date_ranges:
-            rows = run_backtest(date_range, amounts=amounts, panels=panels)
-            print_table(rows, date_range, amounts=amounts)
-            md_path, html_path = save_backtest_result(
-                date_range,
-                rows,
-                amounts=amounts,
-                panels=panels,
-                index_codes=args.index_codes,
-                write_html=not args.no_html,
-            )
-            print(f"\n回测结果已保存: {md_path}")
-            if html_path:
-                print(f"折线图已保存: {html_path}")
+        rows = run_backtest(date_range, amounts=amounts, panels=panels)
+        print_table(rows, date_range, amounts=amounts)
+        md_path, html_path = save_backtest_result(
+            date_range,
+            rows,
+            amounts=amounts,
+            panels=panels,
+            index_codes=args.index_codes,
+            write_html=not args.no_html,
+        )
+        print(f"\n回测结果已保存: {md_path}")
+        if html_path:
+            print(f"折线图已保存: {html_path}")
     except Exception as exc:
         print(f"回测失败: {exc}")
         return 1

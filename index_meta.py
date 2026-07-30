@@ -10,7 +10,9 @@ from config import (
     HSTECH_MARKET_DATA_START,
     INDICES,
     NDX_INDEX,
+    NDX_MARKET_DATA_START,
     SPX_INDEX,
+    SPX_MARKET_DATA_START,
     US_INDEX_KEYS,
     get_dividend_total_return_code,
 )
@@ -28,8 +30,8 @@ INDEX_BASE_DATES: dict[str, str] = {
     "000688": "20200723",
     "399006": "20100601",
     "HSTECH": HSTECH_MARKET_DATA_START.replace("-", ""),
-    "NDX": "19860102",
-    "SPX": "19570103",
+    "NDX": NDX_MARKET_DATA_START.replace("-", ""),
+    "SPX": SPX_MARKET_DATA_START.replace("-", ""),
 }
 
 

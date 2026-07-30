@@ -222,6 +222,7 @@ def fetch_cyb_snapshot(expected_growth=None):
         "code": CYB_CODE,
         "name": CYB_NAME,
         "date": latest["date_only"],
+        "close": float(latest["close"]),
         "pe": pe,
         "pb": pb,
         "pb_equal": pb_equal,
@@ -255,4 +256,41 @@ def fetch_cyb_snapshot(expected_growth=None):
         "high_lookback_days": CYB_BUY_HIGH_LOOKBACK_DAYS,
         **row_price_position_fields(latest),
     }
+    from cyb_signal import evaluate_cyb_signal
+    from config import CYB_SELL_COST_LOOKBACK_DAYS
+    from sell_trailing import compute_peak_since_last_buy, compute_recent_signal_buy_avg
+
+    def _row_snap(row):
+        return {
+            "pe": row["pe"],
+            "pb": row["pb"],
+            "pe_percentile": row.get("pe_percentile"),
+            "pb_percentile": row.get("pb_percentile"),
+            "pct_above_low": row.get("pct_above_low"),
+            "pct_below_high": row.get("pct_below_high"),
+            "year_range_position": row.get("year_range_position"),
+            "ma_slope_pct": row.get("ma_slope_pct"),
+        }
+
+    snapshot["recent_signal_buy_avg"] = compute_recent_signal_buy_avg(
+        panel,
+        evaluate_cyb_signal,
+        _row_snap,
+        lookback_days=CYB_SELL_COST_LOOKBACK_DAYS,
+        date_col="date_only",
+    )
+    snapshot["peak_since_last_buy"] = compute_peak_since_last_buy(
+        panel,
+        evaluate_cyb_signal,
+        _row_snap,
+        date_col="date_only",
+    )
+    last_buy_date = None
+    for _, row in panel.iterrows():
+        if evaluate_cyb_signal(_row_snap(row))["is_buy"]:
+            last_buy_date = pd.Timestamp(row["date_only"])
+    if last_buy_date is not None:
+        snapshot["days_since_last_buy"] = (
+            pd.Timestamp(latest["date_only"]) - last_buy_date
+        ).days
     return merge_history_meta(snapshot, panel, date_col="date_only")
