@@ -345,25 +345,19 @@ def format_hstech_section(snapshot, signal_eval):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
-    peg_hist = signal_eval.get("peg_historical")
-    peg_hist_text = f"{peg_hist:.2f}" if peg_hist is not None else "—"
     div_yield = snapshot.get("dividend_yield")
+    div_extra = f"股息率 {div_yield * 100:.2f}%" if div_yield is not None else None
     meta_line = format_data_meta_line(
         snapshot.get("data_date") or snapshot.get("date"),
         snapshot.get("history_start"),
         snapshot.get("history_days"),
+        extras=[div_extra] if div_extra else None,
     )
 
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
         meta_line,
-        (
-            f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | "
-            f"股息率 {div_yield * 100:.2f}% | 股息率分位 {pct_text(snapshot.get('dividend_percentile'))}"
-        ),
-        f"PEG(5年) {peg_hist_text} | 近5年增速 {signal_eval['historical_growth']:.1%}",
     ]
-    lines.append(format_price_position_line(snapshot, HSTECH_BUY_LOW_LOOKBACK_DAYS))
     signal_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, signal_eval)
     append_signal_block(lines, signal_eval, "hstech")
     return {

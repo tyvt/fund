@@ -208,11 +208,12 @@ def _estimate_buy_trigger(check_factor, max_move=0.35, precision=0.002):
     return drop, rise_breaks
 
 
-def dividend_drop_to_buy(index_code, bond_history=None):
+def dividend_drop_to_buy(index_code, bond_history=None, panel=None):
     from config import get_dividend_signal_config
     from dividend_data import build_signal_history, is_buy_signal
 
-    panel = build_signal_history(index_code, bond_history=bond_history)
+    if panel is None:
+        panel = build_signal_history(index_code, bond_history=bond_history)
     if panel is None or panel.empty:
         return None
 

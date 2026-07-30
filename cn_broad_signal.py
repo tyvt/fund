@@ -302,7 +302,6 @@ def evaluate_cn_broad_buy(snapshot):
 
 
 def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
-    spread = snapshot.get("spread")
     cfg = get_cn_broad_signal_config(snapshot["code"])
     year_range = snapshot.get("year_range_position")
     near_low = is_near_year_low(
@@ -372,22 +371,7 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
         meta_line,
-        (
-            f"利差 {spread:.2%} | 利差分位 {pct_text(snapshot.get('spread_percentile'))} | "
-            f"股息率 {snapshot['dividend_yield']:.2%}"
-        ),
-        (
-            f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | "
-            f"PB {snapshot['pb']:.2f} | PB分位 {pct_text(snapshot.get('pb_percentile'))}"
-            if snapshot.get("pb") is not None
-            else f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | PB —"
-        ),
     ]
-    lines.append(
-        format_price_position_line(
-            snapshot, get_cn_broad_signal_config(snapshot["code"])["buy_low_lookback_days"]
-        )
-    )
     append_signal_block(lines, buy_eval, module)
     return {
         "code": snapshot["code"],

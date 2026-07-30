@@ -27,10 +27,12 @@ from config import (
 from data_cache import (
     get_or_fetch_us_dataframe,
     get_or_fetch_us_json,
-    get_or_fetch_us_text,
+    is_fresh_today,
+    load_text,
+    save_text,
     us_cache_path,
 )
-from market_data import compute_percentile
+from market_data import compute_percentile, rolling_percentile_series
 from price_position import (
     attach_ma_trend,
     attach_pct_above_low,
@@ -111,27 +113,43 @@ def _fetch_json(url, timeout=REQUEST_TIMEOUT):
     return response.json()
 
 
-def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
-    """从 FRED 拉取 CSV；当日已缓存则直接读取。"""
-    cache_name = f"fred_{series_id}.csv"
-    network_timeout = max(_cfg("ndx", "FRED_NETWORK_TIMEOUT"), REQUEST_TIMEOUT)
+def _fred_network_timeout() -> int:
+    return min(5, max(_cfg("ndx", "FRED_NETWORK_TIMEOUT"), REQUEST_TIMEOUT))
 
-    def _download():
+
+def _load_fred_csv_text(series_id: str, *, allow_network: bool = True) -> str:
+    """读取 FRED CSV；优先当日缓存，过期则短超时刷新，失败回退历史缓存。"""
+    cache_name = f"fred_{series_id}.csv"
+    path = us_cache_path(cache_name)
+    cached_text = load_text(path)
+
+    if not allow_network:
+        if not cached_text:
+            raise RuntimeError(f"缺少 FRED {series_id} 本地缓存")
+        return cached_text
+
+    if is_fresh_today(path) and cached_text:
+        return cached_text
+
+    try:
         response = requests.get(
             config.fred_csv_url(series_id),
             headers=HEADERS,
-            timeout=network_timeout,
+            timeout=_fred_network_timeout(),
         )
         response.raise_for_status()
-        return response.text
+        text = response.text
+        save_text(path, text)
+        return text
+    except (requests.RequestException, OSError):
+        if cached_text:
+            return cached_text
+        raise
 
-    if allow_network:
-        text = get_or_fetch_us_text(cache_name, _download)
-    else:
-        path = us_cache_path(cache_name)
-        if not path.exists():
-            raise RuntimeError(f"缺少 FRED {series_id} 本地缓存")
-        text = path.read_text(encoding="utf-8")
+
+def fetch_fred_series(series_id, start_date=None, *, allow_network=True):
+    """从 FRED 拉取 CSV；当日已缓存则直接读取。"""
+    text = _load_fred_csv_text(series_id, allow_network=allow_network)
 
     frame = pd.read_csv(StringIO(text))
     value_col = [column for column in frame.columns if column != "observation_date"][0]
@@ -168,7 +186,7 @@ def fetch_us10y_history(*, key: str = "ndx"):
         return history.rename(columns={"value": "us10y"})
     except (requests.RequestException, RuntimeError):
         out = _fetch_us10y_from_akshare()
-        return out[out["date"] >= start].reset_index(drop=True)
+        return out[out["date"] >= pd.Timestamp(start)].reset_index(drop=True)
 
 
 def fetch_pe_payload(key: str):
@@ -228,7 +246,7 @@ def fetch_price_history(key: str):
         return history.rename(columns={"value": "close"})
     except (requests.RequestException, RuntimeError):
         out = _fetch_price_from_akshare(key)
-        return out[out["date"] >= start].reset_index(drop=True)
+        return out[out["date"] >= pd.Timestamp(start)].reset_index(drop=True)
 
 
 def fetch_dividend_yield_proxy(key: str):
@@ -257,14 +275,19 @@ def implied_earnings_growth(trailing_pe, forward_pe):
     return trailing_pe / forward_pe - 1
 
 
-def build_valuation_panel(key: str):
+def _load_us_valuation_sources(key: str):
     with ThreadPoolExecutor(max_workers=3) as executor:
         pe_future = executor.submit(fetch_pe_payload, key)
         price_future = executor.submit(fetch_price_history, key)
         us10y_future = executor.submit(fetch_us10y_history, key=key)
-        pe_payload = pe_future.result()
-        prices = price_future.result()
-        us10y = us10y_future.result()
+        return pe_future.result(), price_future.result(), us10y_future.result()
+
+
+def build_valuation_panel(key: str, sources=None):
+    if sources is None:
+        pe_payload, prices, us10y = _load_us_valuation_sources(key)
+    else:
+        pe_payload, prices, us10y = sources
 
     forward = pe_payload["forward"].copy()
     forward = forward.rename(columns={"value": "forward_pe"})
@@ -320,28 +343,12 @@ def attach_percentiles(panel, key: str):
     window = _cfg(key, "PERCENTILE_WINDOW")
     min_days = _cfg(key, "PERCENTILE_MIN_DAYS")
     out = panel.copy()
-    forward_pcts, rate_pcts = [], []
-    for idx in range(len(out)):
-        if idx < min_days:
-            forward_pcts.append(None)
-            rate_pcts.append(None)
-            continue
-        start = max(0, idx - window)
-        forward_pcts.append(
-            compute_percentile(
-                out["forward_pe"].iloc[start:idx],
-                out["forward_pe"].iloc[idx],
-            )
-        )
-        rate_pcts.append(
-            compute_percentile(
-                out["us10y"].iloc[start:idx],
-                out["us10y"].iloc[idx],
-            )
-        )
-
-    out["forward_pe_percentile"] = forward_pcts
-    out["us10y_percentile"] = rate_pcts
+    out["forward_pe_percentile"] = rolling_percentile_series(
+        out["forward_pe"], window, min_days
+    )
+    out["us10y_percentile"] = rolling_percentile_series(
+        out["us10y"], window, min_days
+    )
     return out
 
 
@@ -352,43 +359,15 @@ def attach_daily_percentiles(panel, key: str):
     window = _cfg(key, "DAILY_PERCENTILE_WINDOW")
     min_days = _cfg(key, "DAILY_PERCENTILE_MIN_DAYS")
     out = panel.sort_values("date").reset_index(drop=True).copy()
-    forward_pcts, rate_pcts, trailing_pcts = [], [], []
-    for idx in range(len(out)):
-        if idx < min_days:
-            forward_pcts.append(None)
-            rate_pcts.append(None)
-            trailing_pcts.append(None)
-            continue
-        start = max(0, idx - window)
-        history = out.iloc[start:idx]
-        forward_pcts.append(
-            compute_percentile(
-                history["forward_pe"].dropna(),
-                out["forward_pe"].iloc[idx],
-            )
-            if pd.notna(out["forward_pe"].iloc[idx])
-            else None
-        )
-        rate_pcts.append(
-            compute_percentile(
-                history["us10y"].dropna(),
-                out["us10y"].iloc[idx],
-            )
-            if pd.notna(out["us10y"].iloc[idx])
-            else None
-        )
-        trailing_pcts.append(
-            compute_percentile(
-                history["trailing_pe"].dropna(),
-                out["trailing_pe"].iloc[idx],
-            )
-            if pd.notna(out["trailing_pe"].iloc[idx])
-            else None
-        )
-
-    out["forward_pe_percentile"] = forward_pcts
-    out["us10y_percentile"] = rate_pcts
-    out["trailing_pe_percentile"] = trailing_pcts
+    out["forward_pe_percentile"] = rolling_percentile_series(
+        out["forward_pe"], window, min_days
+    )
+    out["us10y_percentile"] = rolling_percentile_series(
+        out["us10y"], window, min_days
+    )
+    out["trailing_pe_percentile"] = rolling_percentile_series(
+        out["trailing_pe"], window, min_days
+    )
     return out
 
 
@@ -416,14 +395,11 @@ def _scale_pe_by_price(panel, pe_col, anchor_date_col, prices):
     return panel.drop(columns=[f"close_at_{anchor_date_col}"], errors="ignore")
 
 
-def build_daily_valuation_panel(key: str):
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        pe_future = executor.submit(fetch_pe_payload, key)
-        price_future = executor.submit(fetch_price_history, key)
-        us10y_future = executor.submit(fetch_us10y_history, key=key)
-        pe_payload = pe_future.result()
-        prices = price_future.result()
-        us10y = us10y_future.result()
+def build_daily_valuation_panel(key: str, sources=None):
+    if sources is None:
+        pe_payload, prices, us10y = _load_us_valuation_sources(key)
+    else:
+        pe_payload, prices, us10y = sources
 
     daily = prices[["date", "close"]].sort_values("date").reset_index(drop=True)
     daily = pd.merge_asof(
@@ -479,11 +455,12 @@ def build_daily_valuation_panel(key: str):
 
 def fetch_snapshot(key: str, expected_growth=None):
     spec = _spec(key)
-    daily, pe_payload = build_daily_valuation_panel(key)
+    sources = _load_us_valuation_sources(key)
+    daily, pe_payload = build_daily_valuation_panel(key, sources=sources)
     if daily is None or daily.empty:
         raise RuntimeError(spec["runtime_error"])
 
-    month_panel, _ = build_valuation_panel(key)
+    month_panel, _ = build_valuation_panel(key, sources=sources)
     hist_growth = compute_historical_earnings_growth(month_panel, key)
 
     latest = daily.iloc[-1]

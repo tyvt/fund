@@ -58,7 +58,8 @@ CN_BROAD_BACKTEST_INDICES = CN_BROAD_INDICES
 
 BACKTEST_RETURN_FOOTNOTE = (
     "红利指数（930955/H30269）收益率按中证全收益指数（H20955/H20269）估算，含分红再投资；"
-    "其他指数为价格指数、未含分红。未计手续费；纳指为美元计价指数点位。"
+    "其他指数为价格指数、未含分红。未计手续费；"
+    "美股指数按美元点位估算收益（未计入汇率变动）。"
 )
 
 
@@ -315,7 +316,9 @@ def _simulate_dca_returns(
             **base_stats,
         }
 
-    total_units = sum(amt / price for amt, price in zip(buy_amounts, buy_prices))
+    total_units = sum(
+        amt / price for amt, price in zip(buy_amounts, buy_prices)
+    )
     invested = sum(buy_amounts)
     market_value = total_units * latest_price
     profit = market_value - invested
@@ -529,7 +532,11 @@ def backtest_us_index(
         return []
     if sim_amt is not None:
         result = _simulate_dca_returns(
-            daily, date_range, buy_fn, amount=sim_amt, date_col="date"
+            daily,
+            date_range,
+            buy_fn,
+            amount=sim_amt,
+            date_col="date",
         )
     else:
         result = _count_buy_days(
@@ -718,6 +725,14 @@ def _resolve_date_value(row, date_col):
     return row[date_col]
 
 
+def _resolve_row_buy_amount(amount, row, is_buy):
+    if not is_buy or amount is None:
+        return 0.0
+    if callable(amount):
+        return float(amount(row))
+    return float(amount)
+
+
 def build_daily_table_range(
     panel,
     start_date,
@@ -725,10 +740,14 @@ def build_daily_table_range(
     buy_fn=None,
     date_col="date",
     price_col="close",
+    amount=None,
 ):
-    """构建区间内逐交易日表：日期、收盘价、是否买入。"""
+    """构建区间内逐交易日表：日期、收盘价、是否买入（可选买入金额）。"""
+    base_cols = ["date", "close", "buy"]
+    if amount is not None:
+        base_cols.append("buy_amount")
     if panel is None or panel.empty:
-        return pd.DataFrame(columns=["date", "close", "buy"])
+        return pd.DataFrame(columns=base_cols)
 
     date_range = BacktestRange(
         start=start_date,
@@ -737,19 +756,21 @@ def build_daily_table_range(
     )
     sample = _filter_by_range(panel, date_range, date_col).sort_values("_dt")
     if sample.empty:
-        return pd.DataFrame(columns=["date", "close", "buy"])
+        return pd.DataFrame(columns=base_cols)
 
     rows = []
     for _, row in sample.iterrows():
         raw_date = _resolve_date_value(row, date_col)
         close_val = row.get(price_col)
-        rows.append(
-            {
-                "date": pd.Timestamp(raw_date).strftime("%Y-%m-%d"),
-                "close": float(close_val) if pd.notna(close_val) else None,
-                "buy": "买入" if buy_fn and buy_fn(row) else "",
-            }
-        )
+        is_buy = bool(buy_fn and buy_fn(row))
+        entry = {
+            "date": pd.Timestamp(raw_date).strftime("%Y-%m-%d"),
+            "close": float(close_val) if pd.notna(close_val) else None,
+            "buy": "买入" if is_buy else "",
+        }
+        if amount is not None:
+            entry["buy_amount"] = _resolve_row_buy_amount(amount, row, is_buy)
+        rows.append(entry)
     return pd.DataFrame(rows)
 
 
@@ -768,7 +789,7 @@ def build_daily_table(
 
 
 def collect_daily_tables(
-    date_range, panels=None, index_codes=None
+    date_range, panels=None, index_codes=None, amounts=None
 ):
     """收集各指数区间内逐交易日表。"""
     panels = panels or get_panels()
@@ -778,6 +799,18 @@ def collect_daily_tables(
     for cfg in _iter_backtest_configs(panels):
         if codes and cfg["code"].upper() not in codes:
             continue
+        sim_amt = None
+        if amounts is not None:
+            sim_amt = _index_simulate_amount(
+                cfg["code"],
+                amounts,
+                cfg["panel"],
+                date_range,
+                cfg["buy_fn"],
+                cfg["date_col"],
+            )
+            if sim_amt == 0:
+                continue
         table = build_daily_table_range(
             cfg["panel"],
             date_range.start,
@@ -785,6 +818,7 @@ def collect_daily_tables(
             cfg["buy_fn"],
             date_col=cfg["date_col"],
             price_col=cfg["price_col"],
+            amount=sim_amt,
         )
         if table.empty:
             continue
@@ -1158,7 +1192,9 @@ def save_backtest_result(
     daily_tables = collect_daily_tables(
         date_range, panels=panels, index_codes=index_codes
     )
-    chart_tables = collect_daily_tables(date_range, panels=panels)
+    chart_tables = collect_daily_tables(
+        date_range, panels=panels, amounts=amounts
+    )
     path = _backtest_result_path(date_range, ext="md")
     path.write_text(
         _format_backtest_markdown(

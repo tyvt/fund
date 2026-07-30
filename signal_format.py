@@ -121,20 +121,20 @@ def resolve_action_hint(signal, module):
         (SIGNAL_BUY, "zz500"): "可考虑分批布局中证500；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "zz1000"): "可考虑分批布局中证1000；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "kc50"): "可考虑分批布局科创50；股债利差与估值具吸引力。",
-        (SIGNAL_BUY, "cyb"): "可考虑分批买入创业板；估值与 PEG 处于历史偏低区间。",
-        (SIGNAL_BUY, "hstech"): "可考虑分批买入恒生科技；PE 与 PEG 处于历史偏低区间。",
-        (SIGNAL_BUY, "ndx"): "可考虑分批买入纳指 100；估值、PEG 与利率环境均配合。",
-        (SIGNAL_BUY, "spx"): "可考虑分批买入标普 500；估值、PEG 与利率环境均配合。",
-        (SIGNAL_HOLD, "dividend"): "暂不买入；等待利差扩大或 PE 分位回落。",
+        (SIGNAL_BUY, "cyb"): "可考虑分批买入创业板；估值处历史偏低区间。",
+        (SIGNAL_BUY, "hstech"): "可考虑分批买入恒生科技；PE、PEG 与股息率分位配合。",
+        (SIGNAL_BUY, "ndx"): "可考虑分批买入纳指 100；估值与利率环境配合。",
+        (SIGNAL_BUY, "spx"): "可考虑分批买入标普 500；估值与利率环境配合。",
+        (SIGNAL_HOLD, "dividend"): "暂不买入；等待利差或 PE 分位改善。",
         (SIGNAL_HOLD, "a500"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "hs300"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "zz500"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "zz1000"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "kc50"): "暂不买入；等待股债利差或估值指标进一步改善。",
-        (SIGNAL_HOLD, "cyb"): "暂不买入；等待 PE/PB 分位回落或 PEG 改善。",
-        (SIGNAL_HOLD, "hstech"): "暂不买入；等待 PE 分位回落或 PEG 改善。",
-        (SIGNAL_HOLD, "ndx"): "暂不买入；等待 PE 分位回落、PEG 下降或利率下行。",
-        (SIGNAL_HOLD, "spx"): "暂不买入；等待 PE 分位回落、PEG 下降或利率下行。",
+        (SIGNAL_HOLD, "cyb"): "暂不买入；等待 PE/PB 分位改善。",
+        (SIGNAL_HOLD, "hstech"): "暂不买入；等待 PE 分位回落或股息率分位改善。",
+        (SIGNAL_HOLD, "ndx"): "暂不买入；等待 PE 分位回落或利率下行。",
+        (SIGNAL_HOLD, "spx"): "暂不买入；等待 PE 分位回落或利率下行。",
         (SIGNAL_SELL, "a500"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "hs300"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "zz500"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
@@ -183,12 +183,6 @@ def append_signal_block(lines, signal_eval, module):
     for item in criteria:
         mark = MARK_PASS if item["passed"] else MARK_FAIL
         lines.append(f"{mark} {item['name']}: {item['detail']}")
-        if not item["passed"] and item.get("fail_reason"):
-            lines.append(f"  → {item['fail_reason']}")
-
-    summary = signal_eval.get("summary")
-    if summary:
-        lines.append(f"结论: {summary}")
 
     hint = signal_eval.get("action_hint") or resolve_action_hint(signal, module)
     lines.append(f"建议: {hint}")

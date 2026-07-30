@@ -40,7 +40,6 @@ from price_position import (
     drawdown_from_high_ok,
     effective_drawdown_threshold,
     effective_max_above_low_pct,
-    format_price_position_line,
     is_near_year_low,
     make_drawdown_from_high_criterion,
     make_price_position_criterion,
@@ -275,8 +274,6 @@ def format_cyb_section(snapshot, signal_eval):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
-    peg_hist = signal_eval.get("peg_historical")
-    peg_hist_text = f"{peg_hist:.2f}" if peg_hist is not None else "—"
     meta_line = format_data_meta_line(
         snapshot.get("data_date") or snapshot.get("date"),
         snapshot.get("history_start"),
@@ -286,13 +283,7 @@ def format_cyb_section(snapshot, signal_eval):
     lines = [
         f"{snapshot['code']} {snapshot['name']}",
         meta_line,
-        (
-            f"PE {snapshot['pe']:.2f} | PE分位 {pct_text(snapshot.get('pe_percentile'))} | "
-            f"PB {snapshot['pb']:.2f} | PB分位 {pct_text(snapshot.get('pb_percentile'))}"
-        ),
-        f"PEG(5年) {peg_hist_text} | 近5年增速 {signal_eval['historical_growth']:.1%}",
     ]
-    lines.append(format_price_position_line(snapshot, CYB_BUY_LOW_LOOKBACK_DAYS))
     signal_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, signal_eval)
     append_signal_block(lines, signal_eval, "cyb")
     return {

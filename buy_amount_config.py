@@ -33,10 +33,32 @@ def resolve_simulate_amount(
     buy_fn,
     date_col="date",
 ):
-    """回测用：固定金额或分档 amount_fn。"""
+    """回测用：固定金额、按年预算动态金额或分档 amount_fn。"""
+    from buy_amount_budget import is_annual_budget_enabled, make_annual_amount_fn
     from buy_amount_tiers import estimate_avg_multiplier, make_amount_fn
 
-    if base_amt <= 0 or not amounts or not amounts.get("tier_scheme"):
+    if base_amt <= 0:
+        return 0
+
+    reference_base = base_amt
+    if is_annual_budget_enabled(amounts):
+        by_ref = amounts.get("reference_by_code") if amounts else None
+        if by_ref and code in by_ref:
+            reference_base = float(by_ref[code])
+
+    if is_annual_budget_enabled(amounts):
+        return make_annual_amount_fn(
+            code,
+            reference_base,
+            amounts,
+            panel,
+            start_date,
+            end_date,
+            buy_fn,
+            date_col,
+        )
+
+    if not amounts or not amounts.get("tier_scheme"):
         return base_amt
     scale = 1.0
     by_code = amounts.get("tier_norm_by_code")

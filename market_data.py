@@ -3,6 +3,7 @@
 import sys
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -233,10 +234,60 @@ def get_gov_bond_yield():
 
 def compute_percentile(series, value):
     """计算 value 在 series 中的历史分位（越低通常越便宜）。"""
-    values = pd.Series(series).dropna()
-    if values.empty or value is None:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
-    return float((values < value).mean() * 100)
+    values = pd.to_numeric(pd.Series(series), errors="coerce").dropna().to_numpy(dtype=float)
+    if values.size == 0:
+        return None
+    return float(np.mean(values < value) * 100)
+
+
+def rolling_percentile_series(series, window, min_periods=None):
+    """滚动历史分位：当前值相对 [i-window, i) 窗口内样本的分位（0-100）。"""
+    values = pd.to_numeric(pd.Series(series), errors="coerce").to_numpy(dtype=float)
+    n = len(values)
+    if n == 0:
+        return np.array([], dtype=float)
+    min_periods = window if min_periods is None else min_periods
+    out = np.full(n, np.nan)
+    for i in range(n):
+        if i < min_periods:
+            continue
+        v = values[i]
+        if np.isnan(v):
+            continue
+        start = max(0, i - window)
+        hist = values[start:i]
+        hist = hist[~np.isnan(hist)]
+        if hist.size == 0:
+            continue
+        out[i] = float(np.mean(hist < v) * 100)
+    return out
+
+
+def rolling_window_stats(series, window, min_periods):
+    """滚动窗口 min/max/分位/样本数（窗口为 [i-window, i)，不含当前点）。"""
+    values = pd.to_numeric(pd.Series(series), errors="coerce").to_numpy(dtype=float)
+    n = len(values)
+    mins = np.full(n, np.nan)
+    maxs = np.full(n, np.nan)
+    pcts = np.full(n, np.nan)
+    samples = np.full(n, np.nan)
+    for i in range(n):
+        if i < min_periods:
+            continue
+        start = max(0, i - window)
+        hist = values[start:i]
+        hist = hist[~np.isnan(hist)]
+        if hist.size == 0:
+            continue
+        v = values[i]
+        samples[i] = float(hist.size)
+        mins[i] = float(hist.min())
+        maxs[i] = float(hist.max())
+        if not np.isnan(v):
+            pcts[i] = float(np.mean(hist < v) * 100)
+    return mins, maxs, pcts, samples
 
 
 def _to_date(value):

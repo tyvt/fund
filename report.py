@@ -54,7 +54,7 @@ def generate_dividend_report(index_codes=None):
     return generate_report(index_codes)
 
 
-def generate_cn_broad_report(index_meta):
+def generate_cn_broad_report(index_meta, bond_history=None):
     from cn_broad_data import fetch_cn_broad_snapshot
     from cn_broad_signal import (
         evaluate_cn_broad_buy,
@@ -63,7 +63,8 @@ def generate_cn_broad_report(index_meta):
     )
 
     log_fetch_start(index_meta["name"], index_meta["code"])
-    bond_history = get_gov_bond_yield_history()
+    if bond_history is None:
+        bond_history = get_gov_bond_yield_history()
     snapshot = fetch_cn_broad_snapshot(index_meta["code"], bond_history)
     _log_snapshot_ready(snapshot)
     buy_eval = evaluate_cn_broad_buy(snapshot)
@@ -75,10 +76,17 @@ def generate_cn_broad_report(index_meta):
 
 
 def generate_cn_broad_reports():
-    sections = []
-    for index_meta in CN_BROAD_INDICES:
-        _, section = generate_cn_broad_report(index_meta)
-        sections.append(section)
+    from concurrent.futures import ThreadPoolExecutor
+
+    bond_history = get_gov_bond_yield_history()
+    with ThreadPoolExecutor(max_workers=len(CN_BROAD_INDICES)) as executor:
+        results = list(
+            executor.map(
+                lambda meta: generate_cn_broad_report(meta, bond_history),
+                CN_BROAD_INDICES,
+            )
+        )
+    sections = [section for _, section in results]
     return join_index_sections(sections), sections
 
 
@@ -127,10 +135,16 @@ def generate_us_index_report(key, expected_growth=None):
 
 
 def generate_us_reports(expected_growth=None):
-    sections = []
-    for key in US_INDEX_KEYS:
-        _, section = generate_us_index_report(key, expected_growth=expected_growth)
-        sections.append(section)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(US_INDEX_KEYS)) as executor:
+        results = list(
+            executor.map(
+                lambda key: generate_us_index_report(key, expected_growth=expected_growth),
+                US_INDEX_KEYS,
+            )
+        )
+    sections = [section for _, section in results]
     return join_index_sections(sections), sections
 
 
@@ -150,9 +164,9 @@ def generate_reports(
     modules=None, index_codes=None, cyb_growth=None, us_growth=None
 ):
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
-    resolved = _resolve_modules(modules)
-    all_sections = []
+    from concurrent.futures import ThreadPoolExecutor
 
+    resolved = _resolve_modules(modules)
     generators = {
         MODULE_DIVIDEND: lambda: generate_dividend_report(index_codes),
         MODULE_CN_BROAD: generate_cn_broad_reports,
@@ -161,12 +175,27 @@ def generate_reports(
         MODULE_US: lambda: generate_us_reports(us_growth),
     }
 
-    for module in resolved:
+    if len(resolved) == 1:
+        module = resolved[0]
         _, module_sections = generators[module]()
-        if isinstance(module_sections, list):
-            all_sections.extend(module_sections)
-        else:
-            all_sections.append(module_sections)
+        all_sections = (
+            module_sections
+            if isinstance(module_sections, list)
+            else [module_sections]
+        )
+    else:
+        all_sections = []
+        with ThreadPoolExecutor(max_workers=len(resolved)) as executor:
+            futures = [
+                (module, executor.submit(generators[module]))
+                for module in resolved
+            ]
+            for module, future in futures:
+                _, module_sections = future.result()
+                if isinstance(module_sections, list):
+                    all_sections.extend(module_sections)
+                else:
+                    all_sections.append(module_sections)
 
     return join_index_sections(all_sections), all_sections
 

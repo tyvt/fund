@@ -16,7 +16,7 @@ from config import (
     CYB_PERCENTILE_WINDOW,
 )
 from data_cache import get_or_fetch_dataframe
-from market_data import compute_percentile
+from market_data import compute_percentile, rolling_percentile_series
 from price_position import (
     attach_ma_trend,
     attach_pct_above_low,
@@ -164,49 +164,17 @@ def attach_percentiles(
         return None
 
     out = panel.copy()
-    pe_pcts, pb_pcts, pb_eq_pcts, pb_med_pcts, div_pcts = [], [], [], [], []
-
-    for idx in range(len(out)):
-        if idx < min_days:
-            pe_pcts.append(None)
-            pb_pcts.append(None)
-            pb_eq_pcts.append(None)
-            pb_med_pcts.append(None)
-            div_pcts.append(None)
-            continue
-
-        pe_start = max(0, idx - window)
-        pb_start = pe_start
-        div_start = max(0, idx - div_window)
-
-        pe_pcts.append(
-            compute_percentile(out["pe"].iloc[pe_start:idx], out["pe"].iloc[idx])
-        )
-        pb_pcts.append(
-            compute_percentile(out["pb"].iloc[pb_start:idx], out["pb"].iloc[idx])
-        )
-        pb_eq_pcts.append(
-            compute_percentile(
-                out["pb_equal"].iloc[pb_start:idx], out["pb_equal"].iloc[idx]
-            )
-        )
-        pb_med_pcts.append(
-            compute_percentile(
-                out["pb_median"].iloc[pb_start:idx], out["pb_median"].iloc[idx]
-            )
-        )
-        div_pcts.append(
-            compute_percentile(
-                out["dividend_yield"].iloc[div_start:idx],
-                out["dividend_yield"].iloc[idx],
-            )
-        )
-
-    out["pe_percentile"] = pe_pcts
-    out["pb_percentile"] = pb_pcts
-    out["pb_equal_percentile"] = pb_eq_pcts
-    out["pb_median_percentile"] = pb_med_pcts
-    out["dividend_percentile"] = div_pcts
+    out["pe_percentile"] = rolling_percentile_series(out["pe"], window, min_days)
+    out["pb_percentile"] = rolling_percentile_series(out["pb"], window, min_days)
+    out["pb_equal_percentile"] = rolling_percentile_series(
+        out["pb_equal"], window, min_days
+    )
+    out["pb_median_percentile"] = rolling_percentile_series(
+        out["pb_median"], window, min_days
+    )
+    out["dividend_percentile"] = rolling_percentile_series(
+        out["dividend_yield"], div_window, min_days
+    )
     return out
 
 

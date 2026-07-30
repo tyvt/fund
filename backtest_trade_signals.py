@@ -548,9 +548,24 @@ def collect_trade_chart_tables(
     tables = []
 
     def _maybe_add(panel, code, name, buy_fn, sell_fn=None, date_col="date", price_col="close"):
-        amt = get_backtest_buy_amount(code, amounts)
-        if amt <= 0:
-            return
+        from backtest_buy_signals import BacktestRange, _index_simulate_amount
+
+        if amounts is not None:
+            date_range = BacktestRange(
+                start=start_date,
+                end=end_date,
+                label=f"{start_date}_{end_date or 'present'}",
+            )
+            sim_amt = _index_simulate_amount(
+                code, amounts, panel, date_range, buy_fn, date_col
+            )
+            if sim_amt == 0:
+                return
+        else:
+            base = get_backtest_buy_amount(code, amounts)
+            if base <= 0:
+                return
+            sim_amt = base
         table = build_daily_table_range(
             panel,
             start_date,
@@ -558,6 +573,7 @@ def collect_trade_chart_tables(
             buy_fn,
             date_col=date_col,
             price_col=price_col,
+            amount=sim_amt,
         )
         if table.empty:
             return

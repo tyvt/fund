@@ -86,6 +86,17 @@ python push.py --quiet
 
 定时任务通过 `run_push.bat` 调用，日志写入 `logs/push.log`。
 
+### 数据缓存预拉（`sync_data_cache.py`）
+
+在开盘前预拉各指数历史数据到本地 `cache/`，可显著加快 `report.py` 首次运行速度。
+
+```bash
+python sync_data_cache.py
+python sync_data_cache.py --force   # 忽略当日缓存，强制重拉
+```
+
+注册 Windows 定时任务：右键「以管理员身份运行」`setup_sync_task.bat`，将在每天 09:30（上海时区）自动执行 `run_sync_cache.bat`，日志写入 `logs/sync_cache.log`。
+
 ### 回测（`backtest_buy_signals.py`）
 
 按当前买入标准统计历史买入天数与定投收益。

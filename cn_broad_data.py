@@ -18,6 +18,7 @@ from market_data import (
     get_gov_bond_yield_history,
     get_index_perf_history,
     read_indicator_history,
+    rolling_percentile_series,
 )
 from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_below_high, attach_year_range_position, row_price_position_fields
 from signal_format import merge_history_meta
@@ -132,32 +133,13 @@ def attach_cn_broad_percentiles(panel, index_code, window=None, min_days=None):
     high_lookback_days = cfg.get("buy_high_lookback_days", 252)
 
     out = panel.copy()
-    pe_pcts, div_pcts, spread_pcts = [], [], []
-    for idx in range(len(out)):
-        if idx < min_days:
-            pe_pcts.append(None)
-            div_pcts.append(None)
-            spread_pcts.append(None)
-            continue
-        start = max(0, idx - window)
-        pe_pcts.append(
-            compute_percentile(out["pe"].iloc[start:idx], out["pe"].iloc[idx])
-        )
-        div_pcts.append(
-            compute_percentile(
-                out["dividend_yield"].iloc[start:idx],
-                out["dividend_yield"].iloc[idx],
-            )
-        )
-        spread_pcts.append(
-            compute_percentile(
-                out["spread"].iloc[start:idx], out["spread"].iloc[idx]
-            )
-        )
-
-    out["pe_percentile"] = pe_pcts
-    out["dividend_percentile"] = div_pcts
-    out["spread_percentile"] = spread_pcts
+    out["pe_percentile"] = rolling_percentile_series(out["pe"], window, min_days)
+    out["dividend_percentile"] = rolling_percentile_series(
+        out["dividend_yield"], window, min_days
+    )
+    out["spread_percentile"] = rolling_percentile_series(
+        out["spread"], window, min_days
+    )
     out = attach_pct_above_low(out, lookback_days=lookback_days)
     out = attach_pct_below_high(out, lookback_days=high_lookback_days)
     out = attach_year_range_position(

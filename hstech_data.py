@@ -20,7 +20,7 @@ from config import (
     HSTECH_SELL_COST_LOOKBACK_DAYS,
 )
 from data_cache import get_or_fetch_dataframe
-from market_data import compute_percentile
+from market_data import compute_percentile, rolling_percentile_series
 from price_position import (
     attach_ma_trend,
     attach_pct_above_low,
@@ -183,28 +183,10 @@ def attach_percentiles(
         return None
 
     out = panel.copy()
-    pe_pcts, div_pcts = [], []
-
-    for idx in range(len(out)):
-        if idx < min_days:
-            pe_pcts.append(None)
-            div_pcts.append(None)
-            continue
-
-        pe_start = max(0, idx - window)
-        div_start = max(0, idx - div_window)
-        pe_pcts.append(
-            compute_percentile(out["pe"].iloc[pe_start:idx], out["pe"].iloc[idx])
-        )
-        div_pcts.append(
-            compute_percentile(
-                out["dividend_yield"].iloc[div_start:idx],
-                out["dividend_yield"].iloc[idx],
-            )
-        )
-
-    out["pe_percentile"] = pe_pcts
-    out["dividend_percentile"] = div_pcts
+    out["pe_percentile"] = rolling_percentile_series(out["pe"], window, min_days)
+    out["dividend_percentile"] = rolling_percentile_series(
+        out["dividend_yield"], div_window, min_days
+    )
     return out
 
 

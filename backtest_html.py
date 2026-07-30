@@ -9,20 +9,40 @@ import pandas as pd
 def _table_to_series(table: pd.DataFrame) -> dict:
     """将逐日表转为图表序列。"""
     if table is None or table.empty:
-        return {"dates": [], "closes": [], "buys": [], "sells": []}
+        return {
+            "dates": [],
+            "closes": [],
+            "buys": [],
+            "sells": [],
+            "buy_amounts": [],
+        }
 
+    has_amount = "buy_amount" in table.columns
     dates = []
     closes = []
     buys = []
     sells = []
+    buy_amounts = []
     for _, row in table.iterrows():
         dates.append(str(row["date"]))
         close_val = row.get("close")
         closes.append(float(close_val) if pd.notna(close_val) else None)
-        buys.append(row.get("buy") == "买入")
+        is_buy = row.get("buy") == "买入"
+        buys.append(is_buy)
         sell_flag = row.get("sell")
         sells.append(sell_flag in ("卖出", True))
-    return {"dates": dates, "closes": closes, "buys": buys, "sells": sells}
+        if has_amount and is_buy:
+            amt = row.get("buy_amount")
+            buy_amounts.append(float(amt) if pd.notna(amt) else 0.0)
+        else:
+            buy_amounts.append(0.0)
+    return {
+        "dates": dates,
+        "closes": closes,
+        "buys": buys,
+        "sells": sells,
+        "buy_amounts": buy_amounts,
+    }
 
 
 def build_chart_payload(daily_tables: list[dict]) -> dict:
@@ -147,7 +167,7 @@ def render_backtest_html(
     const GRANULARITY_LABELS = {{ year: '年', month: '月', day: '日' }};
 
     function filterSeries(series, start, end) {{
-      const out = {{ dates: [], closes: [], buys: [], sells: [] }};
+      const out = {{ dates: [], closes: [], buys: [], sells: [], buy_amounts: [] }};
       for (let i = 0; i < series.dates.length; i++) {{
         const d = series.dates[i];
         if (start && d < start) continue;
@@ -157,8 +177,15 @@ def render_backtest_html(
         out.closes.push(c);
         out.buys.push(!!series.buys[i]);
         out.sells.push(!!series.sells[i]);
+        out.buy_amounts.push(series.buy_amounts ? (series.buy_amounts[i] || 0) : 0);
       }}
       return out;
+    }}
+
+    function formatBuyAmount(value) {{
+      if (!value || value <= 0) return '';
+      if (value >= 10000) return (value / 10000).toFixed(2) + ' 万元';
+      return Math.round(value).toLocaleString('zh-CN') + ' 元';
     }}
 
     function periodKey(dateStr, granularity) {{
@@ -185,6 +212,7 @@ def render_backtest_html(
         const sellPoints = [];
         let buyCount = 0;
         let sellCount = 0;
+        let buyAmountTotal = 0;
         for (let i = 0; i < filtered.dates.length; i++) {{
           const d = filtered.dates[i];
           const c = filtered.closes[i];
@@ -193,6 +221,7 @@ def render_backtest_html(
           if (filtered.buys[i] && c != null) {{
             buyPoints.push([d, c]);
             buyCount += 1;
+            buyAmountTotal += filtered.buy_amounts[i] || 0;
           }}
           if (filtered.sells[i] && c != null) {{
             sellPoints.push([d, c]);
@@ -206,6 +235,7 @@ def render_backtest_html(
           sellPoints,
           buyCount,
           sellCount,
+          buyAmountTotal,
           unit: '日',
         }};
       }}
@@ -217,7 +247,14 @@ def render_backtest_html(
         if (c == null) continue;
         const key = periodKey(filtered.dates[i], granularity);
         if (!bucketMap[key]) {{
-          bucketMap[key] = {{ close: c, hasBuy: false, hasSell: false, buyDays: 0, sellDays: 0 }};
+          bucketMap[key] = {{
+            close: c,
+            hasBuy: false,
+            hasSell: false,
+            buyDays: 0,
+            sellDays: 0,
+            buyAmount: 0,
+          }};
           order.push(key);
         }} else {{
           bucketMap[key].close = c;
@@ -225,6 +262,7 @@ def render_backtest_html(
         if (filtered.buys[i]) {{
           bucketMap[key].hasBuy = true;
           bucketMap[key].buyDays += 1;
+          bucketMap[key].buyAmount += filtered.buy_amounts[i] || 0;
         }}
         if (filtered.sells[i]) {{
           bucketMap[key].hasSell = true;
@@ -238,12 +276,14 @@ def render_backtest_html(
       const sellPoints = [];
       let buyCount = 0;
       let sellCount = 0;
+      let buyAmountTotal = 0;
       order.forEach((key, idx) => {{
         const b = bucketMap[key];
         const label = labels[idx];
         const close = b.close;
         buyCount += b.buyDays;
         sellCount += b.sellDays;
+        buyAmountTotal += b.buyAmount;
         if (b.hasBuy) buyPoints.push([label, close]);
         if (b.hasSell) sellPoints.push([label, close]);
       }});
@@ -255,6 +295,7 @@ def render_backtest_html(
         sellPoints,
         buyCount,
         sellCount,
+        buyAmountTotal,
         unit: GRANULARITY_LABELS[granularity],
       }};
     }}
@@ -270,12 +311,15 @@ def render_backtest_html(
       const chartData = aggregateSeries(filtered, granularity);
       const buyCount = chartData.buyCount;
       const sellCount = chartData.sellCount;
+      const buyAmountTotal = chartData.buyAmountTotal;
       const unit = chartData.unit;
+      const buyAmountText = formatBuyAmount(buyAmountTotal);
 
       chart.setOption({{
         title: {{
           text: series.name + ' (' + code + ')',
           subtext: '样本 ' + chartData.labels.length + ' ' + unit + ' · 买入 ' + buyCount + ' 次'
+            + (buyAmountText ? ' · ' + buyAmountText : '')
             + (sellCount ? ' · 卖出 ' + sellCount + ' 次' : ''),
           left: 'center',
           textStyle: {{ fontSize: 15 }},

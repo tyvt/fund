@@ -20,6 +20,8 @@ from market_data import (
     get_gov_bond_yield_history,
     get_index_perf_history,
     read_indicator_history,
+    rolling_percentile_series,
+    rolling_window_stats,
 )
 from price_position import (
     attach_pct_above_low,
@@ -173,26 +175,23 @@ def build_signal_history(
     panel = panel.dropna(subset=["pe", "dividend_yield", "bond_yield"])
     panel["spread"] = panel["dividend_yield"] - panel["bond_yield"]
 
-    pe_pcts, spread_pcts = [], []
-    spread_10y_pcts, spread_10y_mins, spread_10y_maxs, spread_10y_samples = [], [], [], []
-    for idx in range(len(panel)):
-        if idx < DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS:
-            pe_pcts.append(None)
-            spread_pcts.append(None)
-        else:
-            start = max(0, idx - DIVIDEND_SPREAD_PERCENTILE_WINDOW)
-            pe_pcts.append(compute_percentile(panel["pe"].iloc[start:idx], panel["pe"].iloc[idx]))
-            spread_pcts.append(
-                compute_percentile(panel["spread"].iloc[start:idx], panel["spread"].iloc[idx])
-            )
-        low, high, pct10, sample = spread_10y_window_stats(panel["spread"], idx)
-        spread_10y_mins.append(low)
-        spread_10y_maxs.append(high)
-        spread_10y_pcts.append(pct10)
-        spread_10y_samples.append(sample)
-
-    panel["pe_percentile"] = pe_pcts
-    panel["spread_percentile"] = spread_pcts
+    panel["pe_percentile"] = rolling_percentile_series(
+        panel["pe"],
+        DIVIDEND_SPREAD_PERCENTILE_WINDOW,
+        DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
+    )
+    panel["spread_percentile"] = rolling_percentile_series(
+        panel["spread"],
+        DIVIDEND_SPREAD_PERCENTILE_WINDOW,
+        DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
+    )
+    spread_10y_mins, spread_10y_maxs, spread_10y_pcts, spread_10y_samples = (
+        rolling_window_stats(
+            panel["spread"],
+            DIVIDEND_SPREAD_10Y_WINDOW,
+            DIVIDEND_SPREAD_10Y_MIN_DAYS,
+        )
+    )
     panel["spread_10y_min"] = spread_10y_mins
     panel["spread_10y_max"] = spread_10y_maxs
     panel["spread_10y_percentile"] = spread_10y_pcts

@@ -155,7 +155,9 @@ def build_index_section(
     signal_eval = build_dividend_signal_eval(
         index_code, buy_eval, spread, spread_pct, pe_pct
     )
-    drop, rise_breaks = dividend_drop_to_buy(index_code, bond_history)
+    drop, rise_breaks = dividend_drop_to_buy(
+        index_code, bond_history, panel=buy_eval.get("panel")
+    )
     cfg = get_dividend_signal_config(index_code)
     year_range = buy_eval.get("year_range_position")
     max_above_low = effective_max_above_low_pct(
@@ -205,15 +207,6 @@ def build_index_section(
     lines = [
         f"{index_code} {index_name}",
         meta_line,
-        f"利差 {spread:.2%} | 利差分位 {pct_text(spread_pct)} | 股息率 {dividend_yield:.2%}",
-        format_dividend_spread_10y_line(
-            spread,
-            buy_eval.get("spread_10y_percentile"),
-            buy_eval.get("spread_10y_min"),
-            buy_eval.get("spread_10y_max"),
-            buy_eval.get("spread_10y_sample_days"),
-        ),
-        f"PE {pe:.2f} | PE分位 {pct_text(pe_pct)}",
     ]
     append_signal_block(lines, signal_eval, "dividend")
     log_fetch_done(
