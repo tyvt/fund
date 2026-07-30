@@ -190,7 +190,7 @@ PORTFOLIO_TOTAL_BUDGET = _env_float("PORTFOLIO_TOTAL_BUDGET", 316_200)
 # 组内分配：return_weighted = 按各指数历史收益率加权（回测优选）
 PORTFOLIO_IN_GROUP_SPLIT = _env_str("PORTFOLIO_IN_GROUP_SPLIT", "return_weighted")
 
-# 各指数单次买入金额（元）；由 optimize_portfolio_amounts.py 生成，可用 {代码}_BUY_AMOUNT 覆盖
+# 各指数单次买入金额（元）；可用 {代码}_BUY_AMOUNT 覆盖
 # 组内倾斜（回测优选）：美股组 NDX 占 85%；卫星组创业板占 80%
 PORTFOLIO_US_NDX_SHARE = _env_float("PORTFOLIO_US_NDX_SHARE", 0.85)
 PORTFOLIO_SAT_CYB_SHARE = _env_float("PORTFOLIO_SAT_CYB_SHARE", 0.80)
@@ -212,7 +212,7 @@ BUY_AMOUNT_TIER_ENABLED = _env_bool("BUY_AMOUNT_TIER_ENABLED", True)
 # 默认使用收益最大化分指数金额（非组合 50/20/10/20）；设为 false 则回退模块统一金额
 BUY_AMOUNT_RETURN_MAX = _env_bool("BUY_AMOUNT_RETURN_MAX", True)
 
-# 收益最大化基准单次买入（元）；optimize_us_year_range.py 2010–至今
+# 收益最大化基准单次买入（元）；2010–至今回测优化
 # 美股 NDX/SPX：区间放宽至 65% + 八档细分 + 基准降额 72%
 BUY_AMOUNT_BASE_BY_CODE = {
     "NDX": 634,

@@ -137,7 +137,7 @@ python backtest_buy_signals.py --year 2025 --amount 500
 | 000852 | 中证1000 | 28 |
 | HSTECH | 恒生科技 | 28 |
 
-总预算约 **31.62 万**（2016–2025 回测优化）。优化脚本：`python optimize_return_max_amounts.py`。
+总预算约 **31.62 万**（2016–2025 回测优化）。
 
 #### 美股限购友好（NDX / SPX）
 
@@ -151,8 +151,6 @@ python backtest_buy_signals.py --year 2025 --amount 500
 | NDX | 210 次 × 1054 元 | **251 次 × 880 元** | — |
 | SPX | 152 次 × 242 元 | **230 次 × 210 元** | — |
 | 合计 | +409,120 元 | **+408,550 元**（−570 元，−0.14%） | |
-
-回测报告：`output/backtest/us_quota_friendly.md`。
 
 #### 分档浮动（`range_4_mild`，默认启用）
 
@@ -212,7 +210,6 @@ python backtest_trade_signals.py --amount 300
 | 卫星 | 20% | 创业板 / 中证1000 | 239 / 49（组内偏创业板） |
 
 - **组合模式不买入**：沪深300、中证500、恒生科技
-- 优化脚本：`python optimize_portfolio_amounts.py`
 
 ### 买卖波段回测（`backtest_trade_signals.py`）
 
@@ -228,14 +225,6 @@ python backtest_trade_signals.py --start 2015-01-01 --end 2025-12-31 --amount 30
 
 结果写入 `output/backtest/trade_2015_present.md`，含买卖次数、收益对比（买卖波段 vs 仅买入持有）及全部买卖日期。
 
-### 宽基对比（`compare_broad_indices.py`）
-
-对比 A 股主要宽基指数基日以来收益、年化收益、最大回撤（非策略信号）。
-
-```bash
-python compare_broad_indices.py
-```
-
 ---
 
 ## 文件说明
@@ -248,7 +237,6 @@ python compare_broad_indices.py
 | `push.py` | **微信推送入口**。调用 `report.generate_reports()` 生成报告，经 Server酱 推送。 |
 | `backtest_buy_signals.py` | 买入信号历史回测工具，统计各模块买入天数与定投收益。 |
 | `backtest_trade_signals.py` | 买卖信号波段回测，对比买卖策略与仅买入持有。 |
-| `compare_broad_indices.py` | A 股宽基指数收益/回撤对比工具，与策略信号无关。 |
 
 ### 批处理
 
@@ -284,8 +272,6 @@ python compare_broad_indices.py
 | `signal_format.py` | 统一信号文案：买入/观望/卖出标记、判定条件块、模块标题格式。 |
 | `drop_to_buy.py` | 「再跌多少可触发买入」推演（含近1年区间位置，与回测一致） |
 | `price_position.py` | 近1年区间位置、距低点涨幅、距高点回撤及分层阈值计算 |
-| `analyze_buy_quality.py` | 买入质量诊断：高位买 / 漏买低点 |
-| `analyze_index_buy_issues.py` | 重点六指数买入质量专项分析 |
 | `notify.py` | Server酱 微信推送封装，与报告生成解耦。 |
 
 ### 配置文件
@@ -331,16 +317,6 @@ python compare_broad_indices.py
 上述指标已接入：`report.py` 报告输出、`backtest_buy_signals.py` / `backtest_trade_signals.py` 回测、`drop_to_buy.py` 盘中推演。红利模块不使用 MA 趋势过滤（策略为股息率+利差，价格位置口径为 60 日）。
 
 趋势相关环境变量（见 `push.example.env`）：`BUY_TREND_MA_DAYS`、`BUY_TREND_SLOPE_LOOKBACK_DAYS`、`BUY_TREND_MIN_MA_SLOPE_PCT`、`BUY_TREND_DOWNTREND_MAX_RANGE_PCT`。
-
-### 买入质量分析（`analyze_buy_quality.py` / `analyze_index_buy_issues.py`）
-
-```bash
-# 全模块：高位买入与漏买低点统计
-python analyze_buy_quality.py
-
-# 重点指数（沪深300/中证1000/科创50/恒生科技/纳指/标普）
-python analyze_index_buy_issues.py
-```
 
 ---
 
@@ -440,13 +416,9 @@ python analyze_index_buy_issues.py
 ├── signal_format.py       # 输出格式
 ├── drop_to_buy.py         # 跌多少买入（含近1年价格位置）
 ├── price_position.py      # 价格位置指标
-├── analyze_buy_quality.py
-├── analyze_index_buy_issues.py
 ├── notify.py              # 微信推送
 ├── backtest_buy_signals.py
 ├── backtest_trade_signals.py
-├── compare_broad_indices.py
-├── optimize_strategy_backtest.py  # 策略优化建议对比回测（开发用）
 ├── run_push.bat
 ├── setup_task.bat
 ├── push.example.env

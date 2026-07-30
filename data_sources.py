@@ -184,7 +184,6 @@ DATA_SOURCES = [
             "market_data.get_index_perf_history",
             "dividend_data.build_signal_history",
             "cn_broad_data.build_cn_broad_valuation_history",
-            "compare_broad_indices（中证系宽基）",
         ],
         "indices": "000001、000300、000510、930955 等",
         "env_override": "INDEX_PERF_URL",
@@ -280,7 +279,6 @@ DATA_SOURCES = [
         "frequency": "日频",
         "fields": "标普 500 收盘价",
         "used_by": [
-            "compare_broad_indices 同类回测",
             "美股宽基回测（标普 500，2004–今 段）",
         ],
         "akshare": "ak.index_us_stock_sina(symbol='.INX')",
@@ -305,7 +303,6 @@ DATA_SOURCES = [
         "frequency": "日频",
         "fields": "开高低收、成交量",
         "used_by": [
-            "compare_broad_indices（深证成指、创业板指等）",
             "cyb_data.fetch_cyb_price_history",
         ],
         "akshare": "ak.stock_zh_index_daily(symbol='sz399006')",
