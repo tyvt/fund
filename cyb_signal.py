@@ -294,10 +294,14 @@ def format_cyb_section(snapshot, signal_eval):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
+    from live_snapshot import format_live_meta_extra
+
+    live_extra = format_live_meta_extra(snapshot)
     meta_line = format_data_meta_line(
         snapshot.get("data_date") or snapshot.get("date"),
         snapshot.get("history_start"),
         snapshot.get("history_days"),
+        extras=[live_extra] if live_extra else None,
     )
 
     lines = [

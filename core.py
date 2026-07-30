@@ -118,6 +118,7 @@ def build_index_section(
     dividend_yield,
     bond_yield,
     bond_history=None,
+    live_quotes=None,
 ):
     if not all([pe, dividend_yield, bond_yield]):
         no_data_eval = {
@@ -137,6 +138,10 @@ def build_index_section(
     buy_eval = evaluate_buy_signal(
         index_code, pe, dividend_yield, bond_yield, bond_history
     )
+    buy_eval["code"] = index_code
+    from live_snapshot import maybe_apply_live
+
+    buy_eval = maybe_apply_live(buy_eval, live_quotes)
 
     panel_pe = buy_eval.get("pe")
     panel_div = buy_eval.get("dividend_yield")
@@ -194,15 +199,17 @@ def build_index_section(
     signal_eval["buy_trigger_line"] = buy_line
 
     from buy_amount_config import enrich_signal_buy_amount
+    from live_snapshot import format_live_meta_extra
 
     signal_eval = enrich_signal_buy_amount(index_code, buy_eval, signal_eval)
 
     bond_extra = f"国债 {bond_yield:.2%}" if bond_yield is not None else None
+    meta_extras = [x for x in (bond_extra, format_live_meta_extra(buy_eval)) if x]
     meta_line = format_data_meta_line(
         buy_eval.get("data_date") or buy_eval.get("index_date"),
         buy_eval.get("history_start"),
         buy_eval.get("history_days"),
-        extras=[bond_extra] if bond_extra else None,
+        extras=meta_extras or None,
     )
     lines = [
         f"{index_code} {index_name}",
@@ -227,7 +234,7 @@ def build_index_section(
     }
 
 
-def build_report(index_results, bond_yield, bond_date, bond_history=None):
+def build_report(index_results, bond_yield, bond_date, bond_history=None, live_quotes=None):
     sections = [
         build_index_section(
             item["code"],
@@ -236,6 +243,7 @@ def build_report(index_results, bond_yield, bond_date, bond_history=None):
             item["dividend_yield"],
             bond_yield,
             bond_history,
+            live_quotes=live_quotes,
         )
         for item in index_results
     ]
@@ -252,10 +260,12 @@ def build_report(index_results, bond_yield, bond_date, bond_history=None):
     return join_index_sections(sections), sections
 
 
-def generate_report(index_codes=None):
+def generate_report(index_codes=None, live_quotes=None):
     """拉取数据并生成红利指数报告。"""
     indices = select_indices(index_codes)
     bond_yield, bond_date = get_gov_bond_yield()
     bond_history = get_gov_bond_yield_history()
     index_results = collect_index_results(indices, bond_history, bond_yield)
-    return build_report(index_results, bond_yield, bond_date, bond_history)
+    return build_report(
+        index_results, bond_yield, bond_date, bond_history, live_quotes=live_quotes
+    )

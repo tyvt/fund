@@ -170,12 +170,16 @@ def format_section(key: str, snapshot, signal_eval):
         "drop_to_buy_line": buy_line,
         "buy_trigger_line": buy_line,
     }
+    from live_snapshot import format_live_meta_extra
+
     trailing_days = snapshot.get("trailing_history_days", 0)
+    live_extra = format_live_meta_extra(snapshot)
+    meta_extras = [x for x in (f"TTM PE 样本 {trailing_days} 日", live_extra) if x]
     meta_line = format_data_meta_line(
         snapshot.get("data_date") or snapshot.get("date"),
         snapshot.get("history_start"),
         snapshot.get("daily_history_days", snapshot.get("history_days", 0)),
-        extras=[f"TTM PE 样本 {trailing_days} 日"],
+        extras=meta_extras or None,
     )
 
     lines = [

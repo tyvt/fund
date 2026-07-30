@@ -39,33 +39,39 @@ def print_report(report):
 
 
 def _log_snapshot_ready(snapshot):
+    from live_snapshot import format_live_meta_extra
+
+    live_extra = format_live_meta_extra(snapshot)
     log_fetch_done(
         snapshot.get("name", "—"),
         code=snapshot.get("code"),
         data_date=snapshot.get("data_date") or snapshot.get("date"),
         history_start=snapshot.get("history_start"),
         history_days=snapshot.get("history_days"),
+        extra=live_extra,
     )
 
 
-def generate_dividend_report(index_codes=None):
+def generate_dividend_report(index_codes=None, live_quotes=None):
     from core import generate_report
 
-    return generate_report(index_codes)
+    return generate_report(index_codes, live_quotes=live_quotes)
 
 
-def generate_cn_broad_report(index_meta, bond_history=None):
+def generate_cn_broad_report(index_meta, bond_history=None, live_quotes=None):
     from cn_broad_data import fetch_cn_broad_snapshot
     from cn_broad_signal import (
         evaluate_cn_broad_buy,
         format_cn_broad_report,
         format_cn_broad_section,
     )
+    from live_snapshot import maybe_apply_live
 
     log_fetch_start(index_meta["name"], index_meta["code"])
     if bond_history is None:
         bond_history = get_gov_bond_yield_history()
     snapshot = fetch_cn_broad_snapshot(index_meta["code"], bond_history)
+    snapshot = maybe_apply_live(snapshot, live_quotes)
     _log_snapshot_ready(snapshot)
     buy_eval = evaluate_cn_broad_buy(snapshot)
     module = CN_BROAD_MODULE_BY_CODE.get(index_meta["code"], "cn_broad")
@@ -75,14 +81,16 @@ def generate_cn_broad_report(index_meta, bond_history=None):
     )
 
 
-def generate_cn_broad_reports():
+def generate_cn_broad_reports(live_quotes=None):
     from concurrent.futures import ThreadPoolExecutor
 
     bond_history = get_gov_bond_yield_history()
     with ThreadPoolExecutor(max_workers=len(CN_BROAD_INDICES)) as executor:
         results = list(
             executor.map(
-                lambda meta: generate_cn_broad_report(meta, bond_history),
+                lambda meta: generate_cn_broad_report(
+                    meta, bond_history, live_quotes=live_quotes
+                ),
                 CN_BROAD_INDICES,
             )
         )
@@ -90,37 +98,42 @@ def generate_cn_broad_reports():
     return join_index_sections(sections), sections
 
 
-def generate_cyb_report(expected_growth=None):
+def generate_cyb_report(expected_growth=None, live_quotes=None):
     from cyb_data import fetch_cyb_snapshot
     from cyb_signal import evaluate_cyb_signal, format_cyb_report, format_cyb_section
+    from live_snapshot import maybe_apply_live
 
     if expected_growth is None:
         expected_growth = CYB_EXPECTED_GROWTH
     log_fetch_start("创业板指", "399006")
     snapshot = fetch_cyb_snapshot(expected_growth=expected_growth)
+    snapshot = maybe_apply_live(snapshot, live_quotes)
     _log_snapshot_ready(snapshot)
     signal_eval = evaluate_cyb_signal(snapshot)
     section = format_cyb_section(snapshot, signal_eval)
     return format_cyb_report(snapshot, section)
 
 
-def generate_hstech_report(expected_growth=None):
+def generate_hstech_report(expected_growth=None, live_quotes=None):
     from hstech_data import fetch_hstech_snapshot
     from hstech_signal import (
         evaluate_hstech_signal,
         format_hstech_report,
         format_hstech_section,
     )
+    from live_snapshot import maybe_apply_live
 
     log_fetch_start("恒生科技指数", "HSTECH")
     snapshot = fetch_hstech_snapshot(expected_growth=expected_growth)
+    snapshot = maybe_apply_live(snapshot, live_quotes)
     _log_snapshot_ready(snapshot)
     signal_eval = evaluate_hstech_signal(snapshot)
     section = format_hstech_section(snapshot, signal_eval)
     return format_hstech_report(snapshot, section)
 
 
-def generate_us_index_report(key, expected_growth=None):
+def generate_us_index_report(key, expected_growth=None, live_quotes=None):
+    from live_snapshot import maybe_apply_live
     from us_index_data import fetch_snapshot
     from us_index_signal import evaluate_signal, format_report, format_section
 
@@ -128,19 +141,22 @@ def generate_us_index_report(key, expected_growth=None):
     code = {"ndx": "NDX", "spx": "SPX"}[key]
     log_fetch_start(index_name, code)
     snapshot = fetch_snapshot(key, expected_growth=expected_growth)
+    snapshot = maybe_apply_live(snapshot, live_quotes)
     _log_snapshot_ready(snapshot)
     signal_eval = evaluate_signal(key, snapshot)
     section = format_section(key, snapshot, signal_eval)
     return format_report(key, snapshot, section)
 
 
-def generate_us_reports(expected_growth=None):
+def generate_us_reports(expected_growth=None, live_quotes=None):
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=len(US_INDEX_KEYS)) as executor:
         results = list(
             executor.map(
-                lambda key: generate_us_index_report(key, expected_growth=expected_growth),
+                lambda key: generate_us_index_report(
+                    key, expected_growth=expected_growth, live_quotes=live_quotes
+                ),
                 US_INDEX_KEYS,
             )
         )
@@ -165,14 +181,19 @@ def generate_reports(
 ):
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
     from concurrent.futures import ThreadPoolExecutor
+    from realtime_quote import fetch_live_quotes
+
+    live_quotes = fetch_live_quotes()
 
     resolved = _resolve_modules(modules)
     generators = {
-        MODULE_DIVIDEND: lambda: generate_dividend_report(index_codes),
-        MODULE_CN_BROAD: generate_cn_broad_reports,
-        MODULE_CYB: lambda: generate_cyb_report(cyb_growth),
-        MODULE_HSTECH: generate_hstech_report,
-        MODULE_US: lambda: generate_us_reports(us_growth),
+        MODULE_DIVIDEND: lambda: generate_dividend_report(
+            index_codes, live_quotes=live_quotes
+        ),
+        MODULE_CN_BROAD: lambda: generate_cn_broad_reports(live_quotes=live_quotes),
+        MODULE_CYB: lambda: generate_cyb_report(cyb_growth, live_quotes=live_quotes),
+        MODULE_HSTECH: lambda: generate_hstech_report(live_quotes=live_quotes),
+        MODULE_US: lambda: generate_us_reports(us_growth, live_quotes=live_quotes),
     }
 
     if len(resolved) == 1:

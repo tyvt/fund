@@ -439,12 +439,15 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
     }
     buy_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, buy_eval)
     bond = snapshot.get("bond_yield")
+    from live_snapshot import format_live_meta_extra
+
     bond_extra = f"国债 {bond:.2%}" if bond is not None else None
+    meta_extras = [x for x in (bond_extra, format_live_meta_extra(snapshot)) if x]
     meta_line = format_data_meta_line(
         snapshot.get("data_date") or snapshot.get("date"),
         snapshot.get("history_start"),
         snapshot.get("history_days"),
-        extras=[bond_extra] if bond_extra else None,
+        extras=meta_extras or None,
     )
     lines = [
         f"{snapshot['code']} {snapshot['name']}",

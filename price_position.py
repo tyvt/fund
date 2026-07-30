@@ -323,7 +323,8 @@ def format_price_position_line(snapshot, lookback_days=252):
     range_high = snapshot.get("range_high_price")
     parts = []
     if close is not None and not pd.isna(close):
-        parts.append(f"收盘 {format_index_price(close)}")
+        price_label = "现价" if snapshot.get("live_price") else "收盘"
+        parts.append(f"{price_label} {format_index_price(close)}")
     parts.append(
         format_range_position_text(
             snapshot.get("year_range_position"),

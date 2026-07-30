@@ -357,13 +357,16 @@ def format_hstech_section(snapshot, signal_eval):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
+    from live_snapshot import format_live_meta_extra
+
     div_yield = snapshot.get("dividend_yield")
     div_extra = f"股息率 {div_yield * 100:.2f}%" if div_yield is not None else None
+    meta_extras = [x for x in (div_extra, format_live_meta_extra(snapshot)) if x]
     meta_line = format_data_meta_line(
         snapshot.get("data_date") or snapshot.get("date"),
         snapshot.get("history_start"),
         snapshot.get("history_days"),
-        extras=[div_extra] if div_extra else None,
+        extras=meta_extras or None,
     )
 
     lines = [

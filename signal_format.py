@@ -169,7 +169,7 @@ def append_signal_block(lines, signal_eval, module):
         lines.append(f"信号: {signal}")
 
     drop_line = signal_eval.get("buy_trigger_line") or signal_eval.get("drop_to_buy_line")
-    if drop_line:
+    if drop_line and signal_eval.get("is_buy"):
         lines.append(drop_line)
 
     buy_amount_line = signal_eval.get("buy_amount_line")
@@ -177,7 +177,7 @@ def append_signal_block(lines, signal_eval, module):
         lines.append(buy_amount_line)
 
     sell_line = signal_eval.get("sell_trigger_line")
-    if sell_line:
+    if sell_line and signal_eval.get("is_sell"):
         lines.append(sell_line)
 
     for item in criteria:
