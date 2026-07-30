@@ -282,6 +282,14 @@ def get_backtest_buy_amount(index_code, amounts=None):
     return get_buy_amount_base(index_code)
 
 
+def get_chart_buy_amount(index_code, amounts=None):
+    """HTML 图表用单次买入金额；组合未持仓指数仍用基准金额展示买卖点。"""
+    amt = get_backtest_buy_amount(index_code, amounts)
+    if amt > 0:
+        return amt
+    return get_buy_amount_base(index_code)
+
+
 def _build_portfolio_by_code(buy_counts, index_returns, total_budget=None):
     """按组合权重 + 组内收益率加权，计算各指数单次买入金额。"""
     budget = total_budget if total_budget is not None else PORTFOLIO_TOTAL_BUDGET
@@ -510,6 +518,14 @@ DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_RELAX = _env_float_any(
 DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float_any(
     ("DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX",), BUY_NEAR_YEAR_LOW_PE_RELAX
 )
+# 近1年低位时放宽绝对利差门槛（百分点，如 0.012 = 放宽 1.2%）
+DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_MIN_RELAX = _env_float_any(
+    ("DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_MIN_RELAX",), 0.012
+)
+# 处于近1年区间极低位（如 ≤5%）时，可豁免绝对利差硬门槛（股债利率同向时低点利差仍可能偏小）
+DIVIDEND_BUY_EXTREME_YEAR_LOW_RANGE_PCT = _env_float_any(
+    ("DIVIDEND_BUY_EXTREME_YEAR_LOW_RANGE_PCT",), 0.05
+)
 
 _DIVIDEND_CFG_SUFFIX = {
     "buy_spread_min": "BUY_SPREAD_MIN",
@@ -523,6 +539,8 @@ _DIVIDEND_CFG_SUFFIX = {
     "buy_near_year_low_range_pct": "BUY_NEAR_YEAR_LOW_RANGE_PCT",
     "buy_near_year_low_spread_relax": "BUY_NEAR_YEAR_LOW_SPREAD_RELAX",
     "buy_near_year_low_pe_relax": "BUY_NEAR_YEAR_LOW_PE_RELAX",
+    "buy_near_year_low_spread_min_relax": "BUY_NEAR_YEAR_LOW_SPREAD_MIN_RELAX",
+    "buy_extreme_year_low_range_pct": "BUY_EXTREME_YEAR_LOW_RANGE_PCT",
     "buy_near_year_low_above_low_relax": "BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX",
     "buy_mid_range_position_pct": "BUY_MID_RANGE_POSITION_PCT",
     "buy_mid_range_max_above_low_pct": "BUY_MID_RANGE_MAX_ABOVE_LOW_PCT",
@@ -540,6 +558,8 @@ _DIVIDEND_GLOBAL_DEFAULTS = {
     "buy_near_year_low_range_pct": DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     "buy_near_year_low_spread_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_RELAX,
     "buy_near_year_low_pe_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX,
+    "buy_near_year_low_spread_min_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_MIN_RELAX,
+    "buy_extreme_year_low_range_pct": DIVIDEND_BUY_EXTREME_YEAR_LOW_RANGE_PCT,
     "buy_near_year_low_above_low_relax": BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX,
     "buy_mid_range_position_pct": BUY_MID_RANGE_POSITION_PCT,
     "buy_mid_range_max_above_low_pct": BUY_MID_RANGE_MAX_ABOVE_LOW_PCT,
@@ -623,6 +643,9 @@ _CN_BROAD_CFG_SUFFIX = {
     "sell_pe_percentile_min": "SELL_PE_PERCENTILE_MIN",
     "sell_pb_percentile_min": "SELL_PB_PERCENTILE_MIN",
     "sell_max_above_low_pct": "SELL_MAX_ABOVE_LOW_PCT",
+    "sell_min_year_range_pct": "SELL_MIN_YEAR_RANGE_PCT",
+    "sell_pe_combo_min": "SELL_PE_COMBO_MIN",
+    "sell_valuation_enabled": "SELL_VALUATION_ENABLED",
     "sell_trailing_drawdown_pct": "SELL_TRAILING_DRAWDOWN_PCT",
     "sell_min_unrealized_gain_pct": "SELL_MIN_UNREALIZED_GAIN_PCT",
     "sell_trailing_min_hold_days": "SELL_TRAILING_MIN_HOLD_DAYS",
@@ -676,6 +699,9 @@ def _cn_broad_index_defaults(**overrides):
         "sell_pe_percentile_min": 88.0,
         "sell_pb_percentile_min": 99.0,
         "sell_max_above_low_pct": 0.20,
+        "sell_min_year_range_pct": None,
+        "sell_pe_combo_min": None,
+        "sell_valuation_enabled": None,
         "sell_trailing_drawdown_pct": None,
         "sell_min_unrealized_gain_pct": 0.60,
         "sell_trailing_min_hold_days": 90,
@@ -699,6 +725,10 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.22,
+        sell_valuation_enabled=False,
+        sell_trailing_drawdown_pct=0.12,
+        sell_min_unrealized_gain_pct=0.50,
+        sell_trailing_min_hold_days=60,
     ),
     # 沪深300：二次收紧（夏普持续偏低）
     "000300": _cn_broad_index_defaults(
@@ -714,6 +744,7 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=25,
         sell_pe_percentile_min=85,
         sell_max_above_low_pct=0.18,
+        sell_valuation_enabled=False,
         # 移动止盈：浮盈≥60% 后，自峰值回撤 10% 卖出（2015 至今回测超额约 +8%）
         sell_trailing_drawdown_pct=0.10,
         sell_min_unrealized_gain_pct=0.60,
@@ -731,6 +762,7 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.24,
+        sell_valuation_enabled=False,
         # 移动止盈：浮盈≥50% 后，自峰值回撤 12% 卖出（自基日回测超额约 +5%）
         sell_trailing_drawdown_pct=0.12,
         sell_min_unrealized_gain_pct=0.50,
@@ -746,8 +778,13 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         buy_max_year_range_pct=0.34,
         buy_mid_range_max_above_low_pct=0.04,
         sell_spread_percentile_max=25,
-        sell_pe_percentile_min=88,
-        sell_max_above_low_pct=0.22,
+        sell_pe_percentile_min=82,
+        sell_max_above_low_pct=0.24,
+        sell_valuation_enabled=True,
+        # 估值+移动止盈：PE≥82% 且短期涨幅过大可卖；浮盈≥40% 后峰值回撤≥10% 兜底
+        sell_trailing_drawdown_pct=0.10,
+        sell_min_unrealized_gain_pct=0.40,
+        sell_trailing_min_hold_days=60,
     ),
     # 科创50：夏普偏低但绝对收益高，轻度收紧
     "000688": _cn_broad_index_defaults(
@@ -762,6 +799,7 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_spread_percentile_max=22,
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.25,
+        sell_valuation_enabled=False,
         # 移动止盈：浮盈≥80% 后，自峰值回撤 14% 卖出（2015 至今回测超额约 +18%）
         sell_trailing_drawdown_pct=0.14,
         sell_min_unrealized_gain_pct=0.80,
@@ -781,7 +819,7 @@ def get_cn_broad_signal_config(index_code):
         env_names = [f"CN_BROAD_{index_code}_{suffix}"]
         if index_code == "000510":
             env_names.append(f"A500_{suffix}")
-        if key == "buy_require_spread":
+        if key in ("buy_require_spread", "sell_valuation_enabled"):
             raw = None
             for name in env_names:
                 raw = os.environ.get(name)
@@ -797,6 +835,14 @@ def get_cn_broad_signal_config(index_code):
             continue
         cfg[key] = _env_float_any(tuple(env_names), default)
     return cfg
+
+
+def cn_broad_valuation_sell_enabled(cfg):
+    """宽基是否启用估值类卖点（显式配置优先；否则仅无移动止盈时默认启用）。"""
+    explicit = cfg.get("sell_valuation_enabled")
+    if explicit is not None:
+        return explicit
+    return cfg.get("sell_trailing_drawdown_pct") is None
 
 
 # 兼容旧变量名（A500 / 指向 000510 默认）
@@ -1063,7 +1109,9 @@ BACKTEST_RISK_FREE_RATE = _env_float("BACKTEST_RISK_FREE_RATE", 0.024)
 BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
 # --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
-CN_BROAD_SELL_ENABLED_CODES = frozenset({"000300", "000688", "000905"})
+CN_BROAD_SELL_ENABLED_CODES = frozenset(
+    {"000510", "000300", "000905", "000852", "000688"}
+)
 CYB_SELL_ENABLED = _env_bool("CYB_SELL_ENABLED", True)
 HSTECH_SELL_ENABLED = _env_bool("HSTECH_SELL_ENABLED", True)
 

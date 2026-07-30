@@ -260,11 +260,16 @@ def is_buy_signal(
     year_range_position=None,
 ):
     """买入条件须全部满足（阈值按指数读取）。"""
-    if spread is None or spread_percentile is None or pe_percentile is None:
+    if spread is None:
         return False
     cfg = get_dividend_signal_config(index_code)
     near_low = is_near_year_low(
         year_range_position, cfg.get("buy_near_year_low_range_pct")
+    )
+    extreme_low = (
+        year_range_position is not None
+        and not pd.isna(year_range_position)
+        and year_range_position <= cfg.get("buy_extreme_year_low_range_pct", 0.05)
     )
     spread_pct_min = cfg["buy_spread_percentile_min"]
     pe_pct_max = cfg["buy_pe_percentile_max"]
@@ -273,6 +278,26 @@ def is_buy_signal(
             0.0, spread_pct_min - cfg.get("buy_near_year_low_spread_relax", 0)
         )
         pe_pct_max = min(100.0, pe_pct_max + cfg.get("buy_near_year_low_pe_relax", 0))
+    spread_min = cfg["buy_spread_min"]
+    if near_low:
+        spread_min = max(
+            0.0,
+            spread_min - cfg.get("buy_near_year_low_spread_min_relax", 0),
+        )
+    spread_abs_ok = spread > spread_min
+    if extreme_low and not spread_abs_ok:
+        spread_abs_ok = True
+
+    if pd.isna(spread_percentile) or pd.isna(pe_percentile):
+        if not (near_low and extreme_low):
+            return False
+        spread_pct_ok = (
+            pd.isna(spread_percentile) or spread_percentile >= spread_pct_min
+        )
+        pe_ok = pd.isna(pe_percentile) or pe_percentile <= pe_pct_max
+    else:
+        spread_pct_ok = spread_percentile >= spread_pct_min
+        pe_ok = pe_percentile <= pe_pct_max
     min_drawdown = effective_drawdown_threshold(
         cfg.get("buy_min_drawdown_from_high_pct"),
         year_range_position,
@@ -286,11 +311,7 @@ def is_buy_signal(
         cfg.get("buy_mid_range_position_pct"),
         cfg.get("buy_mid_range_max_above_low_pct"),
     )
-    base = (
-        spread > cfg["buy_spread_min"]
-        and spread_percentile >= spread_pct_min
-        and pe_percentile <= pe_pct_max
-    )
+    base = spread_abs_ok and spread_pct_ok and pe_ok
     if not price_position_ok(pct_above_low, max_above_low):
         return False
     if not drawdown_from_high_ok(pct_below_high, min_drawdown):

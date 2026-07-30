@@ -34,6 +34,7 @@ from config import (
     US_INDEX_KEYS,
     format_backtest_amount_note,
     get_backtest_buy_amount,
+    get_chart_buy_amount,
     resolve_backtest_amounts,
 )
 from index_meta import get_index_base_date
@@ -424,6 +425,29 @@ def _index_simulate_amount(
     return base
 
 
+def _chart_simulate_amount(
+    code, amounts, panel, date_range, buy_fn, date_col="date"
+):
+    """HTML 图表用回测金额（组合未持仓指数回退基准金额）。"""
+    if amounts is None:
+        return None
+    base = get_chart_buy_amount(code, amounts)
+    if base <= 0:
+        return 0
+    if amounts.get("tier_scheme"):
+        return resolve_simulate_amount(
+            code,
+            base,
+            amounts,
+            panel,
+            date_range.start,
+            date_range.end,
+            buy_fn,
+            date_col,
+        )
+    return base
+
+
 def backtest_dividend(
     date_range, bond_history=None, amount=None, amounts=None, panels=None
 ):
@@ -788,7 +812,7 @@ def collect_daily_tables(
             continue
         sim_amt = None
         if amounts is not None:
-            sim_amt = _index_simulate_amount(
+            sim_amt = _chart_simulate_amount(
                 cfg["code"],
                 amounts,
                 cfg["panel"],

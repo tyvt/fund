@@ -1,0 +1,33 @@
+---
+description: 指标/阈值调整后须全量回测并重新生成 HTML
+globs: config.py,**/*_signal.py,**/*_data.py,sell_trailing.py,drop_to_buy.py,price_position.py,backtest_*.py
+alwaysApply: false
+---
+
+# 指标调整后全量回测
+
+修改买卖阈值、信号逻辑或价格位置指标后，**必须**跑自基日全量回测并**重新生成 HTML**（勿使用 `--no-html`）。
+
+## 必做步骤
+
+1. 完成 `config.py` / 信号模块等代码修改
+2. 运行全量回测（买入 + 买卖波段，含 HTML）：
+
+```bash
+# 推荐：一键脚本（组合仓位 + 分档，与日常组合一致）
+run_backtest_inception.bat
+
+# 或分别执行
+python backtest_buy_signals.py --portfolio
+python backtest_trade_signals.py --portfolio
+```
+
+3. 确认输出已更新：
+   - `output/backtest/inception_present.md` + `inception_present.html`（买入信号）
+   - `output/backtest/trade_inception_present.md` + `trade_inception_present.html`（买卖波段）
+
+## 注意
+
+- 开发调试报告仍用 `python report.py`；全量回测用于验证历史表现与图表
+- **不要**加 `--no-html`（除非用户明确要求只要 Markdown）
+- 禁止为验证回测而运行 `push.py` / `run_push.bat`（见 `no-test-push` 规则）

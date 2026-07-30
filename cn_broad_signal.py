@@ -1,7 +1,7 @@
 """A 股宽基指数买入/卖出信号与报告格式化。"""
 
 from buy_amount_config import enrich_signal_buy_amount
-from config import cn_broad_sell_enabled, get_cn_broad_signal_config
+from config import cn_broad_sell_enabled, cn_broad_valuation_sell_enabled, get_cn_broad_signal_config
 from drop_to_buy import (
     cn_broad_drop_to_buy,
     cn_broad_sell_trigger,
@@ -90,7 +90,24 @@ def evaluate_cn_broad_sell(snapshot):
     price_hit = price_position_sell_hit(
         pct_above_low, cfg["sell_max_above_low_pct"]
     )
-    val_hit = valuation_sell_hit_cn_broad(snapshot, cfg)
+    val_hit = (
+        cn_broad_valuation_sell_enabled(cfg)
+        and valuation_sell_hit_cn_broad(snapshot, cfg)
+    )
+    year_range = snapshot.get("year_range_position")
+    min_range = cfg.get("sell_min_year_range_pct")
+    combo_pe_min = cfg.get("sell_pe_combo_min")
+    range_hit = (
+        min_range is not None
+        and year_range is not None
+        and year_range >= min_range
+    )
+    combo_pe_hit = (
+        combo_pe_min is not None
+        and pe_pct is not None
+        and pe_pct >= combo_pe_min
+    )
+    combo_hit = range_hit and combo_pe_hit and (price_hit or spread_hit or pb_hit)
 
     sell_criteria = []
     if cfg.get("sell_trailing_drawdown_pct") is not None:
@@ -146,30 +163,53 @@ def evaluate_cn_broad_sell(snapshot):
                 applicable=True,
             )
         )
+    if min_range is not None and year_range is not None:
+        sell_criteria.append(
+            make_criterion(
+                "近1年区间高位",
+                range_hit,
+                f"{pct_text(year_range * 100)}（需≥{min_range * 100:.0f}%）",
+                "价格尚未进入近1年高位区间",
+                applicable=True,
+            )
+        )
+    if combo_pe_min is not None and pe_pct is not None:
+        sell_criteria.append(
+            make_criterion(
+                "PE 组合门槛",
+                combo_pe_hit,
+                f"{pct_text(pe_pct)}（组合需≥{combo_pe_min:.0f}%）",
+                "PE 未达区间高位组合门槛",
+                applicable=True,
+            )
+        )
 
-    is_sell = trail_hit
+    is_sell = trail_hit or val_hit
 
     reasons = []
     if trail_hit:
         reasons.append("移动止盈触发")
-    elif val_hit:
-        if pe_hit:
-            reasons.append("PE分位过高")
-        if spread_hit:
-            reasons.append("利差分位过低")
-        if price_hit:
-            close_val = snapshot.get("close")
-            low = snapshot.get("lookback_low_price")
-            sell_pct = cfg["sell_max_above_low_pct"]
-            if close_val is not None and low is not None and sell_pct is not None:
-                min_close = low * (1 + sell_pct)
-                reasons.append(
-                    f"收盘 {format_index_price(close_val)} 高于卖出线 {format_index_price(min_close)}"
-                )
-            else:
-                reasons.append(f"距{lookback}日低点涨幅过大")
-        if pb_hit and cfg["sell_pb_percentile_min"] < 95:
-            reasons.append("PB分位过高")
+    if val_hit and not trail_hit:
+        if pe_hit and (spread_hit or price_hit or pb_hit):
+            if pe_hit:
+                reasons.append("PE分位过高")
+            if spread_hit:
+                reasons.append("利差分位过低")
+            if price_hit:
+                close_val = snapshot.get("close")
+                low = snapshot.get("lookback_low_price")
+                sell_pct = cfg["sell_max_above_low_pct"]
+                if close_val is not None and low is not None and sell_pct is not None:
+                    min_close = low * (1 + sell_pct)
+                    reasons.append(
+                        f"收盘 {format_index_price(close_val)} 高于卖出线 {format_index_price(min_close)}"
+                    )
+                else:
+                    reasons.append(f"距{lookback}日低点涨幅过大")
+            if pb_hit and cfg["sell_pb_percentile_min"] < 95:
+                reasons.append("PB分位过高")
+        elif combo_hit:
+            reasons.append("近1年区间高位且估值/价格组合触发")
 
     return {
         "is_sell": is_sell,

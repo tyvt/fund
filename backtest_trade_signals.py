@@ -17,6 +17,7 @@ from backtest_buy_signals import (
 from cn_broad_signal import evaluate_cn_broad_buy
 from config import (
     BACKTEST_RISK_FREE_RATE,
+    cn_broad_valuation_sell_enabled,
     CYB_BUY_MAX_ABOVE_LOW_PCT,
     CYB_BUY_MAX_YEAR_RANGE_PCT,
     CYB_BUY_PB_PERCENTILE_MAX,
@@ -30,6 +31,7 @@ from config import (
     cn_broad_sell_enabled,
     format_backtest_amount_note,
     get_backtest_buy_amount,
+    get_chart_buy_amount,
     get_cn_broad_signal_config,
     HSTECH_INDEX,
     HSTECH_SELL_ENABLED,
@@ -117,6 +119,8 @@ def _cn_broad_trailing_cfg(code):
 
 def _cn_broad_valuation_sell_fn(code):
     cfg = get_cn_broad_signal_config(code)
+    if not cn_broad_valuation_sell_enabled(cfg):
+        return None
 
     def _sell(row):
         snap = {
@@ -125,6 +129,7 @@ def _cn_broad_valuation_sell_fn(code):
             "pb_percentile": row.get("pb_percentile"),
             "spread_percentile": row.get("spread_percentile"),
             "pct_above_low": row.get("pct_above_low"),
+            "year_range_position": row.get("year_range_position"),
         }
         buy_ev = evaluate_cn_broad_buy(
             {
@@ -448,6 +453,7 @@ def backtest_all(
         buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
         sell_fn = lambda r, c=code: _cn_broad_signals(r, c)[1]
         trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
+        val_sell_fn = _cn_broad_valuation_sell_fn(code) if sell_on else None
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
@@ -461,7 +467,7 @@ def backtest_all(
             sell_fn,
             sell_on,
             trailing_cfg=trail_cfg,
-            valuation_sell_fn=None,
+            valuation_sell_fn=val_sell_fn,
         )
         if stats:
             ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
@@ -639,7 +645,7 @@ def resolve_chart_sell_dates(
     price_col="close",
 ):
     """按波段回测模拟结果返回图表用卖出日期（移动止盈与回测收益一致）。"""
-    amt = get_backtest_buy_amount(code, amounts)
+    amt = get_chart_buy_amount(code, amounts)
     if amt <= 0:
         return []
     sim_amt = _resolve_trade_amount(
@@ -650,7 +656,8 @@ def resolve_chart_sell_dates(
 
     if cn_broad_sell_enabled(code):
         trail_cfg = _cn_broad_trailing_cfg(code)
-        if trail_cfg:
+        val_fn = _cn_broad_valuation_sell_fn(code)
+        if trail_cfg or val_fn:
             stats = _run_index_trades(
                 panel,
                 code,
@@ -661,6 +668,7 @@ def resolve_chart_sell_dates(
                 lambda r: False,
                 True,
                 trailing_cfg=trail_cfg,
+                valuation_sell_fn=val_fn,
                 date_col=date_col,
                 valuation_price_col=price_col,
             )
@@ -774,7 +782,7 @@ def collect_trade_chart_tables(
         date_col="date",
         price_col="close",
     ):
-        from backtest_buy_signals import BacktestRange, _index_simulate_amount
+        from backtest_buy_signals import BacktestRange, _chart_simulate_amount
 
         if amounts is not None:
             date_range = BacktestRange(
@@ -782,7 +790,7 @@ def collect_trade_chart_tables(
                 end=end_date,
                 label=f"{start_date}_{end_date or 'present'}",
             )
-            sim_amt = _index_simulate_amount(
+            sim_amt = _chart_simulate_amount(
                 code, amounts, panel, date_range, buy_fn, date_col
             )
             if sim_amt == 0:
@@ -962,7 +970,9 @@ def _format_config_snapshot():
     ]
     for item in CN_BROAD_BACKTEST_INDICES:
         cfg = get_cn_broad_signal_config(item["code"])
-        sell = "移动止盈" if cn_broad_sell_enabled(item["code"]) else "无"
+        sell = "移动止盈"
+        if cn_broad_valuation_sell_enabled(cfg):
+            sell += "+估值"
         lines.append(
             f"| {item['name']} | {item['code']} | "
             f"≥{cfg['buy_spread_percentile_min']:.0f}% | "
@@ -1239,3 +1249,84 @@ def save_result(markdown, filename=None, write_html=True, **html_kwargs):
             subtitle=html_kwargs.get("subtitle", ""),
         )
     return path, html_path
+
+
+def main(argv=None):
+    import argparse
+    import sys
+
+    from backtest_buy_signals import configure_stdout_utf8
+
+    configure_stdout_utf8()
+    parser = argparse.ArgumentParser(
+        description="自基日全量买卖信号回测，输出 Markdown 与 HTML 折线图"
+    )
+    parser.add_argument("--start", default=DEFAULT_START, help="起始日期")
+    parser.add_argument("--end", default=None, help="结束日期")
+    parser.add_argument(
+        "--portfolio",
+        action="store_true",
+        help="使用组合仓位分指数金额",
+    )
+    parser.add_argument(
+        "--no-tier",
+        action="store_true",
+        help="禁用价格分档",
+    )
+    parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="不生成 HTML 折线图",
+    )
+    parser.add_argument(
+        "--amount",
+        type=float,
+        default=None,
+        help="统一覆盖所有指数单次买入金额（元）",
+    )
+    args = parser.parse_args(argv)
+    tier_enabled = not args.no_tier
+    if args.amount is not None and args.amount <= 0:
+        amounts = None
+    elif args.amount is not None:
+        amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
+    elif args.portfolio:
+        amounts = resolve_backtest_amounts(
+            portfolio_mode=True, tier_enabled=tier_enabled
+        )
+    else:
+        amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
+
+    try:
+        panels = BacktestPanels()
+        results = backtest_all(
+            args.start, args.end, amounts=amounts, panels=panels
+        )
+        print_table(results, args.start, args.end, amounts)
+        daily_tables = collect_trade_chart_tables(
+            args.start, args.end, amounts=amounts, panels=panels
+        )
+        md = format_markdown(results, args.start, args.end, amounts)
+        path, html_path = save_result(
+            md,
+            filename="trade_inception_present.md",
+            write_html=not args.no_html,
+            daily_tables=daily_tables,
+            title="自基日全量买卖信号回测",
+            start_date=args.start,
+            end_date=args.end,
+            subtitle=format_backtest_amount_note(amounts),
+        )
+        print(f"\n回测结果已保存: {path}")
+        if html_path:
+            print(f"折线图已保存: {html_path}")
+    except Exception as exc:
+        print(f"回测失败: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())

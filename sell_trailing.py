@@ -84,11 +84,12 @@ def trailing_sell_hit(
 
 
 def valuation_sell_hit_cn_broad(snapshot, cfg):
-    """宽基估值卖点：PE 偏高 + 利差收敛或短期涨幅过大。"""
+    """宽基估值卖点：PE 偏高 + 利差收敛/短期涨幅过大；或近1年区间高位 + PE 不低。"""
     pe_pct = snapshot.get("pe_percentile")
     pb_pct = snapshot.get("pb_percentile")
     spread_pct = snapshot.get("spread_percentile")
     pct_above_low = snapshot.get("pct_above_low")
+    year_range = snapshot.get("year_range_position")
 
     spread_hit = (
         spread_pct is not None
@@ -101,7 +102,23 @@ def valuation_sell_hit_cn_broad(snapshot, cfg):
     price_hit = price_position_sell_hit(
         pct_above_low, cfg["sell_max_above_low_pct"]
     )
-    return pe_hit and (spread_hit or price_hit or pb_hit)
+    classic = pe_hit and (spread_hit or price_hit or pb_hit)
+
+    min_range = cfg.get("sell_min_year_range_pct")
+    combo_pe_min = cfg.get("sell_pe_combo_min")
+    range_hit = (
+        min_range is not None
+        and year_range is not None
+        and year_range >= min_range
+    )
+    combo_pe_hit = (
+        combo_pe_min is not None
+        and pe_pct is not None
+        and pe_pct >= combo_pe_min
+    )
+    combo = range_hit and combo_pe_hit and (price_hit or spread_hit or pb_hit)
+
+    return classic or combo
 
 
 def simulate_trades_trailing(
