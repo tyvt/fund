@@ -290,6 +290,11 @@ def rolling_window_stats(series, window, min_periods):
     return mins, maxs, pcts, samples
 
 
+def asof_datetime(series):
+    """日期列转为 datetime64[ns]，供 merge_asof 对齐（不接受 object dtype）。"""
+    return pd.to_datetime(series, errors="coerce").dt.normalize()
+
+
 def _to_date(value):
     """统一转为 datetime.date 便于对齐。"""
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -323,11 +328,11 @@ def attach_bond_yield(panel, bond_history=None):
     if panel is None or panel.empty:
         return panel
     out = panel.copy()
-    out["_date_dt"] = pd.to_datetime(out["date"]).dt.normalize()
+    out["_date_dt"] = asof_datetime(out["date"])
 
     if bond_history is not None and not bond_history.empty:
         bond = _normalize_bond_history(bond_history)
-        bond["_date_dt"] = pd.to_datetime(bond["date"]).dt.normalize()
+        bond["_date_dt"] = asof_datetime(bond["date"])
         out = pd.merge_asof(
             out.sort_values("_date_dt"),
             bond[["_date_dt", "bond_yield"]].sort_values("_date_dt"),

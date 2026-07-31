@@ -13,6 +13,7 @@ from config import (
     ZZ500_INDEX,
 )
 from market_data import (
+    asof_datetime,
     attach_bond_yield,
     compute_percentile,
     get_gov_bond_yield_history,
@@ -75,10 +76,10 @@ def build_cn_broad_valuation_history(
     panel = perf.sort_values("date").reset_index(drop=True)
     panel = attach_bond_yield(panel, bond_history)
 
-    panel["date_dt"] = pd.to_datetime(panel["date"])
+    panel["date_dt"] = asof_datetime(panel["date"])
     if indicator is not None and not indicator.empty:
         official = indicator.copy()
-        official["date_dt"] = pd.to_datetime(official["date"])
+        official["date_dt"] = asof_datetime(official["date"])
         official = official.sort_values("date_dt")
         panel = panel.sort_values("date_dt")
         panel = pd.merge_asof(
@@ -92,6 +93,9 @@ def build_cn_broad_valuation_history(
             on="date_dt",
             direction="backward",
         )
+        panel["official_pe"] = pd.to_numeric(panel["official_pe"], errors="coerce")
+        panel["rolling_pe"] = pd.to_numeric(panel["rolling_pe"], errors="coerce")
+        panel["official_div"] = pd.to_numeric(panel["official_div"], errors="coerce")
         scale = _rolling_pe_calibration_scale(panel)
         panel["pe"] = panel["official_pe"].combine_first(
             panel["rolling_pe"] * scale
