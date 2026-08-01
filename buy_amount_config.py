@@ -12,9 +12,13 @@ ALL_BUY_INDEX_CODES = (
     "930955",
     "H30269",
     "000510",
+    "000016",
     "000300",
     "000905",
     "000852",
+    "932000",
+    "930050",
+    "000903",
     "000688",
     "399006",
     "HSTECH",
@@ -168,14 +172,22 @@ def format_buy_amount_scenarios(snapshot, base: float, scheme: str) -> str | Non
 
 def enrich_signal_buy_amount(index_code, snapshot, signal_eval):
     """为信号评估附加买入金额，供报告展示（仅触发买入时）。"""
-    from config import BUY_AMOUNT_TIER_ENABLED, BUY_AMOUNT_TIER_SCHEME, get_buy_amount_base
+    from config import (
+        BUY_AMOUNT_TIER_ENABLED,
+        BUY_AMOUNT_TIER_SCHEME,
+        get_buy_amount_base,
+        is_index_recommended,
+    )
 
+    recommended = is_index_recommended(index_code)
     base = get_buy_amount_base(index_code)
-    if base <= 0:
-        return signal_eval
 
     out = dict(signal_eval)
+    out["recommended"] = recommended
     out["buy_amount_base"] = base
+
+    if base <= 0:
+        return out
 
     if not out.get("is_buy"):
         return out

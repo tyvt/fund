@@ -41,7 +41,7 @@ def sync_cn_perf(force: bool = False) -> list[str]:
     return lines
 
 
-def sync_cn_indicators() -> list[str]:
+def sync_cn_indicators(force: bool = False) -> list[str]:
     from config import DIVIDEND_TOTAL_RETURN_INDEX
 
     skip = frozenset(DIVIDEND_TOTAL_RETURN_INDEX.values())
@@ -122,6 +122,16 @@ def sync_all(force: bool = False) -> None:
     print("\n跟踪指数：")
     for code, name in iter_tracked_index_labels():
         print(f"  {name} ({code})")
+
+    print("\n[收益率排名]")
+    try:
+        from buy_amount_ranking import compute_index_ranking, format_ranking_note
+
+        alloc = compute_index_ranking(force=True)
+        print(f"  {format_ranking_note(alloc)}")
+    except Exception as exc:
+        print(f"  排名刷新失败: {exc}")
+
     print("\n缓存目录: cache/（当日已同步则跳过重拉，次日自动增量更新）")
 
 

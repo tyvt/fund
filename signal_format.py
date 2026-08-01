@@ -117,9 +117,13 @@ def resolve_action_hint(signal, module):
     hints = {
         (SIGNAL_BUY, "dividend"): "可考虑分批买入红利指数；注意分散、控制仓位。",
         (SIGNAL_BUY, "a500"): "可考虑分批布局中证 A500；股债利差与估值具吸引力。",
+        (SIGNAL_BUY, "sz50"): "可考虑分批布局上证50；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "hs300"): "可考虑分批布局沪深300；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "zz500"): "可考虑分批布局中证500；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "zz1000"): "可考虑分批布局中证1000；股债利差与估值具吸引力。",
+        (SIGNAL_BUY, "zz2000"): "可考虑分批布局中证2000；股债利差与估值具吸引力。",
+        (SIGNAL_BUY, "a50"): "可考虑分批布局中证 A50；股债利差与估值具吸引力。",
+        (SIGNAL_BUY, "a100"): "可考虑分批布局中证 A100；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "kc50"): "可考虑分批布局科创50；股债利差与估值具吸引力。",
         (SIGNAL_BUY, "cyb"): "可考虑分批买入创业板；估值处历史偏低区间。",
         (SIGNAL_BUY, "hstech"): "可考虑分批买入恒生科技；PE、PEG 与股息率分位配合。",
@@ -127,26 +131,38 @@ def resolve_action_hint(signal, module):
         (SIGNAL_BUY, "spx"): "可考虑分批买入标普 500；估值与利率环境配合。",
         (SIGNAL_HOLD, "dividend"): "暂不买入；等待利差或 PE 分位改善。",
         (SIGNAL_HOLD, "a500"): "暂不买入；等待股债利差或估值指标进一步改善。",
+        (SIGNAL_HOLD, "sz50"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "hs300"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "zz500"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "zz1000"): "暂不买入；等待股债利差或估值指标进一步改善。",
+        (SIGNAL_HOLD, "zz2000"): "暂不买入；等待股债利差或估值指标进一步改善。",
+        (SIGNAL_HOLD, "a50"): "暂不买入；等待股债利差或估值指标进一步改善。",
+        (SIGNAL_HOLD, "a100"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "kc50"): "暂不买入；等待股债利差或估值指标进一步改善。",
         (SIGNAL_HOLD, "cyb"): "暂不买入；等待 PE/PB 分位改善。",
         (SIGNAL_HOLD, "hstech"): "暂不买入；等待 PE 分位回落或股息率分位改善。",
         (SIGNAL_HOLD, "ndx"): "暂不买入；等待 PE 分位回落或利率下行。",
         (SIGNAL_HOLD, "spx"): "暂不买入；等待 PE 分位回落或利率下行。",
         (SIGNAL_SELL, "a500"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
+        (SIGNAL_SELL, "sz50"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "hs300"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "zz500"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "zz1000"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
+        (SIGNAL_SELL, "zz2000"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
+        (SIGNAL_SELL, "a50"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
+        (SIGNAL_SELL, "a100"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "kc50"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "cyb"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_SELL, "hstech"): "波段卖出条件触发；持仓者可考虑减仓或止盈。",
         (SIGNAL_NO_DATA, "dividend"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "a500"): "数据缺失，本次不给出操作建议。",
+        (SIGNAL_NO_DATA, "sz50"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "hs300"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "zz500"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "zz1000"): "数据缺失，本次不给出操作建议。",
+        (SIGNAL_NO_DATA, "zz2000"): "数据缺失，本次不给出操作建议。",
+        (SIGNAL_NO_DATA, "a50"): "数据缺失，本次不给出操作建议。",
+        (SIGNAL_NO_DATA, "a100"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "kc50"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "cyb"): "数据缺失，本次不给出操作建议。",
         (SIGNAL_NO_DATA, "hstech"): "数据缺失，本次不给出操作建议。",
@@ -208,3 +224,13 @@ def join_index_sections(sections) -> str:
             parts.append("─" * 24)
         parts.append(section["text"])
     return "\n".join(parts)
+
+
+def section_has_trade_signal(section) -> bool:
+    """当日是否触发买入或波段卖出信号。"""
+    return section.get("signal_short") in (SIGNAL_BUY, SIGNAL_SELL)
+
+
+def filter_trade_signal_sections(sections):
+    """仅保留触发买卖信号的指数 section。"""
+    return [section for section in sections if section_has_trade_signal(section)]

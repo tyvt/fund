@@ -69,6 +69,40 @@ def build_chart_payload(daily_tables: list[dict]) -> dict:
     return payload
 
 
+def resolve_return_pct_by_code(amounts=None, rows=None) -> dict[str, float | None]:
+    """解析各指数策略收益率，用于 HTML 下拉排序。"""
+    if amounts and amounts.get("ranking_rows"):
+        return {
+            r["code"]: r.get("return_pct") for r in amounts["ranking_rows"]
+        }
+    if not rows:
+        return {}
+    out: dict[str, float | None] = {}
+    for row in rows:
+        if isinstance(row, dict):
+            out[row["code"]] = row.get("return_pct")
+        else:
+            ret = row.return_pct if row.has_sell else row.buy_only_return_pct
+            out[row.code] = ret
+    return out
+
+
+def sort_codes_by_return(
+    codes: list[str], return_pct_by_code: dict[str, float | None] | None
+) -> list[str]:
+    """按策略收益率从高到低排序；无收益率的排在末尾。"""
+    if not return_pct_by_code:
+        return codes
+
+    def sort_key(code: str):
+        ret = return_pct_by_code.get(code)
+        if ret is None:
+            return (1, 0.0, code)
+        return (0, -float(ret), code)
+
+    return sorted(codes, key=sort_key)
+
+
 def render_backtest_html(
     title: str,
     daily_tables: list[dict],
@@ -76,6 +110,7 @@ def render_backtest_html(
     start_date: str | None = None,
     end_date: str | None = None,
     subtitle: str = "",
+    return_pct_by_code: dict[str, float | None] | None = None,
 ) -> str:
     """生成含交互折线图的自包含 HTML。"""
     payload = build_chart_payload(daily_tables)
@@ -86,7 +121,7 @@ def render_backtest_html(
             "<body><p>无可用图表数据</p></body></html>"
         )
 
-    codes = list(payload.keys())
+    codes = sort_codes_by_return(list(payload.keys()), return_pct_by_code)
     default_code = codes[0]
     all_dates = sorted(
         {d for s in payload.values() for d in s["dates"] if d}
@@ -610,6 +645,7 @@ def save_backtest_html(
     start_date: str | None = None,
     end_date: str | None = None,
     subtitle: str = "",
+    return_pct_by_code: dict[str, float | None] | None = None,
 ) -> str:
     """写入 HTML 文件并返回路径。"""
     html = render_backtest_html(
@@ -618,6 +654,7 @@ def save_backtest_html(
         start_date=start_date,
         end_date=end_date,
         subtitle=subtitle,
+        return_pct_by_code=return_pct_by_code,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")

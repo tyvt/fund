@@ -58,6 +58,68 @@ from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_bel
 
 CN_BROAD_BACKTEST_INDICES = CN_BROAD_INDICES
 
+EXCLUDED_RANKING_NOTE = "收益率排名靠后，暂不推荐买卖"
+EXCLUDED_REFERENCE_AMOUNT = 100.0
+
+
+def is_ranking_excluded(code, amounts):
+    """收益率排名末位、不参与额度分配的指数。"""
+    if not amounts:
+        return False
+    excluded = amounts.get("excluded_codes")
+    return bool(excluded and code in excluded)
+
+
+def _zero_allocation_metrics():
+    return {
+        "invested": 0.0,
+        "market_value": 0.0,
+        "profit": 0.0,
+        "return_pct": None,
+        "latest_date": None,
+        "latest_price": None,
+    }
+
+
+def _finalize_backtest_row(row, code, amounts, default_note=None):
+    if default_note and not row.get("note"):
+        row = {**row, "note": default_note}
+    if is_ranking_excluded(code, amounts):
+        row = {**row, **_zero_allocation_metrics(), "note": EXCLUDED_RANKING_NOTE}
+    return row
+
+
+def _excluded_signal_row(
+    panel,
+    date_range,
+    buy_fn,
+    code,
+    name,
+    amounts,
+    date_col="date",
+    price_col="close",
+    default_note=None,
+):
+    """未参与额度分配时，仍输出信号统计行（投入/收益为 —）。"""
+    result = _count_buy_days(
+        panel, date_range, buy_fn, date_col=date_col, price_col=price_col
+    )
+    if not result:
+        return []
+    row = {"code": code, "name": name, **result, **_zero_allocation_metrics()}
+    return [_finalize_backtest_row(row, code, amounts, default_note)]
+
+
+def _skip_or_excluded(sim_amt, amounts, code, panel, date_range, buy_fn, code2, name, **kwargs):
+    """sim_amt==0 时：非末位指数跳过，末位指数仍输出统计行。"""
+    if not amounts or sim_amt != 0:
+        return None
+    if not is_ranking_excluded(code, amounts):
+        return []
+    return _excluded_signal_row(
+        panel, date_range, buy_fn, code2, name, amounts, **kwargs
+    )
+
 BACKTEST_RETURN_FOOTNOTE = (
     "红利指数（930955/H30269）收益率按中证全收益指数（H20955/H20269）估算，含分红再投资；"
     "其他指数为价格指数、未含分红。未计手续费；"
@@ -462,7 +524,11 @@ def backtest_dividend(
             if amounts
             else amount
         )
-        if amounts and sim_amt == 0:
+        excluded_rows = _skip_or_excluded(
+            sim_amt, amounts, code, panel, date_range, buy_fn, code, item["name"]
+        )
+        if excluded_rows is not None:
+            rows.extend(excluded_rows)
             continue
         if sim_amt is not None:
             result = _simulate_dca_returns(
@@ -475,7 +541,11 @@ def backtest_dividend(
         else:
             result = _count_buy_days(panel, date_range, buy_fn)
         if result:
-            rows.append({"code": code, "name": item["name"], **result})
+            rows.append(
+                _finalize_backtest_row(
+                    {"code": code, "name": item["name"], **result}, code, amounts
+                )
+            )
     return rows
 
 
@@ -520,8 +590,11 @@ def backtest_cn_broad(
         if amounts
         else amount
     )
-    if amounts and sim_amt == 0:
-        return []
+    excluded_rows = _skip_or_excluded(
+        sim_amt, amounts, code, panel, date_range, buy_fn, code, index_meta["name"]
+    )
+    if excluded_rows is not None:
+        return excluded_rows
     if sim_amt is not None:
         result = _simulate_dca_returns(
             panel, date_range, buy_fn, amount=sim_amt
@@ -530,7 +603,11 @@ def backtest_cn_broad(
         result = _count_buy_days(panel, date_range, buy_fn)
     if not result:
         return [{"code": code, "name": index_meta["name"], **_cn_broad_no_data_row(index_meta, amount)}]
-    return [{"code": code, "name": index_meta["name"], **result}]
+    return [
+        _finalize_backtest_row(
+            {"code": code, "name": index_meta["name"], **result}, code, amounts
+        )
+    ]
 
 
 US_INDEX_META = {"ndx": NDX_INDEX, "spx": SPX_INDEX}
@@ -553,8 +630,19 @@ def backtest_us_index(
         if amounts
         else amount
     )
-    if amounts and sim_amt == 0:
-        return []
+    excluded_rows = _skip_or_excluded(
+        sim_amt,
+        amounts,
+        code,
+        daily,
+        date_range,
+        buy_fn,
+        code,
+        meta["name"],
+        date_col="date",
+    )
+    if excluded_rows is not None:
+        return excluded_rows
     if sim_amt is not None:
         result = _simulate_dca_returns(
             daily,
@@ -570,8 +658,14 @@ def backtest_us_index(
     if not result:
         return []
     result["note"] = US_INDEX_NOTES[key]
-    meta = US_INDEX_META[key]
-    return [{"code": meta["code"], "name": meta["name"], **result}]
+    return [
+        _finalize_backtest_row(
+            {"code": meta["code"], "name": meta["name"], **result},
+            code,
+            amounts,
+            US_INDEX_NOTES[key],
+        )
+    ]
 
 
 def backtest_cyb(date_range, amount=None, amounts=None, panels=None):
@@ -595,8 +689,19 @@ def backtest_cyb(date_range, amount=None, amounts=None, panels=None):
         if amounts
         else amount
     )
-    if amounts and sim_amt == 0:
-        return []
+    excluded_rows = _skip_or_excluded(
+        sim_amt,
+        amounts,
+        code,
+        panel,
+        date_range,
+        buy_fn,
+        code,
+        CYB_INDEX["name"],
+        date_col="date",
+    )
+    if excluded_rows is not None:
+        return excluded_rows
     if sim_amt is not None:
         result = _simulate_dca_returns(
             panel, date_range, buy_fn, amount=sim_amt, date_col="date"
@@ -607,7 +712,13 @@ def backtest_cyb(date_range, amount=None, amounts=None, panels=None):
         )
     if not result:
         return []
-    return [{"code": CYB_INDEX["code"], "name": CYB_INDEX["name"], **result}]
+    return [
+        _finalize_backtest_row(
+            {"code": CYB_INDEX["code"], "name": CYB_INDEX["name"], **result},
+            code,
+            amounts,
+        )
+    ]
 
 
 def backtest_hstech(date_range, amount=None, amounts=None, panels=None):
@@ -630,8 +741,19 @@ def backtest_hstech(date_range, amount=None, amounts=None, panels=None):
         if amounts
         else amount
     )
-    if amounts and sim_amt == 0:
-        return []
+    excluded_rows = _skip_or_excluded(
+        sim_amt,
+        amounts,
+        code,
+        panel,
+        date_range,
+        buy_fn,
+        code,
+        HSTECH_INDEX["name"],
+        date_col="date",
+    )
+    if excluded_rows is not None:
+        return excluded_rows
     if sim_amt is not None:
         result = _simulate_dca_returns(
             panel, date_range, buy_fn, amount=sim_amt, date_col="date"
@@ -642,7 +764,13 @@ def backtest_hstech(date_range, amount=None, amounts=None, panels=None):
         )
     if not result:
         return []
-    return [{"code": HSTECH_INDEX["code"], "name": HSTECH_INDEX["name"], **result}]
+    return [
+        _finalize_backtest_row(
+            {"code": HSTECH_INDEX["code"], "name": HSTECH_INDEX["name"], **result},
+            code,
+            amounts,
+        )
+    ]
 
 
 def _collect_buy_dates(panel, date_range, buy_fn, date_col="date"):
@@ -1193,6 +1321,19 @@ def _format_backtest_markdown(
     else:
         lines.append("> 每次买入金额：仅统计次数")
     lines.append("")
+    if amounts and amounts.get("ranking"):
+        from buy_amount_ranking import format_ranking_markdown_table
+
+        lines.extend(
+            format_ranking_markdown_table(
+                {
+                    "rows": amounts.get("ranking_rows") or [],
+                    "excluded_codes": amounts.get("excluded_codes") or frozenset(),
+                    "exclude_bottom_n": len(amounts.get("excluded_codes") or ()),
+                    "as_of": amounts.get("ranking_as_of"),
+                }
+            )
+        )
 
     lines.extend(
         _format_backtest_summary_markdown(rows, date_range, amounts=amounts)
@@ -1231,7 +1372,7 @@ def save_backtest_result(
     )
     html_path = None
     if write_html and chart_tables:
-        from backtest_html import save_backtest_html
+        from backtest_html import resolve_return_pct_by_code, save_backtest_html
 
         end_label = date_range.end or "最新"
         subtitle = (
@@ -1247,6 +1388,9 @@ def save_backtest_result(
             start_date=None,
             end_date=date_range.end,
             subtitle=subtitle,
+            return_pct_by_code=resolve_return_pct_by_code(
+                amounts=amounts, rows=rows
+            ),
         )
     return path, html_path
 

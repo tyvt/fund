@@ -1,15 +1,19 @@
-"""A 股宽基指数（中证 A500 / 沪深300 / 中证500 / 中证1000 / 科创50 等）估值序列构建。"""
+"""A 股宽基指数（中证 A500 / 上证50 / 沪深300 / 中证500 / 中证1000 / 中证2000 / 中证A50 / 中证A100 / 科创50 等）估值序列构建。"""
 
 from datetime import date
 
 import pandas as pd
 
 from config import (
+    A100_INDEX,
+    A50_INDEX,
     A500_INDEX,
     get_cn_broad_signal_config,
     HS300_INDEX,
     KC50_INDEX,
+    SZ50_INDEX,
     ZZ1000_INDEX,
+    ZZ2000_INDEX,
     ZZ500_INDEX,
 )
 from market_data import (
@@ -26,9 +30,13 @@ from signal_format import merge_history_meta
 
 CN_BROAD_INDEX_BY_CODE = {
     A500_INDEX["code"]: A500_INDEX,
+    SZ50_INDEX["code"]: SZ50_INDEX,
     HS300_INDEX["code"]: HS300_INDEX,
     ZZ500_INDEX["code"]: ZZ500_INDEX,
     ZZ1000_INDEX["code"]: ZZ1000_INDEX,
+    ZZ2000_INDEX["code"]: ZZ2000_INDEX,
+    A50_INDEX["code"]: A50_INDEX,
+    A100_INDEX["code"]: A100_INDEX,
     KC50_INDEX["code"]: KC50_INDEX,
 }
 

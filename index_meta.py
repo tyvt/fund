@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from config import (
+    A50_MARKET_DATA_START,
     A500_MARKET_DATA_START,
     CN_BROAD_INDICES,
     CYB_INDEX,
@@ -14,6 +15,7 @@ from config import (
     SPX_INDEX,
     SPX_MARKET_DATA_START,
     US_INDEX_KEYS,
+    ZZ2000_MARKET_DATA_START,
     get_dividend_total_return_code,
 )
 
@@ -24,9 +26,13 @@ INDEX_BASE_DATES: dict[str, str] = {
     "H20955": "20170505",
     "H20269": "20081231",
     "000510": A500_MARKET_DATA_START.replace("-", ""),
+    "000016": "20040102",
     "000300": "20050408",
     "000905": "20070115",
     "000852": "20141017",
+    "932000": ZZ2000_MARKET_DATA_START.replace("-", ""),
+    "930050": A50_MARKET_DATA_START.replace("-", ""),
+    "000903": "20060529",
     "000688": "20200723",
     "399006": "20100601",
     "HSTECH": HSTECH_MARKET_DATA_START.replace("-", ""),

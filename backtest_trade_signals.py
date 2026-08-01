@@ -9,10 +9,14 @@ from backtest_buy_signals import (
     BACKTEST_RETURN_FOOTNOTE,
     CN_BROAD_BACKTEST_INDICES,
     BacktestPanels,
+    BacktestRange,
+    EXCLUDED_RANKING_NOTE,
     US_INDEX_META,
     US_INDEX_NOTES,
     _cn_broad_buy_snapshot,
+    _count_buy_days,
     _us_buy_snapshot,
+    is_ranking_excluded,
 )
 from cn_broad_signal import evaluate_cn_broad_buy
 from config import (
@@ -82,6 +86,50 @@ class TradeResult:
     note: str = "日频，每交易日评估"
     buy_dates: list = field(default_factory=list)
     sell_dates: list = field(default_factory=list)
+
+
+def _excluded_trade_result(
+    code,
+    name,
+    panel,
+    start_date,
+    end_date,
+    buy_fn,
+    has_sell=False,
+    date_col="date",
+):
+    """未参与额度分配时，仍输出买卖信号统计（投入/收益为 0）。"""
+    date_range = BacktestRange(
+        start=start_date,
+        end=end_date,
+        label=f"{start_date}_{end_date or 'present'}",
+    )
+    counted = _count_buy_days(panel, date_range, buy_fn, date_col=date_col)
+    if not counted:
+        return None
+    return TradeResult(
+        code=code,
+        name=name,
+        has_sell=has_sell,
+        buy_count=counted["buy_days"],
+        sell_count=0,
+        total_bought=0.0,
+        note=EXCLUDED_RANKING_NOTE,
+    )
+
+
+def _skip_or_excluded_trade(
+    amt, amounts, code, panel, start_date, end_date, buy_fn, name, **kwargs
+):
+    """amt==0 时：非末位指数跳过，末位指数仍输出统计行。"""
+    if not amounts or amt != 0:
+        return None
+    if not is_ranking_excluded(code, amounts):
+        return []
+    result = _excluded_trade_result(
+        code, name, panel, start_date, end_date, buy_fn, **kwargs
+    )
+    return [result] if result else []
 
 
 def _row_date(row, date_col="date"):
@@ -404,9 +452,21 @@ def backtest_all(
         panel = panels.dividend_panel(item["code"])
         code = item["code"]
         amt = get_backtest_buy_amount(code, amounts)
-        if amt <= 0:
-            continue
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
+        excluded = _skip_or_excluded_trade(
+            amt,
+            amounts,
+            code,
+            panel,
+            start_date,
+            end_date,
+            buy_fn,
+            item["name"],
+            date_col="date",
+        )
+        if excluded is not None:
+            results.extend(excluded)
+            continue
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
@@ -447,11 +507,23 @@ def backtest_all(
         panel = panels.cn_broad_panel(item["code"])
         code = item["code"]
         amt = get_backtest_buy_amount(code, amounts)
-        if amt <= 0:
-            continue
         sell_on = cn_broad_sell_enabled(code)
         buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
         sell_fn = lambda r, c=code: _cn_broad_signals(r, c)[1]
+        excluded = _skip_or_excluded_trade(
+            amt,
+            amounts,
+            code,
+            panel,
+            start_date,
+            end_date,
+            buy_fn,
+            item["name"],
+            has_sell=sell_on,
+        )
+        if excluded is not None:
+            results.extend(excluded)
+            continue
         trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
         val_sell_fn = _cn_broad_valuation_sell_fn(code) if sell_on else None
         sim_amt = _resolve_trade_amount(
@@ -497,7 +569,21 @@ def backtest_all(
     cyb_amt = get_backtest_buy_amount(cyb_code, amounts)
     cyb_buy = lambda r: _cyb_signals(r)[0]
     cyb_sell = lambda r: _cyb_signals(r)[1]
-    if cyb_amt > 0:
+    excluded = _skip_or_excluded_trade(
+        cyb_amt,
+        amounts,
+        cyb_code,
+        cyb_panel,
+        start_date,
+        end_date,
+        cyb_buy,
+        CYB_INDEX["name"],
+        has_sell=CYB_SELL_ENABLED,
+        date_col="date",
+    )
+    if excluded is not None:
+        results.extend(excluded)
+    elif cyb_amt > 0:
         sim_amt = _resolve_trade_amount(
             cyb_code, cyb_amt, amounts, cyb_panel, start_date, end_date, cyb_buy
         )
@@ -540,9 +626,23 @@ def backtest_all(
     hstech_panel = panels.hstech_panel()
     hs_code = HSTECH_INDEX["code"]
     hs_amt = get_backtest_buy_amount(hs_code, amounts)
-    if hs_amt > 0:
-        hs_buy = lambda r: _hstech_signals(r)[0]
-        hs_sell = lambda r: _hstech_signals(r)[1]
+    hs_buy = lambda r: _hstech_signals(r)[0]
+    hs_sell = lambda r: _hstech_signals(r)[1]
+    excluded = _skip_or_excluded_trade(
+        hs_amt,
+        amounts,
+        hs_code,
+        hstech_panel,
+        start_date,
+        end_date,
+        hs_buy,
+        HSTECH_INDEX["name"],
+        has_sell=HSTECH_SELL_ENABLED,
+        date_col="date",
+    )
+    if excluded is not None:
+        results.extend(excluded)
+    elif hs_amt > 0:
         trail_cfg = _hstech_trailing_cfg()
         sim_amt = _resolve_trade_amount(
             hs_code, hs_amt, amounts, hstech_panel, start_date, end_date, hs_buy
@@ -587,9 +687,21 @@ def backtest_all(
         daily, growth = panels.us_index_panel(key)
         meta = US_INDEX_META[key]
         us_amt = get_backtest_buy_amount(meta["code"], amounts)
-        if us_amt <= 0:
-            continue
         us_buy = lambda r, k=key, g=growth: _us_buy_snapshot(k, r, g)
+        excluded = _skip_or_excluded_trade(
+            us_amt,
+            amounts,
+            meta["code"],
+            daily,
+            start_date,
+            end_date,
+            us_buy,
+            meta["name"],
+            date_col="date",
+        )
+        if excluded is not None:
+            results.extend(excluded)
+            continue
         sim_amt = _resolve_trade_amount(
             meta["code"], us_amt, amounts, daily, start_date, end_date, us_buy
         )
@@ -1033,6 +1145,17 @@ def _format_portfolio_snapshot(amounts):
 
 
 def _format_amount_snapshot(amounts):
+    if amounts.get("ranking"):
+        from buy_amount_ranking import format_ranking_markdown_table
+
+        return format_ranking_markdown_table(
+            {
+                "rows": amounts.get("ranking_rows") or [],
+                "excluded_codes": amounts.get("excluded_codes") or frozenset(),
+                "exclude_bottom_n": len(amounts.get("excluded_codes") or ()),
+                "as_of": amounts.get("ranking_as_of"),
+            }
+        )
     if amounts.get("return_max") and amounts.get("by_code"):
         by_code = amounts.get("by_code") or {}
         tier = amounts.get("tier_scheme")
@@ -1066,7 +1189,7 @@ def format_markdown(results, start_date, end_date, amounts):
         f"> 生成时间：{generated_at}  ",
         "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
-        "> 卖出规则：沪深300/中证500/科创50/创业板/恒科启用移动止盈；其余只买不卖  ",
+        "> 卖出规则：宽基/创业板/恒科等启用移动止盈（见 `CN_BROAD_SELL_ENABLED_CODES`）；红利/美股仅买入  ",
         "> 红利/美股：仅买入持有，不设卖点",
         "",
         f"估值截至 **{val_date}**。{BACKTEST_RETURN_FOOTNOTE}",
@@ -1247,6 +1370,7 @@ def save_result(markdown, filename=None, write_html=True, **html_kwargs):
             start_date=html_kwargs.get("start_date"),
             end_date=html_kwargs.get("end_date"),
             subtitle=html_kwargs.get("subtitle", ""),
+            return_pct_by_code=html_kwargs.get("return_pct_by_code"),
         )
     return path, html_path
 
@@ -1307,6 +1431,8 @@ def main(argv=None):
             args.start, args.end, amounts=amounts, panels=panels
         )
         md = format_markdown(results, args.start, args.end, amounts)
+        from backtest_html import resolve_return_pct_by_code
+
         path, html_path = save_result(
             md,
             filename="trade_inception_present.md",
@@ -1316,6 +1442,9 @@ def main(argv=None):
             start_date=args.start,
             end_date=args.end,
             subtitle=format_backtest_amount_note(amounts),
+            return_pct_by_code=resolve_return_pct_by_code(
+                amounts=amounts, rows=results
+            ),
         )
         print(f"\n回测结果已保存: {path}")
         if html_path:

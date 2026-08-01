@@ -6,6 +6,7 @@ import sys
 from config import load_config
 from notify import build_push_title, push_to_wechat
 from report import MODULE_ALL, MODULE_CHOICES, generate_reports, print_report
+from signal_format import filter_trade_signal_sections, join_index_sections
 
 
 def main(argv=None):
@@ -55,12 +56,15 @@ def main(argv=None):
         print(exc)
         return 1
 
+    sections = filter_trade_signal_sections(sections)
+    if not sections:
+        print("今日无买卖信号，跳过推送。")
+        return 0
+
+    report = join_index_sections(sections)
+
     if not args.quiet:
         print_report(report)
-
-    if not sections:
-        print("无有效报告内容，跳过推送。")
-        return 1
 
     modules = args.modules or [MODULE_ALL]
     if MODULE_ALL in modules or len(modules) > 1:

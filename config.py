@@ -41,9 +41,15 @@ def get_dividend_total_return_code(index_code):
 
 A500_INDEX = {"code": "000510", "name": "中证A500"}
 A500_MARKET_DATA_START = "2024-09-03"  # 行情起点；与中证500（000905）为不同指数
+SZ50_INDEX = {"code": "000016", "name": "上证50"}
 HS300_INDEX = {"code": "000300", "name": "沪深300"}
 ZZ500_INDEX = {"code": "000905", "name": "中证500"}
 ZZ1000_INDEX = {"code": "000852", "name": "中证1000"}
+ZZ2000_INDEX = {"code": "932000", "name": "中证2000"}
+ZZ2000_MARKET_DATA_START = "2023-08-11"
+A50_INDEX = {"code": "930050", "name": "中证A50"}
+A50_MARKET_DATA_START = "2024-02-23"
+A100_INDEX = {"code": "000903", "name": "中证A100"}
 KC50_INDEX = {"code": "000688", "name": "科创50"}
 CYB_INDEX = {"code": "399006", "name": "创业板指"}
 HSTECH_INDEX = {"code": "HSTECH", "name": "恒生科技指数"}
@@ -55,9 +61,13 @@ SPX_MARKET_DATA_START = "2013-01-01"
 
 CN_BROAD_INDICES = [
     A500_INDEX,
+    SZ50_INDEX,
     HS300_INDEX,
     ZZ500_INDEX,
     ZZ1000_INDEX,
+    ZZ2000_INDEX,
+    A50_INDEX,
+    A100_INDEX,
     KC50_INDEX,
 ]
 US_INDEX_KEYS = ("ndx", "spx")
@@ -184,7 +194,9 @@ PORTFOLIO_INDEX_GROUPS = {
     "399006": "satellite",
     "000852": "satellite",
 }
-PORTFOLIO_EXCLUDED_CODES = frozenset({"000300", "000905", "HSTECH"})
+PORTFOLIO_EXCLUDED_CODES = frozenset(
+    {"000016", "000300", "000905", "000903", "930050", "932000", "HSTECH"}
+)
 # 基准总投入（元）：与收紧阈值后全指数回测一致，组合模式保持此总额
 PORTFOLIO_TOTAL_BUDGET = _env_float("PORTFOLIO_TOTAL_BUDGET", 316_200)
 # 组内分配：return_weighted = 按各指数历史收益率加权（回测优选）
@@ -206,10 +218,12 @@ ANNUAL_INVESTMENT_BUDGET = _env_float("ANNUAL_INVESTMENT_BUDGET", 72_000)
 ANNUAL_INVESTMENT_BUDGET_BY_YEAR = _build_annual_investment_budget_by_year()
 
 # --- 买入金额分档（回测/实盘参考，见 buy_amount_tiers.py）---
-# 按年区间位置：越低（近年内低点）投入越多；归一化后总投入接近 PORTFOLIO_TOTAL_BUDGET
+# 按年区间位置：越低（近年内低点）投入越多
 BUY_AMOUNT_TIER_SCHEME = _env_str("BUY_AMOUNT_TIER_SCHEME", "range_8_fine")
 BUY_AMOUNT_TIER_ENABLED = _env_bool("BUY_AMOUNT_TIER_ENABLED", True)
-# 默认使用收益最大化分指数金额（非组合 50/20/10/20）；设为 false 则回退模块统一金额
+# 按自基日策略收益率排名，为全部指数按收益率权重分配年度额度
+BUY_AMOUNT_RANKING_ENABLED = _env_bool("BUY_AMOUNT_RANKING_ENABLED", True)
+# 旧版收益最大化固定分指数金额（排名关闭时回退）
 BUY_AMOUNT_RETURN_MAX = _env_bool("BUY_AMOUNT_RETURN_MAX", True)
 
 # 收益最大化基准单次买入（元）；2010–至今回测优化
@@ -222,9 +236,13 @@ BUY_AMOUNT_BASE_BY_CODE = {
     "930955": 28,
     "H30269": 28,
     "000510": 28,
+    "000016": 28,
     "000300": 28,
     "000905": 28,
     "000852": 28,
+    "932000": 28,
+    "930050": 28,
+    "000903": 28,
     "HSTECH": 28,
 }
 
@@ -233,9 +251,13 @@ _BACKTEST_BUY_AMOUNT_DEFAULTS = {
     "930955": 944,
     "H30269": 902,
     "000510": 638,
+    "000016": 0,
     "000300": 0,
     "000905": 0,
     "000852": 49,
+    "932000": 0,
+    "930050": 0,
+    "000903": 0,
     "000688": 155,
     "399006": 239,
     "HSTECH": 0,
@@ -250,8 +272,20 @@ def _env_buy_amount_for_code(code, default):
 
 def get_buy_amount_reference(index_code):
     """利润最大化参考基准金额（未按年度预算缩放）。"""
+    if BUY_AMOUNT_RANKING_ENABLED:
+        from buy_amount_ranking import get_ranking_allocation
+
+        alloc = get_ranking_allocation()
+        ref = alloc["reference_by_code"].get(index_code)
+        if ref is not None:
+            return _env_buy_amount_for_code(index_code, float(ref))
     default = BUY_AMOUNT_BASE_BY_CODE.get(index_code, 0)
     return _env_buy_amount_for_code(index_code, default)
+
+
+def is_index_recommended(index_code):
+    """当前是否参与买入额度分配（有正数基准金额即视为可买）。"""
+    return get_buy_amount_reference(index_code) > 0
 
 
 def get_buy_amount_base(index_code, year=None):
@@ -283,10 +317,12 @@ def get_backtest_buy_amount(index_code, amounts=None):
 
 
 def get_chart_buy_amount(index_code, amounts=None):
-    """HTML 图表用单次买入金额；组合未持仓指数仍用基准金额展示买卖点。"""
+    """HTML 图表用单次买入金额。"""
     amt = get_backtest_buy_amount(index_code, amounts)
     if amt > 0:
         return amt
+    if amounts and amounts.get("portfolio"):
+        return get_buy_amount_base(index_code)
     return get_buy_amount_base(index_code)
 
 
@@ -326,9 +362,10 @@ def resolve_backtest_amounts(
     unified_amount=None,
     portfolio_mode=False,
     return_max_mode=None,
+    ranking_mode=None,
     tier_enabled=None,
 ):
-    """回测买入金额。默认收益最大化分指数 + 分档；portfolio_mode 为组合权重模式。"""
+    """回测买入金额。默认按收益率排名分配年度额度；portfolio_mode 为旧版组合模式。"""
     if tier_enabled is None:
         tier_enabled = BUY_AMOUNT_TIER_ENABLED
     if unified_amount is not None and unified_amount > 0:
@@ -338,6 +375,7 @@ def resolve_backtest_amounts(
             "other": unified_amount,
             "unified": True,
             "portfolio": False,
+            "ranking": False,
             "return_max": False,
             "by_code": None,
             "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
@@ -356,10 +394,36 @@ def resolve_backtest_amounts(
             "other": BACKTEST_OTHER_BUY_AMOUNT,
             "unified": False,
             "portfolio": True,
+            "ranking": False,
             "return_max": False,
             "by_code": by_code,
             "total_budget": PORTFOLIO_TOTAL_BUDGET,
             "group_weights": dict(PORTFOLIO_GROUP_WEIGHTS),
+            "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
+            "tier_normalize": tier_enabled,
+        }
+    if ranking_mode is None:
+        ranking_mode = BUY_AMOUNT_RANKING_ENABLED
+    if ranking_mode:
+        from buy_amount_ranking import get_ranking_allocation
+
+        alloc = get_ranking_allocation()
+        return {
+            "dividend": DIVIDEND_BUY_AMOUNT,
+            "cn_broad": CN_BROAD_BUY_AMOUNT,
+            "other": BACKTEST_OTHER_BUY_AMOUNT,
+            "unified": False,
+            "portfolio": False,
+            "ranking": True,
+            "return_max": False,
+            "by_code": dict(alloc["by_code"]),
+            "reference_by_code": dict(alloc["reference_by_code"]),
+            "excluded_codes": alloc["excluded_codes"],
+            "ranking_rows": alloc["rows"],
+            "ranking_as_of": alloc.get("as_of"),
+            "annual_budget": ANNUAL_INVESTMENT_BUDGET_ENABLED,
+            "annual_budget_default": ANNUAL_INVESTMENT_BUDGET,
+            "reference_annual_budget": BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET,
             "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
             "tier_normalize": tier_enabled,
         }
@@ -378,6 +442,7 @@ def resolve_backtest_amounts(
             "other": BACKTEST_OTHER_BUY_AMOUNT,
             "unified": False,
             "portfolio": False,
+            "ranking": False,
             "return_max": True,
             "by_code": by_code,
             "reference_by_code": reference_by_code,
@@ -394,6 +459,7 @@ def resolve_backtest_amounts(
         "other": BACKTEST_OTHER_BUY_AMOUNT,
         "unified": False,
         "portfolio": False,
+        "ranking": False,
         "return_max": False,
         "by_code": None,
         "tier_scheme": BUY_AMOUNT_TIER_SCHEME if tier_enabled else None,
@@ -409,6 +475,24 @@ def format_backtest_amount_note(amounts):
     tier_suffix = f" + 分档 **{tier}**" if tier else ""
     if amounts.get("unified"):
         return f"每次买入 **{amounts['dividend']:.0f}** 元{tier_suffix}"
+    if amounts.get("ranking") and amounts.get("by_code"):
+        active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
+        parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
+        from buy_amount_ranking import format_ranking_note
+
+        head = format_ranking_note(
+            {
+                "rows": amounts.get("ranking_rows") or [],
+                "excluded_codes": amounts.get("excluded_codes") or frozenset(),
+                "exclude_bottom_n": len(amounts.get("excluded_codes") or ()),
+                "as_of": amounts.get("ranking_as_of"),
+            }
+        )
+        if amounts.get("annual_budget"):
+            from buy_amount_budget import format_annual_budget_note
+
+            head = format_annual_budget_note() + "；" + head
+        return head + tier_suffix + "：" + "；".join(parts)
     if amounts.get("return_max") and amounts.get("by_code"):
         active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
         parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
@@ -745,8 +829,8 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_pe_percentile_min=85,
         sell_max_above_low_pct=0.18,
         sell_valuation_enabled=False,
-        # 移动止盈：浮盈≥60% 后，自峰值回撤 10% 卖出（2015 至今回测超额约 +8%）
-        sell_trailing_drawdown_pct=0.10,
+        # 移动止盈：浮盈≥60% 后，自峰值回撤 6% 卖出（2021-02-24 高点附近，回测 +3.6pp）
+        sell_trailing_drawdown_pct=0.06,
         sell_min_unrealized_gain_pct=0.60,
         sell_trailing_min_hold_days=90,
     ),
@@ -763,8 +847,8 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.24,
         sell_valuation_enabled=False,
-        # 移动止盈：浮盈≥50% 后，自峰值回撤 12% 卖出（自基日回测超额约 +5%）
-        sell_trailing_drawdown_pct=0.12,
+        # 移动止盈：浮盈≥50% 后，自峰值回撤 10.5% 卖出（回测较 12% 约 +3.2pp）
+        sell_trailing_drawdown_pct=0.105,
         sell_min_unrealized_gain_pct=0.50,
         sell_trailing_min_hold_days=60,
     ),
@@ -786,6 +870,78 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_min_unrealized_gain_pct=0.40,
         sell_trailing_min_hold_days=60,
     ),
+    # 上证50：移动止盈优化（2021-02 高点回撤约 6.5% 触发，2021-02-26 卖出）
+    "000016": _cn_broad_index_defaults(
+        buy_spread_percentile_min=65,
+        buy_pe_percentile_max=54,
+        buy_pb_percentile_max=58,
+        buy_max_above_low_pct=0.05,
+        buy_min_drawdown_from_high_pct=0.16,
+        buy_max_year_range_pct=0.36,
+        buy_mid_range_max_above_low_pct=0.04,
+        buy_trend_min_ma_slope_pct=-0.010,
+        buy_trend_downtrend_max_range_pct=0.05,
+        sell_spread_percentile_max=25,
+        sell_pe_percentile_min=88,
+        sell_max_above_low_pct=0.24,
+        sell_valuation_enabled=False,
+        sell_trailing_drawdown_pct=0.065,
+        sell_min_unrealized_gain_pct=0.40,
+        sell_trailing_min_hold_days=60,
+    ),
+    # 中证2000：小盘，样本较短，阈值参考中证1000略宽
+    "932000": _cn_broad_index_defaults(
+        buy_spread_percentile_min=68,
+        buy_pe_percentile_max=54,
+        buy_pb_percentile_max=58,
+        buy_max_above_low_pct=0.06,
+        buy_min_drawdown_from_high_pct=0.14,
+        buy_max_year_range_pct=0.38,
+        buy_mid_range_max_above_low_pct=0.05,
+        buy_low_lookback_days=90,
+        sell_spread_percentile_max=25,
+        sell_pe_percentile_min=82,
+        sell_max_above_low_pct=0.24,
+        sell_valuation_enabled=True,
+        sell_trailing_drawdown_pct=0.10,
+        sell_min_unrealized_gain_pct=0.40,
+        sell_trailing_min_hold_days=60,
+    ),
+    # 中证A50：2024 发布，样本短，阈值参考中证A500
+    "930050": _cn_broad_index_defaults(
+        buy_spread_percentile_min=50,
+        buy_pe_percentile_max=72,
+        buy_pb_percentile_max=68,
+        buy_max_above_low_pct=0.10,
+        buy_low_lookback_days=90,
+        buy_min_drawdown_from_high_pct=None,
+        buy_max_year_range_pct=0.58,
+        buy_mid_range_max_above_low_pct=0.08,
+        sell_spread_percentile_max=22,
+        sell_pe_percentile_min=92,
+        sell_max_above_low_pct=0.22,
+        sell_valuation_enabled=False,
+        sell_trailing_drawdown_pct=0.12,
+        sell_min_unrealized_gain_pct=0.50,
+        sell_trailing_min_hold_days=60,
+    ),
+    # 中证A100：大中盘；移动止盈优化（2021-02 高点回撤约 8% 触发，2021-02-26 卖出）
+    "000903": _cn_broad_index_defaults(
+        buy_spread_percentile_min=62,
+        buy_pe_percentile_max=58,
+        buy_pb_percentile_max=62,
+        buy_max_above_low_pct=0.07,
+        buy_min_drawdown_from_high_pct=0.14,
+        buy_max_year_range_pct=0.42,
+        buy_mid_range_max_above_low_pct=0.06,
+        sell_spread_percentile_max=22,
+        sell_pe_percentile_min=88,
+        sell_max_above_low_pct=0.20,
+        sell_valuation_enabled=False,
+        sell_trailing_drawdown_pct=0.08,
+        sell_min_unrealized_gain_pct=0.55,
+        sell_trailing_min_hold_days=60,
+    ),
     # 科创50：夏普偏低但绝对收益高，轻度收紧
     "000688": _cn_broad_index_defaults(
         buy_spread_percentile_min=64,
@@ -800,8 +956,8 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_pe_percentile_min=92,
         sell_max_above_low_pct=0.25,
         sell_valuation_enabled=False,
-        # 移动止盈：浮盈≥80% 后，自峰值回撤 14% 卖出（2015 至今回测超额约 +18%）
-        sell_trailing_drawdown_pct=0.14,
+        # 移动止盈：浮盈≥80% 后，自峰值回撤 12.5% 卖出（回测较 14% 约 +8.4pp）
+        sell_trailing_drawdown_pct=0.125,
         sell_min_unrealized_gain_pct=0.80,
         sell_trailing_min_hold_days=60,
     ),
@@ -1110,7 +1266,17 @@ BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
 # --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
 CN_BROAD_SELL_ENABLED_CODES = frozenset(
-    {"000510", "000300", "000905", "000852", "000688"}
+    {
+        "000510",
+        "000016",
+        "000300",
+        "000905",
+        "000852",
+        "932000",
+        "930050",
+        "000903",
+        "000688",
+    }
 )
 CYB_SELL_ENABLED = _env_bool("CYB_SELL_ENABLED", True)
 HSTECH_SELL_ENABLED = _env_bool("HSTECH_SELL_ENABLED", True)
