@@ -15,7 +15,6 @@ from config import (
     SPX_INDEX,
     SPX_MARKET_DATA_START,
     US_INDEX_KEYS,
-    ZZ2000_MARKET_DATA_START,
     get_dividend_total_return_code,
 )
 
@@ -30,7 +29,6 @@ INDEX_BASE_DATES: dict[str, str] = {
     "000300": "20050408",
     "000905": "20070115",
     "000852": "20141017",
-    "932000": ZZ2000_MARKET_DATA_START.replace("-", ""),
     "930050": A50_MARKET_DATA_START.replace("-", ""),
     "000903": "20060529",
     "000688": "20200723",

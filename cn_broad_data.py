@@ -1,4 +1,4 @@
-"""A 股宽基指数（中证 A500 / 上证50 / 沪深300 / 中证500 / 中证1000 / 中证2000 / 中证A50 / 中证A100 / 科创50 等）估值序列构建。"""
+"""A 股宽基指数（中证 A500 / 上证50 / 沪深300 / 中证500 / 中证1000 / 中证A50 / 中证A100 / 科创50 等）估值序列构建。"""
 
 from datetime import date
 
@@ -13,7 +13,6 @@ from config import (
     KC50_INDEX,
     SZ50_INDEX,
     ZZ1000_INDEX,
-    ZZ2000_INDEX,
     ZZ500_INDEX,
 )
 from market_data import (
@@ -34,7 +33,6 @@ CN_BROAD_INDEX_BY_CODE = {
     HS300_INDEX["code"]: HS300_INDEX,
     ZZ500_INDEX["code"]: ZZ500_INDEX,
     ZZ1000_INDEX["code"]: ZZ1000_INDEX,
-    ZZ2000_INDEX["code"]: ZZ2000_INDEX,
     A50_INDEX["code"]: A50_INDEX,
     A100_INDEX["code"]: A100_INDEX,
     KC50_INDEX["code"]: KC50_INDEX,
@@ -232,7 +230,12 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
         **row_price_position_fields(latest_row),
     }
     from cn_broad_signal import evaluate_cn_broad_buy
-    from sell_trailing import compute_peak_since_last_buy, compute_recent_signal_buy_avg
+    from sell_trailing import (
+        attach_buy_signal_column,
+        compute_peak_since_last_buy_from_column,
+        compute_recent_signal_buy_avg_from_column,
+        last_buy_date_from_column,
+    )
 
     def _row_snap(row):
         return {
@@ -246,24 +249,19 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
             "ma_slope_pct": row.get("ma_slope_pct"),
         }
 
+    def _buy_eval(snap):
+        return evaluate_cn_broad_buy({**snap, "code": index_code})
+
+    panel = attach_buy_signal_column(panel, _buy_eval, _row_snap)
     lookback = cfg.get("sell_cost_lookback_days", 252)
-    snapshot["recent_signal_buy_avg"] = compute_recent_signal_buy_avg(
+    snapshot["recent_signal_buy_avg"] = compute_recent_signal_buy_avg_from_column(
         panel,
-        lambda s: evaluate_cn_broad_buy({**s, "code": index_code}),
-        _row_snap,
         lookback_days=lookback,
     )
-    snapshot["peak_since_last_buy"] = compute_peak_since_last_buy(
-        panel,
-        lambda s: evaluate_cn_broad_buy({**s, "code": index_code}),
-        _row_snap,
-    )
-    last_buy_date = None
-    for _, row in panel.iterrows():
-        if evaluate_cn_broad_buy({**_row_snap(row), "code": index_code})["is_buy"]:
-            last_buy_date = pd.Timestamp(row["date"])
+    snapshot["peak_since_last_buy"] = compute_peak_since_last_buy_from_column(panel)
+    last_buy_date = last_buy_date_from_column(panel)
     if last_buy_date is not None:
         snapshot["days_since_last_buy"] = (
-            pd.Timestamp(latest_row["date"]) - last_buy_date
+            pd.Timestamp(latest_row["date"]) - pd.Timestamp(last_buy_date)
         ).days
     return merge_history_meta(snapshot, panel)

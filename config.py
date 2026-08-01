@@ -45,8 +45,6 @@ SZ50_INDEX = {"code": "000016", "name": "上证50"}
 HS300_INDEX = {"code": "000300", "name": "沪深300"}
 ZZ500_INDEX = {"code": "000905", "name": "中证500"}
 ZZ1000_INDEX = {"code": "000852", "name": "中证1000"}
-ZZ2000_INDEX = {"code": "932000", "name": "中证2000"}
-ZZ2000_MARKET_DATA_START = "2023-08-11"
 A50_INDEX = {"code": "930050", "name": "中证A50"}
 A50_MARKET_DATA_START = "2024-02-23"
 A100_INDEX = {"code": "000903", "name": "中证A100"}
@@ -65,7 +63,6 @@ CN_BROAD_INDICES = [
     HS300_INDEX,
     ZZ500_INDEX,
     ZZ1000_INDEX,
-    ZZ2000_INDEX,
     A50_INDEX,
     A100_INDEX,
     KC50_INDEX,
@@ -195,7 +192,7 @@ PORTFOLIO_INDEX_GROUPS = {
     "000852": "satellite",
 }
 PORTFOLIO_EXCLUDED_CODES = frozenset(
-    {"000016", "000300", "000905", "000903", "930050", "932000", "HSTECH"}
+    {"000016", "000300", "000905", "000903", "930050", "HSTECH"}
 )
 # 基准总投入（元）：与收紧阈值后全指数回测一致，组合模式保持此总额
 PORTFOLIO_TOTAL_BUDGET = _env_float("PORTFOLIO_TOTAL_BUDGET", 316_200)
@@ -240,7 +237,6 @@ BUY_AMOUNT_BASE_BY_CODE = {
     "000300": 28,
     "000905": 28,
     "000852": 28,
-    "932000": 28,
     "930050": 28,
     "000903": 28,
     "HSTECH": 28,
@@ -255,7 +251,6 @@ _BACKTEST_BUY_AMOUNT_DEFAULTS = {
     "000300": 0,
     "000905": 0,
     "000852": 49,
-    "932000": 0,
     "930050": 0,
     "000903": 0,
     "000688": 155,
@@ -889,24 +884,6 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
         sell_min_unrealized_gain_pct=0.40,
         sell_trailing_min_hold_days=60,
     ),
-    # 中证2000：小盘，样本较短，阈值参考中证1000略宽
-    "932000": _cn_broad_index_defaults(
-        buy_spread_percentile_min=68,
-        buy_pe_percentile_max=54,
-        buy_pb_percentile_max=58,
-        buy_max_above_low_pct=0.06,
-        buy_min_drawdown_from_high_pct=0.14,
-        buy_max_year_range_pct=0.38,
-        buy_mid_range_max_above_low_pct=0.05,
-        buy_low_lookback_days=90,
-        sell_spread_percentile_max=25,
-        sell_pe_percentile_min=82,
-        sell_max_above_low_pct=0.24,
-        sell_valuation_enabled=True,
-        sell_trailing_drawdown_pct=0.10,
-        sell_min_unrealized_gain_pct=0.40,
-        sell_trailing_min_hold_days=60,
-    ),
     # 中证A50：2024 发布，样本短，阈值参考中证A500
     "930050": _cn_broad_index_defaults(
         buy_spread_percentile_min=50,
@@ -1272,7 +1249,6 @@ CN_BROAD_SELL_ENABLED_CODES = frozenset(
         "000300",
         "000905",
         "000852",
-        "932000",
         "930050",
         "000903",
         "000688",

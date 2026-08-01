@@ -16,7 +16,6 @@ ALL_BUY_INDEX_CODES = (
     "000300",
     "000905",
     "000852",
-    "932000",
     "930050",
     "000903",
     "000688",
@@ -179,17 +178,17 @@ def enrich_signal_buy_amount(index_code, snapshot, signal_eval):
         is_index_recommended,
     )
 
+    out = dict(signal_eval)
+
+    if not out.get("is_buy"):
+        return out
+
     recommended = is_index_recommended(index_code)
     base = get_buy_amount_base(index_code)
-
-    out = dict(signal_eval)
     out["recommended"] = recommended
     out["buy_amount_base"] = base
 
     if base <= 0:
-        return out
-
-    if not out.get("is_buy"):
         return out
 
     if snapshot.get("live_price"):

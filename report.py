@@ -28,7 +28,6 @@ CN_BROAD_MODULE_BY_CODE = {
     "000300": "hs300",
     "000905": "zz500",
     "000852": "zz1000",
-    "932000": "zz2000",
     "930050": "a50",
     "000903": "a100",
     "000688": "kc50",
@@ -185,7 +184,13 @@ def generate_reports(
 ):
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
     from concurrent.futures import ThreadPoolExecutor
+    from config import BUY_AMOUNT_RANKING_ENABLED
     from realtime_quote import fetch_live_quotes
+
+    if BUY_AMOUNT_RANKING_ENABLED:
+        from buy_amount_ranking import get_ranking_allocation
+
+        get_ranking_allocation()
 
     live_quotes = fetch_live_quotes()
 

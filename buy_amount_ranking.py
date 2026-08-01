@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 from buy_amount_config import ALL_BUY_INDEX_CODES
@@ -63,6 +65,15 @@ def compute_index_ranking(panels=None, *, force: bool = False):
 
     if not BUY_AMOUNT_RANKING_ENABLED:
         return _empty_ranking()
+
+    today = date.today().isoformat()
+    if (
+        not force
+        and panels is None
+        and _RANKING_CACHE is not None
+        and _RANKING_CACHE.get("day") == today
+    ):
+        return _RANKING_CACHE["result"]
 
     panels = panels or BacktestPanels()
     fingerprint = _panel_fingerprint(panels)
@@ -149,7 +160,7 @@ def compute_index_ranking(panels=None, *, force: bool = False):
         "as_of": as_of,
         "exclude_bottom_n": 0,
     }
-    _RANKING_CACHE = {"fingerprint": fingerprint, "result": result}
+    _RANKING_CACHE = {"fingerprint": fingerprint, "day": today, "result": result}
     return result
 
 

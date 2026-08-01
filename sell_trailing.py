@@ -4,6 +4,63 @@ import pandas as pd
 
 from price_position import price_position_sell_hit
 
+BUY_SIGNAL_COL = "_is_buy_signal"
+
+
+def attach_buy_signal_column(panel, buy_eval_fn, row_snapshot_fn, col=BUY_SIGNAL_COL):
+    """一次性计算买入信号列，供后续峰值/成本统计复用。"""
+    if panel is None or panel.empty:
+        return panel
+    out = panel.copy()
+    out[col] = [
+        bool(buy_eval_fn(row_snapshot_fn(row)).get("is_buy"))
+        for _, row in out.iterrows()
+    ]
+    return out
+
+
+def compute_recent_signal_buy_avg_from_column(
+    panel,
+    col=BUY_SIGNAL_COL,
+    lookback_days=252,
+    close_col="close",
+):
+    """近 N 个交易日内，策略买入信号日的收盘价算术平均（隐含持仓成本）。"""
+    if panel is None or panel.empty or close_col not in panel.columns or col not in panel.columns:
+        return None
+    work = panel.tail(lookback_days)
+    prices = work.loc[work[col], close_col].dropna()
+    if prices.empty:
+        return None
+    return float(prices.astype(float).mean())
+
+
+def compute_peak_since_last_buy_from_column(
+    panel,
+    col=BUY_SIGNAL_COL,
+    close_col="close",
+):
+    """自最近一次买入信号日以来，收盘价最高点。"""
+    if panel is None or panel.empty or close_col not in panel.columns or col not in panel.columns:
+        return None
+    buy_rows = panel.loc[panel[col]]
+    if buy_rows.empty:
+        return None
+    closes = panel.loc[buy_rows.index[-1] :, close_col].dropna()
+    if closes.empty:
+        return None
+    return float(closes.astype(float).max())
+
+
+def last_buy_date_from_column(panel, col=BUY_SIGNAL_COL, date_col="date"):
+    """最近一次买入信号日。"""
+    if panel is None or panel.empty or col not in panel.columns or date_col not in panel.columns:
+        return None
+    buy_rows = panel.loc[panel[col]]
+    if buy_rows.empty:
+        return None
+    return buy_rows.iloc[-1][date_col]
+
 
 def compute_recent_signal_buy_avg(
     panel,

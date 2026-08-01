@@ -215,8 +215,13 @@ def fetch_hstech_snapshot(expected_growth=None):
         ma_days=BUY_TREND_MA_DAYS,
         slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
     )
-    from hstech_signal import compute_recent_signal_buy_avg, evaluate_hstech_signal
-    from sell_trailing import compute_peak_since_last_buy
+    from hstech_signal import evaluate_hstech_signal
+    from sell_trailing import (
+        attach_buy_signal_column,
+        compute_peak_since_last_buy_from_column,
+        compute_recent_signal_buy_avg_from_column,
+        last_buy_date_from_column,
+    )
 
     latest = panel.iloc[-1]
 
@@ -232,26 +237,21 @@ def fetch_hstech_snapshot(expected_growth=None):
             "close": row.get("close"),
         }
 
-    recent_signal_buy_avg = compute_recent_signal_buy_avg(
+    panel = attach_buy_signal_column(panel, evaluate_hstech_signal, _row_snap)
+    recent_signal_buy_avg = compute_recent_signal_buy_avg_from_column(
         panel,
         lookback_days=HSTECH_SELL_COST_LOOKBACK_DAYS,
         close_col="close",
     )
-    peak_since_last_buy = compute_peak_since_last_buy(
+    peak_since_last_buy = compute_peak_since_last_buy_from_column(
         panel,
-        lambda s: evaluate_hstech_signal(s),
-        _row_snap,
-        date_col="date_only",
         close_col="close",
     )
-    last_buy_date = None
-    for _, row in panel.iterrows():
-        if evaluate_hstech_signal(_row_snap(row))["is_buy"]:
-            last_buy_date = pd.Timestamp(row["date_only"])
+    last_buy_date = last_buy_date_from_column(panel, date_col="date_only")
     days_since_last_buy = None
     if last_buy_date is not None:
         days_since_last_buy = (
-            pd.Timestamp(latest["date_only"]) - last_buy_date
+            pd.Timestamp(latest["date_only"]) - pd.Timestamp(last_buy_date)
         ).days
     volatility = compute_annualized_volatility(price_history)
     pct_above_low = (
