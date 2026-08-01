@@ -4,13 +4,14 @@ import argparse
 import sys
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from cn_broad_data import (
     attach_cn_broad_percentiles,
     build_cn_broad_valuation_history,
 )
-from cn_broad_signal import evaluate_cn_broad_buy
+from cn_broad_signal import evaluate_cn_broad_buy, vectorized_cn_broad_buy_mask
 from config import (
     A500_INDEX,
     A500_MARKET_DATA_START,
@@ -288,8 +289,19 @@ def _filter_by_range(work, date_range: BacktestRange, date_col="date"):
     return work.loc[mask]
 
 
+def _resolve_buy_mask(panel, sample, buy_fn=None, buy_mask_fn=None):
+    """优先使用向量化买入掩码，否则逐行调用 buy_fn。"""
+    if buy_mask_fn is not None:
+        mask = buy_mask_fn(panel)
+        if mask is not None and not mask.empty:
+            return mask.reindex(sample.index, fill_value=False).astype(bool)
+    if buy_fn is None:
+        return pd.Series(False, index=sample.index)
+    return sample.apply(lambda row: bool(buy_fn(row)), axis=1)
+
+
 def _range_price_stats(
-    panel, date_range, buy_fn, date_col="date", price_col="close"
+    panel, date_range, buy_fn, date_col="date", price_col="close", buy_mask_fn=None
 ):
     """统计区间内指数收盘价最高/最低，及买入信号日的均价。"""
     if panel is None or panel.empty or price_col not in panel.columns:
@@ -300,15 +312,9 @@ def _range_price_stats(
         return None
 
     prices = sample[price_col].astype(float)
-    buy_prices = [
-        float(row[price_col])
-        for _, row in sample.iterrows()
-        if buy_fn(row)
-    ]
-    if buy_prices:
-        avg_buy_price = sum(buy_prices) / len(buy_prices)
-    else:
-        avg_buy_price = None
+    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    buy_prices = prices[buy_mask]
+    avg_buy_price = float(buy_prices.mean()) if not buy_prices.empty else None
 
     return {
         "year_high": float(prices.max()),
@@ -325,11 +331,12 @@ def _simulate_dca_returns(
     date_col="date",
     price_col="close",
     valuation_price_col=None,
+    buy_mask_fn=None,
 ):
     """每个买入日投入固定金额，按最新收盘价估算持仓市值与收益率。"""
     val_col = valuation_price_col or price_col
     price_stats = _range_price_stats(
-        panel, date_range, buy_fn, date_col, price_col
+        panel, date_range, buy_fn, date_col, price_col, buy_mask_fn=buy_mask_fn
     )
     if price_stats is None:
         return None
@@ -349,15 +356,13 @@ def _simulate_dca_returns(
     if sample.empty:
         return None
 
-    buy_prices = []
-    buy_amounts = []
-    for _, row in sample.iterrows():
-        if buy_fn(row):
-            buy_prices.append(float(row[val_col]))
-            if callable(amount):
-                buy_amounts.append(float(amount(row)))
-            else:
-                buy_amounts.append(float(amount))
+    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    buy_sample = sample.loc[buy_mask]
+    buy_prices = buy_sample[val_col].astype(float).tolist()
+    if callable(amount):
+        buy_amounts = [float(amount(row)) for _, row in buy_sample.iterrows()]
+    else:
+        buy_amounts = [float(amount)] * len(buy_prices)
 
     buy_days = len(buy_prices)
     total_days = len(sample)
@@ -401,11 +406,11 @@ def _simulate_dca_returns(
 
 
 def _count_buy_days(
-    panel, date_range, buy_fn, date_col="date", price_col="close"
+    panel, date_range, buy_fn, date_col="date", price_col="close", buy_mask_fn=None
 ):
     """统计区间内买入信号天数及有效样本天数。"""
     price_stats = _range_price_stats(
-        panel, date_range, buy_fn, date_col, price_col
+        panel, date_range, buy_fn, date_col, price_col, buy_mask_fn=buy_mask_fn
     )
     if price_stats is None:
         return None
@@ -414,11 +419,8 @@ def _count_buy_days(
     if sample.empty:
         return None
 
-    buy_days = 0
-    for _, row in sample.iterrows():
-        if buy_fn(row):
-            buy_days += 1
-
+    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    buy_days = int(buy_mask.sum())
     total = len(sample)
     return {
         "buy_days": buy_days,
@@ -442,7 +444,8 @@ def _cn_broad_buy_snapshot(row, index_code):
             "pct_below_high": row.get("pct_below_high"),
             "year_range_position": row.get("year_range_position"),
             "ma_slope_pct": row.get("ma_slope_pct"),
-        }
+        },
+        buy_only=True,
     )["is_buy"]
 
 
@@ -810,6 +813,7 @@ def _iter_backtest_configs(panels):
             "name": item["name"],
             "panel": panels.cn_broad_panel(code),
             "buy_fn": lambda r, c=code: _cn_broad_buy_snapshot(r, c),
+            "buy_mask_fn": lambda p, c=code: vectorized_cn_broad_buy_mask(p, c),
             "date_col": "date",
             "price_col": "close",
             "note": "日频，每交易日评估",
@@ -894,6 +898,7 @@ def build_daily_table_range(
     date_col="date",
     price_col="close",
     amount=None,
+    buy_mask_fn=None,
 ):
     """构建区间内逐交易日表：日期、收盘价、是否买入（可选买入金额）。"""
     base_cols = ["date", "close", "buy"]
@@ -911,20 +916,30 @@ def build_daily_table_range(
     if sample.empty:
         return pd.DataFrame(columns=base_cols)
 
-    rows = []
-    for _, row in sample.iterrows():
-        raw_date = _resolve_date_value(row, date_col)
-        close_val = row.get(price_col)
-        is_buy = bool(buy_fn and buy_fn(row))
-        entry = {
-            "date": pd.Timestamp(raw_date).strftime("%Y-%m-%d"),
-            "close": float(close_val) if pd.notna(close_val) else None,
-            "buy": "买入" if is_buy else "",
+    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    date_values = (
+        sample["date_only"]
+        if date_col == "date_only"
+        else sample[date_col]
+    )
+    close_vals = pd.to_numeric(sample[price_col], errors="coerce")
+    out = pd.DataFrame(
+        {
+            "date": pd.to_datetime(date_values).dt.strftime("%Y-%m-%d"),
+            "close": close_vals.astype(float),
+            "buy": np.where(buy_mask, "买入", ""),
         }
-        if amount is not None:
-            entry["buy_amount"] = _resolve_row_buy_amount(amount, row, is_buy)
-        rows.append(entry)
-    return pd.DataFrame(rows)
+    )
+    if amount is not None:
+        if callable(amount):
+            buy_amounts = [
+                _resolve_row_buy_amount(amount, sample.iloc[i], bool(is_buy))
+                for i, is_buy in enumerate(buy_mask.to_numpy())
+            ]
+        else:
+            buy_amounts = np.where(buy_mask, float(amount), 0.0)
+        out["buy_amount"] = buy_amounts
+    return out
 
 
 def collect_daily_tables(
@@ -958,6 +973,7 @@ def collect_daily_tables(
             date_col=cfg["date_col"],
             price_col=cfg["price_col"],
             amount=sim_amt,
+            buy_mask_fn=cfg.get("buy_mask_fn"),
         )
         if table.empty:
             continue

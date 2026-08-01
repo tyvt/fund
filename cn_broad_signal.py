@@ -1,5 +1,8 @@
 """A 股宽基指数买入/卖出信号与报告格式化。"""
 
+import numpy as np
+import pandas as pd
+
 from buy_amount_config import enrich_signal_buy_amount
 from config import cn_broad_sell_enabled, cn_broad_valuation_sell_enabled, get_cn_broad_signal_config
 from drop_to_buy import (
@@ -218,7 +221,7 @@ def evaluate_cn_broad_sell(snapshot):
     }
 
 
-def evaluate_cn_broad_buy(snapshot):
+def evaluate_cn_broad_buy(snapshot, *, buy_only=False):
     """股债利差 + PE 分位 + 价格位置；买入需多数指标 favorable。"""
     index_code = snapshot.get("code")
     cfg = get_cn_broad_signal_config(index_code)
@@ -341,12 +344,15 @@ def evaluate_cn_broad_buy(snapshot):
     ) and drawdown_from_high_ok(
         snapshot.get("pct_below_high"),
         min_drawdown,
-    ) and year_range_ok(year_range, cfg.get("buy_max_year_range_pct")) and trend_filter_ok(
+    ) and year_range_ok(year_range, cfg.get("buy_max_year_range_pct")    ) and trend_filter_ok(
         snapshot.get("ma_slope_pct"),
         year_range,
         cfg.get("buy_trend_min_ma_slope_pct"),
         cfg.get("buy_trend_downtrend_max_range_pct"),
     )
+
+    if buy_only:
+        return {"is_buy": is_buy}
 
     sell_eval = evaluate_cn_broad_sell(snapshot)
     is_sell = sell_eval["is_sell"] and not is_buy
@@ -377,6 +383,124 @@ def evaluate_cn_broad_buy(snapshot):
         "drop_to_buy": None,
         "drop_to_buy_line": None,
     }
+
+
+def vectorized_cn_broad_buy_mask(panel, index_code):
+    """向量化批量判定买入信号（回测专用，与 evaluate_cn_broad_buy 逻辑一致）。"""
+    if panel is None or panel.empty:
+        return pd.Series(dtype=bool)
+
+    def _col(name):
+        if name not in panel.columns:
+            return pd.Series(np.nan, index=panel.index, dtype=float)
+        return pd.to_numeric(panel[name], errors="coerce")
+
+    cfg = get_cn_broad_signal_config(index_code)
+    pe_pct = _col("pe_percentile")
+    pb_pct = _col("pb_percentile")
+    spread_pct = _col("spread_percentile")
+    year_range = _col("year_range_position")
+    pct_above_low = _col("pct_above_low")
+    pct_below_high = _col("pct_below_high")
+    ma_slope_pct = _col("ma_slope_pct")
+
+    near_thr = cfg.get("buy_near_year_low_range_pct", 0.15)
+    near_low = year_range.notna() & (year_range <= near_thr)
+
+    spread_min = cfg["buy_spread_percentile_min"]
+    pe_max = cfg["buy_pe_percentile_max"]
+    if cfg.get("buy_near_year_low_spread_relax", 0) or cfg.get("buy_near_year_low_pe_relax", 0):
+        spread_min_arr = np.where(
+            near_low,
+            np.maximum(0.0, spread_min - cfg.get("buy_near_year_low_spread_relax", 0)),
+            spread_min,
+        )
+        pe_max_arr = np.where(
+            near_low,
+            np.minimum(100.0, pe_max + cfg.get("buy_near_year_low_pe_relax", 0)),
+            pe_max,
+        )
+    else:
+        spread_min_arr = spread_min
+        pe_max_arr = pe_max
+
+    spread_ok = spread_pct.notna() & (spread_pct >= spread_min_arr)
+    pe_ok = pe_pct.notna() & (pe_pct <= pe_max_arr)
+    pb_ok = pb_pct.notna() & (pb_pct <= cfg["buy_pb_percentile_max"])
+
+    max_above = cfg["buy_max_above_low_pct"]
+    if max_above is not None:
+        max_above_low = np.full(len(panel), max_above, dtype=float)
+        near_relax = cfg.get("buy_near_year_low_above_low_relax", 0)
+        if near_relax:
+            max_above_low = np.where(near_low, max_above + near_relax, max_above_low)
+        mid_thr = cfg.get("buy_mid_range_position_pct", 0.35)
+        mid_cap = cfg.get("buy_mid_range_max_above_low_pct", 0.02)
+        mid = year_range.notna() & (year_range > mid_thr)
+        max_above_low = np.where(mid, np.minimum(max_above_low, mid_cap), max_above_low)
+        price_ok = pct_above_low.notna() & (pct_above_low <= max_above_low)
+        price_applicable = pct_above_low.notna()
+    else:
+        price_ok = pd.Series(True, index=panel.index)
+        price_applicable = pd.Series(False, index=panel.index)
+
+    min_dd = cfg.get("buy_min_drawdown_from_high_pct")
+    if min_dd is not None:
+        # 与 evaluate_cn_broad_buy 一致：第三参为 buy_near_year_low_drawdown_waive_pct
+        dd_near_thr = cfg.get("buy_near_year_low_drawdown_waive_pct")
+        waived = year_range.notna() & (year_range <= dd_near_thr)
+        effective_dd = np.where(waived.to_numpy(), np.nan, min_dd)
+        dd_ok = waived | (
+            pct_below_high.notna() & (pct_below_high.to_numpy() >= effective_dd)
+        )
+        dd_applicable = (~waived) & pct_below_high.notna()
+    else:
+        dd_ok = pd.Series(True, index=panel.index)
+        dd_applicable = pd.Series(False, index=panel.index)
+
+    yr_max = cfg.get("buy_max_year_range_pct")
+    if yr_max is not None:
+        yr_ok = year_range.notna() & (year_range <= yr_max)
+        yr_applicable = year_range.notna()
+    else:
+        yr_ok = pd.Series(True, index=panel.index)
+        yr_applicable = pd.Series(False, index=panel.index)
+
+    min_slope = cfg.get("buy_trend_min_ma_slope_pct", -0.025)
+    downtrend_max = cfg.get("buy_trend_downtrend_max_range_pct", 0.12)
+    slope_known = ma_slope_pct.notna()
+    trend_ok = (~slope_known) | (ma_slope_pct >= min_slope) | (
+        year_range.notna() & (year_range <= downtrend_max)
+    )
+    trend_applicable = slope_known
+
+    criteria = [
+        (spread_ok, spread_pct.notna()),
+        (pe_ok, pe_pct.notna()),
+        (pb_ok, pb_pct.notna()),
+        (price_ok, price_applicable),
+        (dd_ok, dd_applicable),
+        (yr_ok, yr_applicable),
+        (trend_ok, trend_applicable),
+    ]
+    applicable_count = sum(app.astype(int) for _, app in criteria)
+    score = sum(ok.astype(int) for ok, _ in criteria)
+    total = applicable_count
+    need = np.where(
+        total.to_numpy() >= 3,
+        np.maximum(cfg["buy_min_pass_score_floor"], total.to_numpy() - 1),
+        np.maximum(1, total.to_numpy()),
+    )
+    spread_gate = spread_ok if cfg["buy_require_spread"] else pd.Series(True, index=panel.index)
+    base_buy = (
+        spread_gate
+        & (score.to_numpy() >= need)
+        & (total.to_numpy() >= cfg["buy_min_applicable_criteria"])
+    )
+    return pd.Series(
+        base_buy & price_ok.to_numpy() & dd_ok.to_numpy() & yr_ok.to_numpy() & trend_ok.to_numpy(),
+        index=panel.index,
+    )
 
 
 def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):

@@ -1,6 +1,7 @@
 """项目公共配置：默认值、环境变量与 push.env 覆盖。"""
 
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from data_sources import (
@@ -316,8 +317,12 @@ def get_chart_buy_amount(index_code, amounts=None):
     amt = get_backtest_buy_amount(index_code, amounts)
     if amt > 0:
         return amt
-    if amounts and amounts.get("portfolio"):
-        return get_buy_amount_base(index_code)
+    if amounts is not None:
+        by_code = amounts.get("by_code")
+        if by_code is not None:
+            return 0.0
+        if amounts.get("portfolio"):
+            return float(amounts.get("other", BACKTEST_OTHER_BUY_AMOUNT))
     return get_buy_amount_base(index_code)
 
 
@@ -941,6 +946,7 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
 }
 
 
+@lru_cache(maxsize=None)
 def get_cn_broad_signal_config(index_code):
     """读取单只 A 股宽基指数的买入/卖出阈值（仅分指数默认 + 分指数环境变量）。"""
     per_index = _CN_BROAD_PER_INDEX_DEFAULTS.get(index_code)

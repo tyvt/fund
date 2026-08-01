@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 import pandas as pd
@@ -9,74 +10,178 @@ import pandas as pd
 from buy_amount_config import ALL_BUY_INDEX_CODES
 
 _RANKING_CACHE: dict | None = None
+_RANKING_DISK_NAME = "ranking_allocation.json"
+
+
+def _ranking_disk_path():
+    from config import DATA_CACHE_DIR
+
+    return DATA_CACHE_DIR / _RANKING_DISK_NAME
+
+
+def _load_ranking_disk_cache(fingerprint: str):
+    from data_cache import load_json
+
+    payload = load_json(_ranking_disk_path())
+    if not payload:
+        return None
+    if payload.get("day") != date.today().isoformat():
+        return None
+    if payload.get("fingerprint") != fingerprint:
+        return None
+    rows = payload.get("rows") or []
+    excluded = payload.get("excluded_codes") or []
+    return {
+        "rows": rows,
+        "returns": {k: float(v) for k, v in (payload.get("returns") or {}).items()},
+        "buy_counts": {
+            k: int(v) for k, v in (payload.get("buy_counts") or {}).items()
+        },
+        "excluded_codes": frozenset(excluded),
+        "by_code": {k: float(v) for k, v in (payload.get("by_code") or {}).items()},
+        "reference_by_code": {
+            k: float(v) for k, v in (payload.get("reference_by_code") or {}).items()
+        },
+        "as_of": payload.get("as_of"),
+        "exclude_bottom_n": int(payload.get("exclude_bottom_n") or 0),
+    }
+
+
+def _save_ranking_disk_cache(fingerprint: str, result: dict) -> None:
+    from data_cache import save_json
+
+    save_json(
+        _ranking_disk_path(),
+        {
+            "day": date.today().isoformat(),
+            "fingerprint": fingerprint,
+            "rows": result.get("rows") or [],
+            "returns": result.get("returns") or {},
+            "buy_counts": result.get("buy_counts") or {},
+            "excluded_codes": sorted(result.get("excluded_codes") or []),
+            "by_code": result.get("by_code") or {},
+            "reference_by_code": result.get("reference_by_code") or {},
+            "as_of": result.get("as_of"),
+            "exclude_bottom_n": result.get("exclude_bottom_n") or 0,
+        },
+    )
+
+
+def _preload_ranking_panels(panels) -> None:
+    """并行预热全部回测面板，避免串行拉取。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backtest_buy_signals import CN_BROAD_BACKTEST_INDICES
+    from config import INDICES, US_INDEX_KEYS
+
+    tasks = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for item in INDICES:
+            tasks.append(executor.submit(panels.dividend_panel, item["code"]))
+        for item in CN_BROAD_BACKTEST_INDICES:
+            tasks.append(executor.submit(panels.cn_broad_panel, item["code"]))
+        tasks.append(executor.submit(panels.cyb_panel))
+        tasks.append(executor.submit(panels.hstech_panel))
+        for key in US_INDEX_KEYS:
+            tasks.append(executor.submit(panels.us_index_panel, key))
+        for task in tasks:
+            task.result()
 
 # 排名对比用固定单次买入（元），仅用于收益率排序
 _RANKING_SIM_AMOUNT = 100.0
 
 
-def _panel_fingerprint(panels) -> str:
+def _data_cache_fingerprint() -> str:
+    """用本地缓存文件元数据生成指纹，避免为校验缓存而加载全部面板。"""
+    from config import DATA_CACHE_DIR, US_DATA_CACHE_DIR
+
     parts = []
-    for cfg in _iter_configs(panels):
-        panel = cfg["panel"]
-        if panel is None or panel.empty:
-            parts.append(f"{cfg['code']}:0")
+    for root in (DATA_CACHE_DIR, US_DATA_CACHE_DIR):
+        if not root.exists():
             continue
-        date_col = cfg["date_col"]
-        col = (
-            "total_return_close"
-            if cfg.get("valuation_price_col") == "total_return_close"
-            else cfg.get("price_col", "close")
-        )
-        work = panel.dropna(subset=[date_col if date_col != "date_only" else "date_only"])
-        if work.empty:
-            parts.append(f"{cfg['code']}:0")
-            continue
-        if date_col == "date_only":
-            last = work.iloc[-1]["date_only"]
-        else:
-            last = work.iloc[-1][date_col]
-        parts.append(f"{cfg['code']}:{last}:{len(work)}:{work.iloc[-1].get(col)}")
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.name == _RANKING_DISK_NAME:
+                continue
+            stat = path.stat()
+            parts.append(
+                f"{path.relative_to(root)}:{stat.st_mtime_ns}:{stat.st_size}"
+            )
     return "|".join(parts)
 
 
 def _iter_configs(panels):
     from backtest_buy_signals import _iter_backtest_configs
 
+    dividend_codes = {i["code"] for i in __import__("config").INDICES}
     for cfg in _iter_backtest_configs(panels):
         code = cfg["code"]
         if code in ALL_BUY_INDEX_CODES:
-            if code in {i["code"] for i in __import__("config").INDICES}:
+            if code in dividend_codes:
                 cfg = {**cfg, "valuation_price_col": "total_return_close"}
             yield cfg
+
+
+def _rank_one_config(cfg, date_range):
+    from backtest_buy_signals import _simulate_dca_returns
+
+    code = cfg["code"]
+    val_col = cfg.get("valuation_price_col")
+    result = _simulate_dca_returns(
+        cfg["panel"],
+        date_range,
+        cfg["buy_fn"],
+        amount=_RANKING_SIM_AMOUNT,
+        date_col=cfg["date_col"],
+        price_col=cfg["price_col"],
+        valuation_price_col=val_col,
+        buy_mask_fn=cfg.get("buy_mask_fn"),
+    )
+    ret = result.get("return_pct") if result else None
+    buys = int(result.get("buy_days", 0)) if result else 0
+    score = max(float(ret), 0.01) if ret is not None else 0.01
+    return {
+        "code": code,
+        "name": cfg["name"],
+        "return_pct": ret,
+        "buy_days": buys,
+        "score": score,
+        "panel": cfg["panel"],
+        "date_col": cfg["date_col"],
+    }
 
 
 def compute_index_ranking(panels=None, *, force: bool = False):
     """计算各指数自基日买入持有收益率排名，并分配年度额度。"""
     global _RANKING_CACHE
-    from backtest_buy_signals import (
-        BacktestPanels,
-        _simulate_dca_returns,
-        default_backtest_range,
-    )
-    from config import (
-        ANNUAL_INVESTMENT_BUDGET,
-        BUY_AMOUNT_RANKING_ENABLED,
-    )
+    from backtest_buy_signals import BacktestPanels, default_backtest_range
+    from config import ANNUAL_INVESTMENT_BUDGET, BUY_AMOUNT_RANKING_ENABLED
 
     if not BUY_AMOUNT_RANKING_ENABLED:
         return _empty_ranking()
 
     today = date.today().isoformat()
+    fingerprint = _data_cache_fingerprint()
     if (
         not force
         and panels is None
         and _RANKING_CACHE is not None
         and _RANKING_CACHE.get("day") == today
+        and _RANKING_CACHE.get("fingerprint") == fingerprint
     ):
         return _RANKING_CACHE["result"]
 
-    panels = panels or BacktestPanels()
-    fingerprint = _panel_fingerprint(panels)
+    if not force and panels is None:
+        disk_cached = _load_ranking_disk_cache(fingerprint)
+        if disk_cached is not None:
+            _RANKING_CACHE = {
+                "fingerprint": fingerprint,
+                "day": today,
+                "result": disk_cached,
+            }
+            return disk_cached
+
     if (
         not force
         and _RANKING_CACHE is not None
@@ -84,35 +189,35 @@ def compute_index_ranking(panels=None, *, force: bool = False):
     ):
         return _RANKING_CACHE["result"]
 
+    panels = panels or BacktestPanels()
+    _preload_ranking_panels(panels)
+    fingerprint = _data_cache_fingerprint()
     date_range = default_backtest_range()
+    configs = list(_iter_configs(panels))
+    workers = min(8, max(1, len(configs)))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        ranked = list(
+            executor.map(
+                lambda cfg: _rank_one_config(cfg, date_range),
+                configs,
+            )
+        )
+
     rows = []
     returns: dict[str, float] = {}
     buy_counts: dict[str, int] = {}
-
-    for cfg in _iter_configs(panels):
-        code = cfg["code"]
-        val_col = cfg.get("valuation_price_col")
-        result = _simulate_dca_returns(
-            cfg["panel"],
-            date_range,
-            cfg["buy_fn"],
-            amount=_RANKING_SIM_AMOUNT,
-            date_col=cfg["date_col"],
-            price_col=cfg["price_col"],
-            valuation_price_col=val_col,
-        )
-        ret = result.get("return_pct") if result else None
-        buys = int(result.get("buy_days", 0)) if result else 0
-        score = max(float(ret), 0.01) if ret is not None else 0.01
-        returns[code] = score
-        buy_counts[code] = buys
+    for item in ranked:
+        code = item["code"]
+        returns[code] = item["score"]
+        buy_counts[code] = item["buy_days"]
         rows.append(
             {
                 "code": code,
-                "name": cfg["name"],
-                "return_pct": ret,
-                "buy_days": buys,
-                "score": score,
+                "name": item["name"],
+                "return_pct": item["return_pct"],
+                "buy_days": item["buy_days"],
+                "score": item["score"],
             }
         )
 
@@ -138,11 +243,11 @@ def compute_index_ranking(panels=None, *, force: bool = False):
         r["amount"] = by_code.get(r["code"], 0.0)
 
     val_dates = []
-    for cfg in _iter_configs(panels):
-        panel = cfg["panel"]
+    for cfg, item in zip(configs, ranked):
+        panel = item["panel"]
         if panel is None or panel.empty:
             continue
-        date_col = cfg["date_col"]
+        date_col = item["date_col"]
         raw = panel.iloc[-1].get(
             "date_only" if date_col == "date_only" else date_col
         )
@@ -161,6 +266,7 @@ def compute_index_ranking(panels=None, *, force: bool = False):
         "exclude_bottom_n": 0,
     }
     _RANKING_CACHE = {"fingerprint": fingerprint, "day": today, "result": result}
+    _save_ranking_disk_cache(fingerprint, result)
     return result
 
 
