@@ -225,7 +225,9 @@ def compute_index_ranking(panels=None, *, force: bool = False):
     active = list(rows)
 
     denom = sum(buy_counts.get(r["code"], 0) * returns[r["code"]] for r in active)
-    budget = float(ANNUAL_INVESTMENT_BUDGET)
+    from buy_amount_budget import get_annual_budget
+
+    budget = float(get_annual_budget())
     by_code: dict[str, float] = {}
     reference_by_code: dict[str, float] = {}
     for code in ALL_BUY_INDEX_CODES:

@@ -123,14 +123,25 @@ def sync_all(force: bool = False) -> None:
     for code, name in iter_tracked_index_labels():
         print(f"  {name} ({code})")
 
-    print("\n[收益率排名]")
+    print("\n[买入额度]")
     try:
-        from buy_amount_ranking import compute_index_ranking, format_ranking_note
+        from config import BUY_AMOUNT_POSITION_ALLOC_ENABLED
 
-        alloc = compute_index_ranking(force=True)
-        print(f"  {format_ranking_note(alloc)}")
+        if BUY_AMOUNT_POSITION_ALLOC_ENABLED:
+            from buy_amount_allocation import (
+                format_allocation_note,
+                get_position_allocation,
+            )
+
+            alloc = get_position_allocation(force=True)
+            print(f"  {format_allocation_note(alloc)}")
+        else:
+            from buy_amount_ranking import compute_index_ranking, format_ranking_note
+
+            alloc = compute_index_ranking(force=True)
+            print(f"  {format_ranking_note(alloc)}")
     except Exception as exc:
-        print(f"  排名刷新失败: {exc}")
+        print(f"  额度分配刷新失败: {exc}")
 
     print("\n缓存目录: cache/（当日已同步则跳过重拉，次日自动增量更新）")
 

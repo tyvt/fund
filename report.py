@@ -184,15 +184,19 @@ def generate_reports(
 ):
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
     from concurrent.futures import ThreadPoolExecutor
-    from config import BUY_AMOUNT_RANKING_ENABLED
+    from config import BUY_AMOUNT_POSITION_ALLOC_ENABLED, BUY_AMOUNT_RANKING_ENABLED
     from realtime_quote import fetch_live_quotes
 
-    if BUY_AMOUNT_RANKING_ENABLED:
+    live_quotes = fetch_live_quotes()
+
+    if BUY_AMOUNT_POSITION_ALLOC_ENABLED:
+        from buy_amount_allocation import get_position_allocation
+
+        get_position_allocation(live_quotes=live_quotes)
+    elif BUY_AMOUNT_RANKING_ENABLED:
         from buy_amount_ranking import get_ranking_allocation
 
         get_ranking_allocation()
-
-    live_quotes = fetch_live_quotes()
 
     resolved = _resolve_modules(modules)
     generators = {

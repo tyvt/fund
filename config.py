@@ -202,41 +202,49 @@ PORTFOLIO_IN_GROUP_SPLIT = _env_str("PORTFOLIO_IN_GROUP_SPLIT", "return_weighted
 PORTFOLIO_US_NDX_SHARE = _env_float("PORTFOLIO_US_NDX_SHARE", 0.85)
 PORTFOLIO_SAT_CYB_SHARE = _env_float("PORTFOLIO_SAT_CYB_SHARE", 0.80)
 
-# --- 年度总投入预算（动态计算各指数基准金额，保持利润最大化比例）---
-# 参考年度总投入：与当前 BUY_AMOUNT_BASE_BY_CODE 在 2016–2025 回测下的年均投入一致
+# --- 投入预算：剩余可用额度 + 预计全年投入 ---
+# REMAINING_INVESTMENT_BUDGET：当年剩余可投入金额（非全年总额）
+# ANNUAL_INVESTMENT_TARGET：可选，显式指定全年目标；未设则按剩余额度外推
+REMAINING_INVESTMENT_BUDGET = _env_float_any(
+    ("REMAINING_INVESTMENT_BUDGET", "ANNUAL_INVESTMENT_BUDGET"),
+    50_000,
+)
+ANNUAL_INVESTMENT_TARGET = _env_float("ANNUAL_INVESTMENT_TARGET", 0)
+# 兼容旧变量名（含义已改为剩余可用额度）
+ANNUAL_INVESTMENT_BUDGET = REMAINING_INVESTMENT_BUDGET
 BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET = _env_float(
     "BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET", 72_577
 )
 ANNUAL_INVESTMENT_BUDGET_ENABLED = _env_bool("ANNUAL_INVESTMENT_BUDGET_ENABLED", True)
-ANNUAL_INVESTMENT_BUDGET = _env_float("ANNUAL_INVESTMENT_BUDGET", 72_000)
-# 各年可覆盖默认值，如 push.env: ANNUAL_INVESTMENT_BUDGET_2025=100000
+# 各年可覆盖预计全年投入，如 push.env: ANNUAL_INVESTMENT_BUDGET_2025=100000
 ANNUAL_INVESTMENT_BUDGET_BY_YEAR = _build_annual_investment_budget_by_year()
 
 # --- 买入金额分档（回测/实盘参考，见 buy_amount_tiers.py）---
 # 按年区间位置：越低（近年内低点）投入越多
 BUY_AMOUNT_TIER_SCHEME = _env_str("BUY_AMOUNT_TIER_SCHEME", "range_8_fine")
 BUY_AMOUNT_TIER_ENABLED = _env_bool("BUY_AMOUNT_TIER_ENABLED", True)
-# 按自基日策略收益率排名，为全部指数按收益率权重分配年度额度
+# 实盘：按当前位置与就绪度分配剩余额度；回测：按历史收益率排名分配
+BUY_AMOUNT_POSITION_ALLOC_ENABLED = _env_bool("BUY_AMOUNT_POSITION_ALLOC_ENABLED", True)
 BUY_AMOUNT_RANKING_ENABLED = _env_bool("BUY_AMOUNT_RANKING_ENABLED", True)
 # 旧版收益最大化固定分指数金额（排名关闭时回退）
 BUY_AMOUNT_RETURN_MAX = _env_bool("BUY_AMOUNT_RETURN_MAX", True)
 
-# 收益最大化基准单次买入（元）；2010–至今回测优化
-# 美股 NDX/SPX：区间放宽至 65% + 八档细分 + 基准降额 72%
+# 收益率排名分配后的基准单次买入（元）；公式 amount_i = B×r_i/Σ(n_j×r_j)
+# 年度总投入默认 72,000 元；数据更新后由 buy_amount_ranking 自动重算，此处为回退值
 BUY_AMOUNT_BASE_BY_CODE = {
-    "NDX": 634,
-    "SPX": 151,
-    "399006": 118,
-    "000688": 38,
-    "H30269": 28,
-    "000510": 28,
-    "000016": 28,
-    "000300": 28,
-    "000905": 28,
-    "000852": 28,
-    "930050": 28,
-    "000903": 28,
-    "HSTECH": 28,
+    "NDX": 61,
+    "SPX": 23,
+    "399006": 18,
+    "H30269": 12,
+    "000688": 11,
+    "000905": 10,
+    "000300": 10,
+    "930050": 10,
+    "000903": 10,
+    "000852": 10,
+    "000016": 10,
+    "000510": 10,
+    "HSTECH": 10,
 }
 
 # 组合模式分指数金额（--portfolio）；与收益最大化配置独立
@@ -263,6 +271,13 @@ def _env_buy_amount_for_code(code, default):
 
 def get_buy_amount_reference(index_code):
     """利润最大化参考基准金额（未按年度预算缩放）。"""
+    if BUY_AMOUNT_POSITION_ALLOC_ENABLED:
+        from buy_amount_allocation import get_position_allocation
+
+        alloc = get_position_allocation()
+        ref = alloc["reference_by_code"].get(index_code)
+        if ref is not None:
+            return _env_buy_amount_for_code(index_code, float(ref))
     if BUY_AMOUNT_RANKING_ENABLED:
         from buy_amount_ranking import get_ranking_allocation
 
@@ -282,6 +297,8 @@ def is_index_recommended(index_code):
 def get_buy_amount_base(index_code, year=None):
     """单只指数基准单次买入金额（元）；启用年度预算时按当年总投入缩放。"""
     ref = get_buy_amount_reference(index_code)
+    if BUY_AMOUNT_POSITION_ALLOC_ENABLED:
+        return ref
     if not ANNUAL_INVESTMENT_BUDGET_ENABLED:
         return ref
     from buy_amount_budget import get_scaled_buy_amount_base
