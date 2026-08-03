@@ -296,14 +296,6 @@ def get_ranking_allocation(panels=None, *, force: bool = False):
     return compute_index_ranking(panels=panels, force=force)
 
 
-def is_index_recommended(index_code: str, panels=None) -> bool:
-    from config import BUY_AMOUNT_RANKING_ENABLED, get_buy_amount_reference
-
-    if not BUY_AMOUNT_RANKING_ENABLED:
-        return get_buy_amount_reference(index_code) > 0
-    return get_buy_amount_reference(index_code) > 0
-
-
 def format_ranking_note(alloc=None) -> str:
     alloc = alloc or get_ranking_allocation()
     as_of = alloc.get("as_of") or "最新"

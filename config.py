@@ -6,7 +6,6 @@ from pathlib import Path
 
 from data_sources import (
     BOND_YIELD_URL as _DEFAULT_BOND_YIELD_URL,
-    CSINDEX_CLOSEWEIGHT_BASE_URL as _DEFAULT_CSINDEX_CLOSEWEIGHT_BASE_URL,
     CSINDEX_INDICATOR_BASE_URL as _DEFAULT_CSINDEX_INDICATOR_BASE_URL,
     FRED_CSV_BASE_URL as _DEFAULT_FRED_CSV_BASE_URL,
     FRED_NASDAQ100_SERIES as _DEFAULT_FRED_NASDAQ100_SERIES,
@@ -1273,13 +1272,6 @@ def cn_broad_sell_enabled(index_code):
     return index_code in CN_BROAD_SELL_ENABLED_CODES
 
 
-# --- 其他参考阈值（当前代码未用于主信号逻辑，保留可配置）---
-STRONG_BUY_SPREAD = _env_float("STRONG_BUY_SPREAD", 0.035)
-NORMAL_BUY_SPREAD = _env_float("NORMAL_BUY_SPREAD", 0.02)
-SELL_SPREAD = _env_float("SELL_SPREAD", 0.01)
-STRONG_SELL_SPREAD = _env_float("STRONG_SELL_SPREAD", 0.005)
-PE_LOW_PERCENTILE = _env_float("PE_LOW_PERCENTILE", 30)
-PE_HIGH_PERCENTILE = _env_float("PE_HIGH_PERCENTILE", 70)
 # 无日度国债数据时按年回填（2024-09 起用接口真实日度数据）
 BOND_YIELD_FALLBACK_BY_YEAR = {
     2015: _env_float("BOND_YIELD_2015", 0.0335),
@@ -1293,16 +1285,6 @@ BOND_YIELD_FALLBACK_BY_YEAR = {
     2023: _env_float("BOND_YIELD_2023", 0.024),
     2024: _env_float("BOND_YIELD_2024", 0.0275),
 }
-PB_GOOD_THRESHOLD = _env_float("PB_GOOD_THRESHOLD", 1.0)
-PB_MID_THRESHOLD = _env_float("PB_MID_THRESHOLD", 1.3)
-PAYOUT_RATIO_LOW = _env_float("PAYOUT_RATIO_LOW", 0.33)
-PAYOUT_RATIO_HIGH = _env_float("PAYOUT_RATIO_HIGH", 0.45)
-LOW_RATE_BOND_PERCENTILE = _env_float("LOW_RATE_BOND_PERCENTILE", 30)
-CROWDING_LOW_PERCENTILE = _env_float("CROWDING_LOW_PERCENTILE", 30)
-CROWDING_HIGH_PERCENTILE = _env_float("CROWDING_HIGH_PERCENTILE", 70)
-MAX_DRAWDOWN_GOOD = _env_float("MAX_DRAWDOWN_GOOD", -0.25)
-MAX_DRAWDOWN_MID = _env_float("MAX_DRAWDOWN_MID", -0.40)
-VOLATILITY_WINDOW = _env_int("VOLATILITY_WINDOW", 252)
 
 BOND_HISTORY_PAGE_SIZE = _env_int("BOND_HISTORY_PAGE_SIZE", 500)
 REQUEST_TIMEOUT = _env_int("REQUEST_TIMEOUT", 15)
@@ -1315,9 +1297,6 @@ INDEX_PERF_URL = _env_str("INDEX_PERF_URL", _DEFAULT_INDEX_PERF_URL)
 SERVERCHAN_API_URL = _env_str("SERVERCHAN_API_URL", _DEFAULT_SERVERCHAN_API_URL)
 CSINDEX_INDICATOR_BASE_URL = _env_str(
     "CSINDEX_INDICATOR_BASE_URL", _DEFAULT_CSINDEX_INDICATOR_BASE_URL
-)
-CSINDEX_CLOSEWEIGHT_BASE_URL = _env_str(
-    "CSINDEX_CLOSEWEIGHT_BASE_URL", _DEFAULT_CSINDEX_CLOSEWEIGHT_BASE_URL
 )
 TENCENT_QUOTE_URL = _env_str("TENCENT_QUOTE_URL", _DEFAULT_TENCENT_QUOTE_URL)
 FRED_CSV_BASE_URL = _env_str("FRED_CSV_BASE_URL", _DEFAULT_FRED_CSV_BASE_URL)
@@ -1334,11 +1313,6 @@ if _bond_token:
 def indicator_xls_url(index_code):
     """中证指数指标文件地址（尊重环境变量覆盖后的 BASE URL）。"""
     return f"{CSINDEX_INDICATOR_BASE_URL}/{index_code}indicator.xls"
-
-
-def closeweight_xls_url(index_code):
-    """中证指数成分股权重文件地址（尊重环境变量覆盖后的 BASE URL）。"""
-    return f"{CSINDEX_CLOSEWEIGHT_BASE_URL}/{index_code}closeweight.xls"
 
 
 def fred_csv_url(series_id=None):
@@ -1370,10 +1344,6 @@ def load_config():
         if config["serverchan_sendkey"]:
             break
     return config
-
-
-def format_spread_percent(spread):
-    return f"{spread * 100:.1f}%"
 
 
 def select_indices(codes=None):

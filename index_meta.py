@@ -14,7 +14,6 @@ from config import (
     NDX_MARKET_DATA_START,
     SPX_INDEX,
     SPX_MARKET_DATA_START,
-    US_INDEX_KEYS,
     get_dividend_total_return_code,
 )
 
@@ -76,15 +75,3 @@ def iter_tracked_index_labels() -> list[tuple[str, str]]:
     labels.append((NDX_INDEX["code"], NDX_INDEX["name"]))
     labels.append((SPX_INDEX["code"], SPX_INDEX["name"]))
     return labels
-
-
-def us_index_key_for_code(code: str) -> str | None:
-    if code.upper() == NDX_INDEX["code"]:
-        return "ndx"
-    if code.upper() == SPX_INDEX["code"]:
-        return "spx"
-    return None
-
-
-def all_us_keys() -> list[str]:
-    return list(US_INDEX_KEYS)

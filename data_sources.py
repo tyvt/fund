@@ -196,7 +196,7 @@ DATA_SOURCES = [
         "provider": "中证指数有限公司",
         "frequency": "调仓日",
         "fields": "成分股及权重",
-        "used_by": ["config.closeweight_xls_url（预留）"],
+        "used_by": ["data_sources.closeweight_xls_url（预留）"],
         "env_override": "CSINDEX_CLOSEWEIGHT_BASE_URL",
         "notes": "当前脚本未直接拉取，已登记供后续扩展。",
     },

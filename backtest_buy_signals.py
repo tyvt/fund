@@ -60,7 +60,6 @@ from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_bel
 CN_BROAD_BACKTEST_INDICES = CN_BROAD_INDICES
 
 EXCLUDED_RANKING_NOTE = "收益率排名靠后，暂不推荐买卖"
-EXCLUDED_REFERENCE_AMOUNT = 100.0
 
 
 def is_ranking_excluded(code, amounts):
