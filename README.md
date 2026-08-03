@@ -96,44 +96,43 @@ python sync_data_cache.py --force   # 忽略当日缓存，强制重拉
 
 注册 Windows 定时任务：右键「以管理员身份运行」`setup_sync_task.bat`，将在每天 09:30（上海时区）自动执行 `run_sync_cache.bat`，日志写入 `logs/sync_cache.log`。
 
-### 回测（`backtest_buy_signals.py`）
+### 回测（`backtest_buy_signals.py` / `backtest_trade_signals.py`）
 
-按当前买入标准统计历史买入天数与定投收益。
+默认自各指数**基日**回测至最新，输出 `output/backtest/inception_present.md`（及 HTML）。
 
 ```bash
-# 默认回测 2025 年
+# 买入信号全量回测（默认：收益排名金额 + 分档）
 python backtest_buy_signals.py
 
-# 指定年份
-python backtest_buy_signals.py --year 2024 --year 2025
+# 列出买入日期 / 统一金额覆盖 / 组合仓位 / 禁用分档
+python backtest_buy_signals.py --list-dates
+python backtest_buy_signals.py --amount 500
+python backtest_buy_signals.py --portfolio
+python backtest_buy_signals.py --no-tier
 
-# 列出买入日期
-python backtest_buy_signals.py --year 2025 --list-dates
-
-# 每个买入信号投入 500 元（默认 300，设为 0 只统计次数）
-python backtest_buy_signals.py --year 2025 --amount 500
+# 买卖波段回测
+python backtest_trade_signals.py
+python backtest_trade_signals.py --portfolio
 ```
-
-回测结果自动写入 `output/backtest/{年份}.md`（每年一份，重新运行会覆盖），包含各指数统计、收益与买入日期。
 
 **指标/阈值调整后**：须跑自基日全量回测并重新生成 HTML，执行 `run_backtest_inception.bat`（或 `python backtest_buy_signals.py --portfolio` + `python backtest_trade_signals.py --portfolio`）。输出 `inception_present.html` 与 `trade_inception_present.html`。
 
 ### 买入金额（默认：位置 × 就绪度 + 分档）
 
-**实盘**：`REMAINING_INVESTMENT_BUDGET`（默认 **72,000 元**）表示**当年剩余可用额度**（非全年总额），按各指数当前**年区间位置**（越低越优先）与**买入就绪度**（达标比例/是否已触发买入）分配；系统外推**预计全年投入** = 剩余额度 ÷ 剩余天数比例。
+**实盘**：`REMAINING_INVESTMENT_BUDGET`（默认 **50,000 元**）表示**当年剩余可用额度**（非全年总额），按各指数当前**年区间位置**（越低越优先）与**买入就绪度**（达标比例/是否已触发买入）分配；系统外推**预计全年投入** = 剩余额度 ÷ 剩余天数比例。
 
 **回测**：仍按自基日策略收益率排名分配全年额度（`get_annual_budget`），与实盘逻辑分离。
 
-#### 各指数基准单次买入（元，截至 2026-07-31）
+#### 各指数基准单次买入（元，回退表；排名启用时会按缓存重算）
 
-| 代码 | 指数 | 策略收益 | 基准（元） |
-|------|------|--------:|----------:|
-| NDX | 纳斯达克100 | 411% | 61 |
-| SPX | 标普500 | 154% | 23 |
-| 399006 | 创业板指 | 124% | 18 |
-| H30269 | 红利低波动 | 82% | 12 |
-| 000688 | 科创50 | 77% | 11 |
-| 其余 8 只 | 见回测报告排名表 | 6%–45% | 10 |
+| 代码 | 指数 | 基准（元） |
+|------|------|----------:|
+| NDX | 纳斯达克100 | 61 |
+| SPX | 标普500 | 23 |
+| 399006 | 创业板指 | 18 |
+| H30269 | 红利低波动 | 12 |
+| 000688 | 科创50 | 11 |
+| 其余 | 宽基等 | 10 |
 
 #### 分档浮动（`range_8_fine`，默认启用）
 
@@ -145,10 +144,14 @@ python backtest_buy_signals.py --year 2025 --amount 500
 
 | 年区间位置 | 含义 | 系数 |
 |-----------|------|-----:|
-| 0%–22% | 近年内低位 | 1.30× |
-| 22%–38% | 偏低 | 1.10× |
-| 38%–52% | 标准 | 1.00× |
-| 52%–100% | 偏高 | 0.85× |
+| 0%–12% | 极低位 | 1.45× |
+| 12%–20% | 近年内低位 | 1.30× |
+| 20%–28% | 偏低 | 1.18× |
+| 28%–36% | 偏低偏中 | 1.08× |
+| 36%–44% | 标准 | 1.00× |
+| 44%–52% | 偏高 | 0.92× |
+| 52%–60% | 偏高 | 0.85× |
+| 60%–100% | 高位 | 0.75× |
 
 回测中对历史买入日做归一化，使总分投入接近预算；实盘按当日系数直接计算即可。
 
@@ -164,25 +167,12 @@ python backtest_buy_signals.py --year 2025 --amount 500
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `BUY_AMOUNT_POSITION_ALLOC_ENABLED` | `true` | 实盘按位置×就绪度分配剩余额度 |
-| `REMAINING_INVESTMENT_BUDGET` | `72000` | 当年剩余可用额度（元） |
+| `REMAINING_INVESTMENT_BUDGET` | `50000` | 当年剩余可用额度（元） |
 | `ANNUAL_INVESTMENT_TARGET` | `0`（自动外推） | 可选：显式指定全年投入目标 |
 | `BUY_AMOUNT_RANKING_ENABLED` | `true` | 回测按收益率排名分配全年额度 |
 | `BUY_AMOUNT_TIER_ENABLED` | `true` | 启用价格分档 |
 | `BUY_AMOUNT_TIER_SCHEME` | `range_8_fine` | 分档方案名 |
 | `{代码}_BUY_AMOUNT` | 见上表 | 覆盖单只指数基准金额 |
-
-#### 回测命令
-
-```bash
-# 默认（收益最大化 + 分档）
-python backtest_buy_signals.py --year 2025
-python backtest_trade_signals.py
-
-# 禁用分档 / 切换组合模式 / 统一金额
-python backtest_trade_signals.py --no-tier
-python backtest_trade_signals.py --portfolio
-python backtest_trade_signals.py --amount 300
-```
 
 ### 组合仓位（可选，`--portfolio`）
 
@@ -195,17 +185,17 @@ python backtest_trade_signals.py --amount 300
 | 科创50 | 10% | 000688 | 155 |
 | 卫星 | 20% | 创业板 / 中证1000 | 239 / 49（组内偏创业板） |
 
-- **组合模式不买入**：沪深300、中证500、恒生科技
+- **组合模式不买入**：上证50、沪深300、中证500、中证A50、中证A100、恒生科技
 
 ### 买卖波段回测
 
-按当前买入/卖出标准模拟波段交易（触发卖点时清仓）。**长期持有、无卖出**：红利（H30269）、美股（NDX/SPX）。**其余指数均探索止盈**：A 股宽基五只、创业板、恒生科技。
+按当前买入/卖出标准模拟波段交易（触发卖点时清仓）。**长期持有、无卖出**：红利（H30269）、美股（NDX/SPX）。**其余均探索止盈**：A 股宽基八只、创业板、恒生科技。
 
 ```bash
-python -c "from backtest_trade_signals import backtest_all, print_table, format_markdown, save_result; from config import resolve_backtest_amounts; a=resolve_backtest_amounts(portfolio_mode=True); r=backtest_all('2015-01-01', None, a); print_table(r, '2015-01-01', None, a)"
+python backtest_trade_signals.py --portfolio
 ```
 
-结果可写入 `output/backtest/trade_inception_present.md`（含买卖次数、收益对比及卖点日期）。
+结果写入 `output/backtest/trade_inception_present.md`（含买卖次数、收益对比及卖点日期）。
 
 ---
 
@@ -217,15 +207,20 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 |------|------|
 | `report.py` | **本地报告入口**。按模块拉取数据、评估信号、打印报告，不推送。 |
 | `push.py` | **微信推送入口**。调用 `report.generate_reports()` 生成报告，经 Server酱 推送。 |
-| `backtest_buy_signals.py` | 买入信号历史回测工具，统计各模块买入天数与定投收益。 |
+| `sync_data_cache.py` | 开盘前预拉各指数历史数据到 `cache/`。 |
+| `backtest_buy_signals.py` | 买入信号历史回测，统计买入天数与定投收益。 |
 | `backtest_trade_signals.py` | 买卖信号波段回测，对比买卖策略与仅买入持有。 |
 
 ### 批处理
 
 | 文件 | 作用 |
 |------|------|
+| `run_report.bat` | 本地运行 `report.py`。 |
 | `run_push.bat` | 定时任务执行脚本：调用 `push.py`，输出追加到 `logs/push.log`。 |
-| `setup_task.bat` | 一键注册 Windows 计划任务（工作日 14:00），并清理旧版单指数任务。 |
+| `run_sync_cache.bat` | 调用 `sync_data_cache.py`，日志写入 `logs/sync_cache.log`。 |
+| `run_backtest_inception.bat` | 一键自基日买入 + 买卖波段回测（组合仓位）。 |
+| `setup_task.bat` | 一键注册 Windows 计划任务（工作日 14:00 推送），并清理旧版单指数任务。 |
+| `setup_sync_task.bat` | 注册每天 09:30 缓存预拉任务。 |
 
 ### 策略模块
 
@@ -234,7 +229,7 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 | 模块 | 数据层 | 信号/报告层 | 覆盖指数 |
 |------|--------|-------------|----------|
 | 红利 | `dividend_data.py` | `core.py` | H30269 |
-| A股宽基 | `cn_broad_data.py` | `cn_broad_signal.py` | 000510、000300、000905、000852、000688 |
+| A股宽基 | `cn_broad_data.py` | `cn_broad_signal.py` | 000510、000016、000300、000905、000852、930050、000903、000688 |
 | 创业板 | `cyb_data.py` | `cyb_signal.py` | 399006 |
 | 恒生科技 | `hstech_data.py` | `hstech_signal.py` | HSTECH |
 | 美股 | `us_index_data.py` | `us_index_signal.py` | NDX、SPX |
@@ -248,12 +243,17 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 | 文件 | 作用 |
 |------|------|
 | `config.py` | 全局配置：指数列表、买卖阈值、环境变量读取、`push.env` 加载。 |
+| `index_meta.py` | 各指数基日与缓存/回测拉取范围。 |
 | `data_cache.py` | 历史数据本地缓存（A 股 / 美股分目录，按日刷新）。 |
 | `data_sources.py` | 数据源 URL 注册表与接口说明（中证、东财、FRED、新浪等）。 |
 | `market_data.py` | 公共行情工具：国债收益率、中证历史行情、分位计算、UTF-8 输出。 |
+| `realtime_quote.py` / `live_snapshot.py` | 盘中行情与实盘快照（叠加到报告）。 |
 | `signal_format.py` | 统一信号文案：买入/观望/卖出标记、判定条件块、模块标题格式。 |
 | `drop_to_buy.py` | 「再跌多少可触发买入」推演（含近1年区间位置，与回测一致） |
 | `price_position.py` | 近1年区间位置、距低点涨幅、距高点回撤及分层阈值计算 |
+| `sell_trailing.py` | 移动止盈（浮盈达标后自峰值回撤卖出） |
+| `buy_amount_*.py` | 买入金额：预算缩放、分档、位置分配、收益率排名、报告展示 |
+| `backtest_html.py` / `backtest_metrics.py` | 回测 HTML 图表与风险指标 |
 | `notify.py` | Server酱 微信推送封装，与报告生成解耦。 |
 
 ### 配置文件
@@ -269,9 +269,9 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 | 路径 | 作用 |
 |------|------|
-| `logs/` | **仅运行时日志**（如 `push.log`，由定时任务追加写入）。 |
+| `logs/` | **仅运行时日志**（如 `push.log`、`sync_cache.log`，由定时任务追加写入）。 |
 | `cache/` | 外部数据本地缓存：A 股/创业板/恒生科技（`cache/cn/` 等）、美股（`cache/us/`），按日刷新。 |
-| `output/backtest/` | 回测 Markdown 输出（`{年份}.md`、`trade_*.md`）。 |
+| `output/backtest/` | 回测输出（`inception_present.md/html`、`trade_inception_present.md/html`）。 |
 
 ---
 
@@ -288,15 +288,15 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 **分层规则**（`config.py` 全局默认，可通过 `push.env` 覆盖）：
 
 - **近1年低位**（区间位置 ≤ `BUY_NEAR_YEAR_LOW_RANGE_PCT`，默认 20%）：放宽估值门槛（PE/利差/利率/PEG 等），豁免距高点回撤要求（仅当区间 ≤ `BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT`，默认 12%），并放宽距低点涨幅上限。
-- **近1年中高位**（区间位置 > `BUY_MID_RANGE_POSITION_PCT`，默认 35%）：收紧距低点涨幅（上限降至 `BUY_MID_RANGE_MAX_ABOVE_LOW_PCT`，默认 2%），避免反弹途中追高。
+- **近1年中高位**（区间位置 > `BUY_MID_RANGE_POSITION_PCT`，默认 45%）：收紧距低点涨幅（上限降至 `BUY_MID_RANGE_MAX_ABOVE_LOW_PCT`，默认 6%），避免反弹途中追高。
 - **硬性上限**：无论估值多便宜，区间位置超过 `buy_max_year_range_pct` 一律不买。
-- **均线趋势**（`MA200` 斜率，默认 60 日变化率）：MA 斜率 ≥ `BUY_TREND_MIN_MA_SLOPE_PCT`（默认 -2.5%）视为企稳可买；若 MA 仍明显下行，仅当近1年区间 ≤ `BUY_TREND_DOWNTREND_MAX_RANGE_PCT`（默认 12%）才允许买入，避免熊市反弹途中追高。
+- **均线趋势**（`MA200` 斜率，默认 60 日变化率）：MA 斜率 ≥ `BUY_TREND_MIN_MA_SLOPE_PCT`（默认 -2%）视为企稳可买；若 MA 仍明显下行，仅当近1年区间 ≤ `BUY_TREND_DOWNTREND_MAX_RANGE_PCT`（默认 10%）才允许买入，避免熊市反弹途中追高。
 
-各指数 `buy_max_year_range_pct` 示例：沪深300 **45%**、中证1000 **46%**、科创50 **40%**、恒生科技 **42%**、纳指100 **45%**、标普500 **48%**。
+各指数 `buy_max_year_range_pct` 示例：沪深300 / 中证500 **36%**、中证1000 **34%**、科创50 **38%**、恒生科技 **42%**、纳指100 / 标普500 **68%**。
 
 **分指数独立变量**：宽基通过 `get_cn_broad_signal_config(code)`（`CN_BROAD_{代码}_*` 环境变量）；红利 `DIVIDEND_{代码}_*`；创业板/恒生科技/纳指/标普为 `CYB_*` / `HSTECH_*` / `NDX_*` / `SPX_*`（含 `BUY_TREND_*`、`BUY_MID_RANGE_*` 等）。默认值见 `config.py` 中 `_CN_BROAD_PER_INDEX_DEFAULTS` 与各模块常量。
 
-上述指标已接入：`report.py` 报告输出、`backtest_buy_signals.py` / `backtest_trade_signals.py` 回测、`drop_to_buy.py` 盘中推演。红利模块不使用 MA 趋势过滤（策略为股息率+利差，价格位置口径为 60 日）。
+上述指标已接入：`report.py` 报告输出、`backtest_buy_signals.py` / `backtest_trade_signals.py` 回测、`drop_to_buy.py` 盘中推演。红利模块不使用 MA 趋势过滤（策略为股息率+利差，距低点口径为 90 日）。
 
 趋势相关环境变量（见 `push.example.env`）：`BUY_TREND_MA_DAYS`、`BUY_TREND_SLOPE_LOOKBACK_DAYS`、`BUY_TREND_MIN_MA_SLOPE_PCT`、`BUY_TREND_DOWNTREND_MAX_RANGE_PCT`。
 
@@ -310,32 +310,35 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 | 指数 | 代码 | 买入条件（须全部满足） |
 |------|------|------------------------|
-| 中证红利低波动 | H30269 | 利差 **> 2.8%**；利差分位 **≥ 40%**；PE 分位 **≤ 74%**；距低点 **≤ 6%**；近1年区间 **≤ 62%**；高点回撤 **≥ 10%** |
+| 中证红利低波动 | H30269 | 利差 **> 2.8%**；利差分位 **≥ 40%**；PE 分位 **≤ 74%**；距 90 日低点 **≤ 6%**；近1年区间 **≤ 62%**；高点回撤 **≥ 10%** |
 
 - **分位窗口**：利差分位约 3 年（756 交易日）；PE 分位同窗口。
 - **近1年低位放宽**：区间位置 ≤ 20% 时，利差分位门槛 −10、PE 分位上限 +12，绝对利差门槛 −1.2%；区间位置 ≤ 5% 时可豁免绝对利差硬门槛；分位样本不足时允许仅凭价格位置买入。
 - **卖出**：无（长期持有型）。
 - **回测收益**：使用中证全收益指数（H30269→H20269）估算，含分红再投资。
 
-### A 股宽基（cn_broad）— 五只均启用止盈
+### A 股宽基（cn_broad）— 八只均启用止盈
 
 **买入逻辑**：股债利差分位、PE 分位、PB 分位（有数据时）等纳入评分，须 **多数指标 favorable**（`score ≥ max(3, total−1)` 且 `total ≥ 2`），且股债利差达标；同时须通过**价格位置硬过滤**（距低点、高点回撤、近1年区间、MA 趋势）。
 
-**卖出逻辑**（五只宽基均启用，策略分两类）：
+**卖出逻辑**（八只宽基均启用，策略分两类）：
 
-1. **移动止盈**（沪深300/中证500/A500/科创50）：浮盈达标后，自持仓期峰值回撤超过阈值则清仓。
+1. **移动止盈**（多数宽基）：浮盈达标后，自持仓期峰值回撤超过阈值则清仓。
 2. **估值卖点**（中证1000 为主）：PE 分位偏高且（利差收敛 / 距低点涨幅过大 / PB 偏高）；可选近1年区间高位 + PE 组合门槛。
 3. 卖出与买入互斥：当日若仍满足买入条件，不触发卖出。
 
 | 指数 | 代码 | 买入（分位窗口约 10 年） | 卖出 |
 |------|------|--------------------------|------|
 | 中证 A500 | 000510 | 利差分位 **≥ 50%**；PE **≤ 72%**；PB **≤ 68%**；距 90 日低点 **≤ 10%**；近1年区间 **≤ 58%** | 移动止盈：浮盈 **≥ 50%** 后峰值回撤 **≥ 12%** |
-| 沪深300 | 000300 | 利差 **≥ 65%**；PE **≤ 54%**；PB **≤ 58%**；距低点 **≤ 5%**；近1年区间 **≤ 36%**；高点回撤 **≥ 16%** | 移动止盈：浮盈 **≥ 60%** 后峰值回撤 **≥ 10%** |
-| 中证500 | 000905 | 利差 **≥ 68%**；PE **≤ 54%**；PB **≤ 58%**；距低点 **≤ 5%**；近1年区间 **≤ 36%** | 移动止盈：浮盈 **≥ 50%** 后峰值回撤 **≥ 12%** |
-| 中证1000 | 000852 | 利差 **≥ 70%**；PE **≤ 52%**；PB **≤ 56%**；距低点 **≤ 5%**；近1年区间 **≤ 34%** | 估值：PE **≥ 82%** 且距低点 **≥ 24%**；移动止盈兜底：浮盈 **≥ 40%** 后回撤 **≥ 10%** |
-| 科创50 | 000688 | 利差 **≥ 64%**；PE **≤ 52%**；PB **≤ 58%**；距低点 **≤ 7%**；近1年区间 **≤ 38%** | 移动止盈：浮盈 **≥ 80%** 后峰值回撤 **≥ 14%** |
+| 上证50 | 000016 | 利差 **≥ 65%**；PE **≤ 54%**；PB **≤ 58%**；距低点 **≤ 5%**；近1年区间 **≤ 36%**；高点回撤 **≥ 16%** | 移动止盈：浮盈 **≥ 40%** 后峰值回撤 **≥ 6.5%** |
+| 沪深300 | 000300 | 利差 **≥ 65%**；PE **≤ 54%**；PB **≤ 58%**；距低点 **≤ 5%**；近1年区间 **≤ 36%**；高点回撤 **≥ 16%** | 移动止盈：浮盈 **≥ 60%** 后峰值回撤 **≥ 6%** |
+| 中证500 | 000905 | 利差 **≥ 68%**；PE **≤ 54%**；PB **≤ 58%**；距低点 **≤ 5%**；近1年区间 **≤ 36%**；高点回撤 **≥ 16%** | 移动止盈：浮盈 **≥ 50%** 后峰值回撤 **≥ 10.5%** |
+| 中证1000 | 000852 | 利差 **≥ 70%**；PE **≤ 52%**；PB **≤ 56%**；距低点 **≤ 5%**；近1年区间 **≤ 34%**；高点回撤 **≥ 16%** | 估值：PE **≥ 82%** 且距低点 **≥ 24%**；移动止盈兜底：浮盈 **≥ 40%** 后回撤 **≥ 10%** |
+| 中证 A50 | 930050 | 利差分位 **≥ 50%**；PE **≤ 72%**；PB **≤ 68%**；距 90 日低点 **≤ 10%**；近1年区间 **≤ 58%** | 移动止盈：浮盈 **≥ 50%** 后峰值回撤 **≥ 12%** |
+| 中证 A100 | 000903 | 利差 **≥ 62%**；PE **≤ 58%**；PB **≤ 62%**；距低点 **≤ 7%**；近1年区间 **≤ 42%**；高点回撤 **≥ 14%** | 移动止盈：浮盈 **≥ 55%** 后峰值回撤 **≥ 8%** |
+| 科创50 | 000688 | 利差 **≥ 64%**；PE **≤ 52%**；PB **≤ 58%**；距低点 **≤ 7%**；近1年区间 **≤ 38%**；高点回撤 **≥ 14%** | 移动止盈：浮盈 **≥ 80%** 后峰值回撤 **≥ 12.5%** |
 
-- **说明**：000510 与中证500（000905）为不同指数；A500 自 2024-09 发布，历史样本较短。
+- **说明**：000510 与中证500（000905）为不同指数；A500 / A50 自 2024 发布，历史样本较短。组合模式下上证50 / 沪深300 / 中证500 / A50 / A100 单次买入为 0（仍可在 `cn_broad` 报告中查看信号）。
 - **环境变量前缀**：`CN_BROAD_{代码}_*`（A500 另兼容 `A500_*`）。
 
 ### 创业板指（cyb）— 移动止盈 + 估值卖点
@@ -362,8 +365,8 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 | 指数 | 代码 | 买入条件（须全部满足） |
 |------|------|------------------------|
-| 纳斯达克 100 | NDX | Forward PE 分位 **≤ 75%**（无 Forward 时退化为 TTM PE **≤ 78%**）；PEG(Forward) **≤ 1.45**（高增速时上限 +0.2）；10Y 美债利率分位 **≤ 99%**；距 90 日低点 **≤ 14%**；近1年区间 **≤ 45%**；距高点回撤 **≥ 10%**；MA 趋势过滤 |
-| 标普 500 | SPX | Forward PE 分位 **≤ 78%**；PEG(Forward) **≤ 1.35**（高增速 +0.15）；利率分位 **≤ 99%**；距低点 **≤ 12%**；近1年区间 **≤ 48%**；高点回撤 **≥ 8%**；MA 趋势过滤 |
+| 纳斯达克 100 | NDX | Forward PE 分位 **≤ 75%**（无 Forward 时退化为 TTM PE **≤ 78%**）；PEG(Forward) **≤ 1.45**（高增速时上限 +0.2）；10Y 美债利率分位 **≤ 99%**；距 90 日低点 **≤ 14%**；近1年区间 **≤ 68%**；距高点回撤 **≥ 10%**；MA 趋势过滤 |
+| 标普 500 | SPX | Forward PE 分位 **≤ 78%**；PEG(Forward) **≤ 1.35**（高增速 +0.15）；利率分位 **≤ 99%**；距低点 **≤ 12%**；近1年区间 **≤ 68%**；高点回撤 **≥ 8%**；MA 趋势过滤 |
 
 - **PEG 增速**：显式配置 → 隐含增速（trailing/forward−1）→ 历史 5 年盈利增速 → 兜底（NDX **19%**、SPX **10%**）。
 - **近1年低位放宽**：PE/利率/PEG 门槛放宽，豁免距高点回撤。
@@ -374,8 +377,8 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 | 模块 | 指数数 | 买入核心 | 卖出核心 |
 |------|--------|----------|----------|
-| 红利 | 2 | 股息利差 + 利差/PE 分位 + 价格位置 | 无（长期持有） |
-| 宽基 | 5 | 股债利差分位 + PE/PB 分位 + 价格位置（评分制） | 移动止盈；中证1000 另加估值卖点 |
+| 红利 | 1 | 股息利差 + 利差/PE 分位 + 价格位置 | 无（长期持有） |
+| 宽基 | 8 | 股债利差分位 + PE/PB 分位 + 价格位置（评分制） | 移动止盈；中证1000 另加估值卖点 |
 | 创业板 | 1 | PE/PB 分位 + PEG(5年) + 价格位置 | 移动止盈 + 估值/PEG |
 | 恒科 | 1 | PE + PEG + 股息率分位 + 价格位置 | 移动止盈 + 估值 |
 | 美股 | 2 | Forward PE + PEG + 利率分位 + 价格位置 | 无（长期持有） |
@@ -386,32 +389,28 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 ```
 投资推送/
-├── report.py              # 本地报告入口
-├── push.py                # 微信推送入口
-├── core.py                # 红利信号与报告
-├── dividend_data.py
+├── report.py / push.py / sync_data_cache.py
+├── core.py / dividend_data.py
 ├── cn_broad_data.py / cn_broad_signal.py
 ├── cyb_data.py / cyb_signal.py
 ├── hstech_data.py / hstech_signal.py
 ├── us_index_data.py / us_index_signal.py
-├── config.py              # 配置与阈值
-├── data_cache.py          # 本地数据缓存
-├── data_sources.py        # 数据源地址
-├── market_data.py         # 公共行情
-├── signal_format.py       # 输出格式
-├── drop_to_buy.py         # 跌多少买入（含近1年价格位置）
-├── price_position.py      # 价格位置指标
-├── notify.py              # 微信推送
-├── backtest_buy_signals.py
-├── backtest_trade_signals.py
-├── run_push.bat
-├── setup_task.bat
+├── config.py / index_meta.py / data_sources.py / data_cache.py
+├── market_data.py / realtime_quote.py / live_snapshot.py
+├── signal_format.py / drop_to_buy.py / price_position.py / sell_trailing.py
+├── buy_amount_config.py / buy_amount_budget.py / buy_amount_tiers.py
+├── buy_amount_allocation.py / buy_amount_ranking.py
+├── backtest_buy_signals.py / backtest_trade_signals.py
+├── backtest_html.py / backtest_metrics.py
+├── notify.py
+├── run_report.bat / run_push.bat / run_sync_cache.bat
+├── run_backtest_inception.bat / setup_task.bat / setup_sync_task.bat
 ├── push.example.env
 ├── .gitignore
 ├── push.env               # 本地配置（勿提交）
-├── logs/                  # 运行时日志（push.log）
+├── logs/                  # 运行时日志
 ├── cache/                 # 外部数据缓存
-└── output/backtest/       # 回测 Markdown 输出
+└── output/backtest/       # 回测 Markdown / HTML
 ```
 
 ---

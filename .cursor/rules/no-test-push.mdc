@@ -17,7 +17,7 @@ alwaysApply: true
 # ✅ 开发/调试：本地看报告（默认全部模块）
 python report.py
 python report.py -m dividend --index H30269
-python report.py -m a500
+python report.py -m cn_broad
 python report.py -m cyb
 
 # ❌ 不要在开发调试时使用（除非用户明确要求）
