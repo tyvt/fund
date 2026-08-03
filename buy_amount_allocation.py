@@ -232,26 +232,24 @@ def collect_index_states(live_quotes=None) -> list[dict]:
     return [row for row in rows if row and row["code"] in ALL_BUY_INDEX_CODES]
 
 
-def _allocation_fingerprint(states: list[dict]) -> str:
+def _live_quotes_fingerprint(live_quotes) -> str:
+    if not live_quotes:
+        return "nolive"
+    parts = []
+    for code in sorted(live_quotes):
+        quote = live_quotes[code]
+        price = getattr(quote, "price", None)
+        if price is None:
+            continue
+        parts.append(f"{code}:{round(float(price), 2)}")
+    return "|".join(parts) if parts else "nolive"
+
+
+def _light_allocation_fingerprint(live_quotes=None) -> str:
+    """不依赖全量状态的轻量指纹，用于在拉数前判断磁盘缓存是否可用。"""
     from buy_amount_ranking import _data_cache_fingerprint
 
-    parts = [_data_cache_fingerprint()]
-    for row in sorted(states, key=lambda item: item["code"]):
-        snap = row["snapshot"]
-        sig = row["signal_eval"]
-        parts.append(
-            "|".join(
-                [
-                    row["code"],
-                    str(snap.get("close")),
-                    str(snap.get("year_range_position")),
-                    str(sig.get("is_buy")),
-                    str(sig.get("score")),
-                    str(sig.get("total")),
-                ]
-            )
-        )
-    return "#".join(parts)
+    return f"{_data_cache_fingerprint()}#live:{_live_quotes_fingerprint(live_quotes)}"
 
 
 def compute_position_allocation(
@@ -265,23 +263,24 @@ def compute_position_allocation(
     from buy_amount_ranking import compute_index_ranking
 
     today = date.today().isoformat()
-    states = collect_index_states(live_quotes=live_quotes)
-    fingerprint = _allocation_fingerprint(states)
+    light_fp = _light_allocation_fingerprint(live_quotes)
 
-    if (
-        not force
-        and _ALLOCATION_CACHE is not None
-        and _ALLOCATION_CACHE.get("day") == today
-        and _ALLOCATION_CACHE.get("fingerprint") == fingerprint
-    ):
-        return _ALLOCATION_CACHE["result"]
+    # 同进程复用：enrich 无 live_quotes 时直接复用；有 live 时指纹一致才复用
+    if not force and _ALLOCATION_CACHE is not None and _ALLOCATION_CACHE.get("day") == today:
+        if live_quotes is None or _ALLOCATION_CACHE.get("fingerprint") == light_fp:
+            return _ALLOCATION_CACHE["result"]
 
     if not force:
-        disk = _load_allocation_disk_cache(fingerprint)
+        disk = _load_allocation_disk_cache(light_fp)
         if disk is not None:
-            _ALLOCATION_CACHE = {"day": today, "fingerprint": fingerprint, "result": disk}
+            _ALLOCATION_CACHE = {
+                "day": today,
+                "fingerprint": light_fp,
+                "result": disk,
+            }
             return disk
 
+    states = collect_index_states(live_quotes=live_quotes)
     ranking = compute_index_ranking(force=False)
     returns = ranking.get("returns") or {}
     buy_counts = ranking.get("buy_counts") or {}
@@ -365,8 +364,8 @@ def compute_position_allocation(
         "year_time": time_info,
         "allocation_mode": "position",
     }
-    _ALLOCATION_CACHE = {"day": today, "fingerprint": fingerprint, "result": result}
-    _save_allocation_disk_cache(fingerprint, result)
+    _ALLOCATION_CACHE = {"day": today, "fingerprint": light_fp, "result": result}
+    _save_allocation_disk_cache(light_fp, result)
     return result
 
 

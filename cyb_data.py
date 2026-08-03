@@ -180,6 +180,14 @@ def attach_percentiles(
 
 def fetch_cyb_snapshot(expected_growth=None):
     """拉取创业板指最新估值指标与历史分位。"""
+    from data_cache import run_memo
+
+    growth_key = "default" if expected_growth is None else str(expected_growth)
+    return run_memo(f"cyb:{growth_key}", lambda: _fetch_cyb_snapshot_uncached(expected_growth))
+
+
+def _fetch_cyb_snapshot_uncached(expected_growth=None):
+    """拉取创业板指最新估值指标与历史分位（无进程内记忆）。"""
     panel = build_cyb_valuation_panel()
     if panel is None or panel.empty:
         raise RuntimeError("无法构建创业板指估值历史序列")
@@ -263,18 +271,19 @@ def fetch_cyb_snapshot(expected_growth=None):
         compute_peak_since_last_buy_from_column,
         compute_recent_signal_buy_avg_from_column,
         last_buy_date_from_column,
+        row_field,
     )
 
     def _row_snap(row):
         return {
-            "pe": row["pe"],
-            "pb": row["pb"],
-            "pe_percentile": row.get("pe_percentile"),
-            "pb_percentile": row.get("pb_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
+            "pe": row_field(row, "pe"),
+            "pb": row_field(row, "pb"),
+            "pe_percentile": row_field(row, "pe_percentile"),
+            "pb_percentile": row_field(row, "pb_percentile"),
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "pct_below_high": row_field(row, "pct_below_high"),
+            "year_range_position": row_field(row, "year_range_position"),
+            "ma_slope_pct": row_field(row, "ma_slope_pct"),
         }
 
     panel = attach_buy_signal_column(panel, evaluate_cyb_signal, _row_snap)

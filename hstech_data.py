@@ -191,6 +191,16 @@ def attach_percentiles(
 
 
 def fetch_hstech_snapshot(expected_growth=None):
+    from data_cache import run_memo
+
+    growth_key = "default" if expected_growth is None else str(expected_growth)
+    return run_memo(
+        f"hstech:{growth_key}",
+        lambda: _fetch_hstech_snapshot_uncached(expected_growth),
+    )
+
+
+def _fetch_hstech_snapshot_uncached(expected_growth=None):
     panel = build_hstech_valuation_panel()
     if panel is None or panel.empty:
         raise RuntimeError("无法构建恒生科技指数估值历史序列")
@@ -221,20 +231,21 @@ def fetch_hstech_snapshot(expected_growth=None):
         compute_peak_since_last_buy_from_column,
         compute_recent_signal_buy_avg_from_column,
         last_buy_date_from_column,
+        row_field,
     )
 
     latest = panel.iloc[-1]
 
     def _row_snap(row):
         return {
-            "pe": row["pe"],
-            "pe_percentile": row.get("pe_percentile"),
-            "dividend_percentile": row.get("dividend_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
-            "close": row.get("close"),
+            "pe": row_field(row, "pe"),
+            "pe_percentile": row_field(row, "pe_percentile"),
+            "dividend_percentile": row_field(row, "dividend_percentile"),
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "pct_below_high": row_field(row, "pct_below_high"),
+            "year_range_position": row_field(row, "year_range_position"),
+            "ma_slope_pct": row_field(row, "ma_slope_pct"),
+            "close": row_field(row, "close"),
         }
 
     panel = attach_buy_signal_column(panel, evaluate_hstech_signal, _row_snap)

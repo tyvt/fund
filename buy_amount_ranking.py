@@ -91,6 +91,14 @@ def _preload_ranking_panels(panels) -> None:
 _RANKING_SIM_AMOUNT = 100.0
 
 
+_CACHE_FINGERPRINT_SKIP = frozenset(
+    {
+        _RANKING_DISK_NAME,
+        "position_allocation.json",
+    }
+)
+
+
 def _data_cache_fingerprint() -> str:
     """用本地缓存文件元数据生成指纹，避免为校验缓存而加载全部面板。"""
     from config import DATA_CACHE_DIR, US_DATA_CACHE_DIR
@@ -102,7 +110,7 @@ def _data_cache_fingerprint() -> str:
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
-            if path.name == _RANKING_DISK_NAME:
+            if path.name in _CACHE_FINGERPRINT_SKIP:
                 continue
             stat = path.stat()
             parts.append(
@@ -155,7 +163,7 @@ def _rank_one_config(cfg, date_range):
 def compute_index_ranking(panels=None, *, force: bool = False):
     """计算各指数自基日买入持有收益率排名，并分配年度额度。"""
     global _RANKING_CACHE
-    from backtest_buy_signals import BacktestPanels, default_backtest_range
+    from backtest_buy_signals import default_backtest_range, get_panels
     from config import ANNUAL_INVESTMENT_BUDGET, BUY_AMOUNT_RANKING_ENABLED
 
     if not BUY_AMOUNT_RANKING_ENABLED:
@@ -189,7 +197,8 @@ def compute_index_ranking(panels=None, *, force: bool = False):
     ):
         return _RANKING_CACHE["result"]
 
-    panels = panels or BacktestPanels()
+    # 与回测共用全局面板缓存，避免排名与回测各建一套
+    panels = panels or get_panels()
     _preload_ranking_panels(panels)
     fingerprint = _data_cache_fingerprint()
     date_range = default_backtest_range()

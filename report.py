@@ -185,8 +185,10 @@ def generate_reports(
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
     from concurrent.futures import ThreadPoolExecutor
     from config import BUY_AMOUNT_POSITION_ALLOC_ENABLED, BUY_AMOUNT_RANKING_ENABLED
+    from data_cache import clear_run_memo
     from realtime_quote import fetch_live_quotes
 
+    clear_run_memo()
     live_quotes = fetch_live_quotes()
 
     if BUY_AMOUNT_POSITION_ALLOC_ENABLED:

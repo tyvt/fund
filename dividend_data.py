@@ -327,19 +327,36 @@ def is_buy_signal(
 
 def is_buy_signal_row(row, index_code):
     """基于估值面板行判断是否买入（与回测/报告共用）。"""
+    from sell_trailing import row_field
+
     return is_buy_signal(
-        row.get("spread"),
-        row.get("spread_percentile"),
-        row.get("pe_percentile"),
+        row_field(row, "spread"),
+        row_field(row, "spread_percentile"),
+        row_field(row, "pe_percentile"),
         index_code,
-        pct_above_low=row.get("pct_above_low"),
-        pct_below_high=row.get("pct_below_high"),
-        year_range_position=row.get("year_range_position"),
+        pct_above_low=row_field(row, "pct_above_low"),
+        pct_below_high=row_field(row, "pct_below_high"),
+        year_range_position=row_field(row, "year_range_position"),
     )
 
 
 def evaluate_buy_signal(index_code, pe, dividend_yield, bond_yield, bond_history=None):
     """评估当前是否满足买入条件（与回测共用滚动分位及历史面板末行）。"""
+    from data_cache import run_memo
+
+    # pe/股息入参仅作兼容；实际指标来自历史面板末行，按指数代码记忆即可
+    return run_memo(
+        f"dividend_eval:{index_code}",
+        lambda: _evaluate_buy_signal_uncached(
+            index_code, pe, dividend_yield, bond_yield, bond_history
+        ),
+    )
+
+
+def _evaluate_buy_signal_uncached(
+    index_code, pe, dividend_yield, bond_yield, bond_history=None
+):
+    """评估买入条件（无进程内记忆）。"""
     if bond_history is None:
         bond_history = get_gov_bond_yield_history()
 

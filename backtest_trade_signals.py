@@ -8,7 +8,6 @@ from backtest_metrics import compute_strategy_metrics
 from backtest_buy_signals import (
     BACKTEST_RETURN_FOOTNOTE,
     CN_BROAD_BACKTEST_INDICES,
-    BacktestPanels,
     BacktestRange,
     EXCLUDED_RANKING_NOTE,
     US_INDEX_META,
@@ -169,23 +168,25 @@ def _cn_broad_valuation_sell_fn(code):
     cfg = get_cn_broad_signal_config(code)
     if not cn_broad_valuation_sell_enabled(cfg):
         return None
+    from sell_trailing import row_field
 
     def _sell(row):
         snap = {
             "code": code,
-            "pe_percentile": row.get("pe_percentile"),
-            "pb_percentile": row.get("pb_percentile"),
-            "spread_percentile": row.get("spread_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "year_range_position": row.get("year_range_position"),
+            "pe_percentile": row_field(row, "pe_percentile"),
+            "pb_percentile": row_field(row, "pb_percentile"),
+            "spread_percentile": row_field(row, "spread_percentile"),
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "year_range_position": row_field(row, "year_range_position"),
         }
         buy_ev = evaluate_cn_broad_buy(
             {
                 **snap,
-                "pct_below_high": row.get("pct_below_high"),
-                "year_range_position": row.get("year_range_position"),
-                "ma_slope_pct": row.get("ma_slope_pct"),
-            }
+                "pct_below_high": row_field(row, "pct_below_high"),
+                "year_range_position": row_field(row, "year_range_position"),
+                "ma_slope_pct": row_field(row, "ma_slope_pct"),
+            },
+            buy_only=True,
         )
         return valuation_sell_hit_cn_broad(snap, cfg) and not buy_ev["is_buy"]
 
@@ -251,55 +252,116 @@ def _hstech_trailing_cfg():
     }
 
 
+def _signal_cache_key(row):
+    from sell_trailing import row_field
+
+    key = row_field(row, "_dt")
+    if key is not None:
+        return key
+    return row_field(row, "date")
+
+
+def _cached_signal_pair(eval_pair_fn):
+    """同一交易日买卖信号只评估一次，避免 buy_fn/sell_fn 各算一遍。"""
+    cache = {}
+
+    def _lookup(row):
+        key = _signal_cache_key(row)
+        hit = cache.get(key)
+        if hit is None:
+            hit = eval_pair_fn(row)
+            cache[key] = hit
+        return hit
+
+    return (lambda row: _lookup(row)[0], lambda row: _lookup(row)[1])
+
+
+def _cn_broad_row_snapshot(row, index_code):
+    from sell_trailing import row_field
+
+    return {
+        "code": index_code,
+        "pe_percentile": row_field(row, "pe_percentile"),
+        "pb_percentile": row_field(row, "pb_percentile"),
+        "dividend_percentile": row_field(row, "dividend_percentile"),
+        "spread_percentile": row_field(row, "spread_percentile"),
+        "pct_above_low": row_field(row, "pct_above_low"),
+        "pct_below_high": row_field(row, "pct_below_high"),
+        "year_range_position": row_field(row, "year_range_position"),
+        "ma_slope_pct": row_field(row, "ma_slope_pct"),
+    }
+
+
 def _cn_broad_signals(row, index_code):
-    ev = evaluate_cn_broad_buy(
-        {
-            "code": index_code,
-            "pe_percentile": row.get("pe_percentile"),
-            "pb_percentile": row.get("pb_percentile"),
-            "dividend_percentile": row.get("dividend_percentile"),
-            "spread_percentile": row.get("spread_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
-        }
-    )
+    ev = evaluate_cn_broad_buy(_cn_broad_row_snapshot(row, index_code))
     return ev["is_buy"], ev.get("is_sell", False)
+
+
+def _cn_broad_signal_fns(index_code, *, buy_only=False):
+    if buy_only:
+        def buy_fn(row, c=index_code):
+            return evaluate_cn_broad_buy(
+                _cn_broad_row_snapshot(row, c), buy_only=True
+            )["is_buy"]
+
+        return buy_fn, None
+    return _cached_signal_pair(lambda row, c=index_code: _cn_broad_signals(row, c))
 
 
 def _cyb_signals(row):
+    from sell_trailing import row_field
+
     ev = evaluate_cyb_signal(
         {
-            "pe": row["pe"],
-            "pb": row["pb"],
-            "pe_percentile": row.get("pe_percentile"),
-            "pb_percentile": row.get("pb_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
+            "pe": row_field(row, "pe"),
+            "pb": row_field(row, "pb"),
+            "pe_percentile": row_field(row, "pe_percentile"),
+            "pb_percentile": row_field(row, "pb_percentile"),
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "pct_below_high": row_field(row, "pct_below_high"),
+            "year_range_position": row_field(row, "year_range_position"),
+            "ma_slope_pct": row_field(row, "ma_slope_pct"),
         }
     )
     return ev["is_buy"], ev.get("is_sell", False)
 
 
+def _cyb_signal_fns(*, buy_only=False):
+    if buy_only:
+        def buy_fn(row):
+            return _cyb_signals(row)[0]
+
+        return buy_fn, None
+    return _cached_signal_pair(_cyb_signals)
+
+
 def _hstech_row_snapshot(row):
+    from sell_trailing import row_field
+
     return {
-        "pe": row["pe"],
-        "pe_percentile": row.get("pe_percentile"),
-        "dividend_percentile": row.get("dividend_percentile"),
-        "pct_above_low": row.get("pct_above_low"),
-        "pct_below_high": row.get("pct_below_high"),
-        "year_range_position": row.get("year_range_position"),
-        "ma_slope_pct": row.get("ma_slope_pct"),
-        "close": row.get("close"),
+        "pe": row_field(row, "pe"),
+        "pe_percentile": row_field(row, "pe_percentile"),
+        "dividend_percentile": row_field(row, "dividend_percentile"),
+        "pct_above_low": row_field(row, "pct_above_low"),
+        "pct_below_high": row_field(row, "pct_below_high"),
+        "year_range_position": row_field(row, "year_range_position"),
+        "ma_slope_pct": row_field(row, "ma_slope_pct"),
+        "close": row_field(row, "close"),
     }
 
 
 def _hstech_signals(row):
     ev = evaluate_hstech_signal(_hstech_row_snapshot(row))
     return ev["is_buy"], ev.get("is_sell", False)
+
+
+def _hstech_signal_fns(*, buy_only=False):
+    if buy_only:
+        def buy_fn(row):
+            return _hstech_signals(row)[0]
+
+        return buy_fn, None
+    return _cached_signal_pair(_hstech_signals)
 
 
 def _attach_risk_metrics(
@@ -374,7 +436,9 @@ def simulate_trades(
     buy_dates = []
     sell_dates = []
 
-    for _, row in sample.iterrows():
+    cols = sample.columns.tolist()
+    for tup in sample.itertuples(index=False, name=None):
+        row = dict(zip(cols, tup))
         price = float(row[val_col])
         day = row["_dt"].strftime("%Y-%m-%d")
         is_buy = buy_fn(row) if buy_fn else False
@@ -443,9 +507,15 @@ def backtest_all(
     amounts=None,
     panels=None,
 ):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backtest_buy_signals import get_panels
+    from buy_amount_ranking import _preload_ranking_panels
+
     if amounts is None:
         amounts = resolve_backtest_amounts()
-    panels = panels or BacktestPanels()
+    panels = panels or get_panels()
+    _preload_ranking_panels(panels)
     results = []
 
     for item in INDICES:
@@ -503,13 +573,13 @@ def backtest_all(
                 )
             )
 
-    for item in CN_BROAD_BACKTEST_INDICES:
+    def _backtest_cn_broad(item):
         panel = panels.cn_broad_panel(item["code"])
         code = item["code"]
         amt = get_backtest_buy_amount(code, amounts)
         sell_on = cn_broad_sell_enabled(code)
-        buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
-        sell_fn = lambda r, c=code: _cn_broad_signals(r, c)[1]
+        trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
+        buy_fn, sell_fn = _cn_broad_signal_fns(code, buy_only=not sell_on)
         excluded = _skip_or_excluded_trade(
             amt,
             amounts,
@@ -522,9 +592,7 @@ def backtest_all(
             has_sell=sell_on,
         )
         if excluded is not None:
-            results.extend(excluded)
-            continue
-        trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
+            return excluded
         val_sell_fn = _cn_broad_valuation_sell_fn(code) if sell_on else None
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
@@ -541,34 +609,39 @@ def backtest_all(
             trailing_cfg=trail_cfg,
             valuation_sell_fn=val_sell_fn,
         )
-        if stats:
-            ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
-            metrics = _attach_risk_metrics(
-                panel,
-                start_date,
-                end_date,
-                amt,
-                buy_fn,
-                sell_fn,
-                sell_on,
-                ret,
+        if not stats:
+            return []
+        ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
+        metrics = _attach_risk_metrics(
+            panel,
+            start_date,
+            end_date,
+            amt,
+            buy_fn,
+            sell_fn,
+            sell_on,
+            ret,
+        )
+        metrics.pop("trading_days", None)
+        stats.update(metrics)
+        return [
+            TradeResult(
+                code=code,
+                name=item["name"],
+                has_sell=sell_on,
+                **stats,
             )
-            metrics.pop("trading_days", None)
-            stats.update(metrics)
-            results.append(
-                TradeResult(
-                    code=code,
-                    name=item["name"],
-                    has_sell=sell_on,
-                    **stats,
-                )
-            )
+        ]
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(CN_BROAD_BACKTEST_INDICES)))) as executor:
+        for chunk in executor.map(_backtest_cn_broad, CN_BROAD_BACKTEST_INDICES):
+            results.extend(chunk)
 
     cyb_panel = panels.cyb_panel()
     cyb_code = CYB_INDEX["code"]
     cyb_amt = get_backtest_buy_amount(cyb_code, amounts)
-    cyb_buy = lambda r: _cyb_signals(r)[0]
-    cyb_sell = lambda r: _cyb_signals(r)[1]
+    trail_cfg = _cyb_trailing_cfg()
+    cyb_buy, cyb_sell = _cyb_signal_fns(buy_only=not CYB_SELL_ENABLED)
     excluded = _skip_or_excluded_trade(
         cyb_amt,
         amounts,
@@ -587,7 +660,6 @@ def backtest_all(
         sim_amt = _resolve_trade_amount(
             cyb_code, cyb_amt, amounts, cyb_panel, start_date, end_date, cyb_buy
         )
-        trail_cfg = _cyb_trailing_cfg()
         stats = _run_index_trades(
             cyb_panel,
             cyb_code,
@@ -626,8 +698,8 @@ def backtest_all(
     hstech_panel = panels.hstech_panel()
     hs_code = HSTECH_INDEX["code"]
     hs_amt = get_backtest_buy_amount(hs_code, amounts)
-    hs_buy = lambda r: _hstech_signals(r)[0]
-    hs_sell = lambda r: _hstech_signals(r)[1]
+    trail_cfg = _hstech_trailing_cfg()
+    hs_buy, hs_sell = _hstech_signal_fns(buy_only=not HSTECH_SELL_ENABLED)
     excluded = _skip_or_excluded_trade(
         hs_amt,
         amounts,
@@ -643,7 +715,6 @@ def backtest_all(
     if excluded is not None:
         results.extend(excluded)
     elif hs_amt > 0:
-        trail_cfg = _hstech_trailing_cfg()
         sim_amt = _resolve_trade_amount(
             hs_code, hs_amt, amounts, hstech_panel, start_date, end_date, hs_buy
         )
@@ -882,7 +953,9 @@ def collect_trade_chart_tables(
 
     if amounts is None:
         amounts = resolve_backtest_amounts()
-    panels = panels or BacktestPanels()
+    from backtest_buy_signals import get_panels
+
+    panels = panels or get_panels()
     tables = []
 
     def _maybe_add(
@@ -943,8 +1016,8 @@ def collect_trade_chart_tables(
     for item in CN_BROAD_BACKTEST_INDICES:
         code = item["code"]
         panel = panels.cn_broad_panel(code)
-        buy_fn = lambda r, c=code: _cn_broad_signals(r, c)[0]
         sell_on = cn_broad_sell_enabled(code)
+        buy_fn, _ = _cn_broad_signal_fns(code, buy_only=not sell_on)
 
         def _cn_sell_dates(c=code, p=panel, bf=buy_fn, enabled=sell_on):
             if not enabled:
@@ -962,7 +1035,7 @@ def collect_trade_chart_tables(
         )
 
     cyb_panel = panels.cyb_panel()
-    cyb_buy = lambda r: _cyb_signals(r)[0]
+    cyb_buy, _ = _cyb_signal_fns(buy_only=not CYB_SELL_ENABLED)
 
     def _cyb_sell_dates():
         if not CYB_SELL_ENABLED:
@@ -985,7 +1058,7 @@ def collect_trade_chart_tables(
     )
 
     hstech_panel = panels.hstech_panel()
-    hs_buy = lambda r: _hstech_signals(r)[0]
+    hs_buy, _ = _hstech_signal_fns(buy_only=not HSTECH_SELL_ENABLED)
 
     def _hs_sell_dates():
         if not HSTECH_SELL_ENABLED:
@@ -1410,6 +1483,14 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     tier_enabled = not args.no_tier
+
+    from backtest_buy_signals import get_panels
+    from buy_amount_ranking import _preload_ranking_panels
+
+    # 先预热全局面板，供排名分配与回测共用，避免重复构建
+    panels = get_panels()
+    _preload_ranking_panels(panels)
+
     if args.amount is not None and args.amount <= 0:
         amounts = None
     elif args.amount is not None:
@@ -1422,7 +1503,6 @@ def main(argv=None):
         amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
 
     try:
-        panels = BacktestPanels()
         results = backtest_all(
             args.start, args.end, amounts=amounts, panels=panels
         )

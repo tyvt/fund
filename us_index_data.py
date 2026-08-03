@@ -545,6 +545,16 @@ def build_daily_valuation_panel(key: str, sources=None):
 
 
 def fetch_snapshot(key: str, expected_growth=None):
+    from data_cache import run_memo
+
+    growth_key = "default" if expected_growth is None else str(expected_growth)
+    return run_memo(
+        f"us:{key}:{growth_key}",
+        lambda: _fetch_snapshot_uncached(key, expected_growth),
+    )
+
+
+def _fetch_snapshot_uncached(key: str, expected_growth=None):
     spec = _spec(key)
     sources = _load_us_valuation_sources(key)
     daily, pe_payload = build_daily_valuation_panel(key, sources=sources)

@@ -85,10 +85,12 @@ def _safe_float(value) -> float | None:
 
 def row_price_position(row) -> float | None:
     """买入日价格位置：0=近年内低点，1=近年内高点。"""
-    yr = _safe_float(row.get("year_range_position") if hasattr(row, "get") else None)
+    from sell_trailing import row_field
+
+    yr = _safe_float(row_field(row, "year_range_position"))
     if yr is not None:
         return max(0.0, min(1.0, yr))
-    pal = _safe_float(row.get("pct_above_low") if hasattr(row, "get") else None)
+    pal = _safe_float(row_field(row, "pct_above_low"))
     if pal is not None:
         # 距低点涨幅 0~15% 映射到 0~1
         return max(0.0, min(1.0, pal / 0.15))
@@ -97,10 +99,12 @@ def row_price_position(row) -> float | None:
 
 def row_cheapness_score(row) -> float:
     """综合便宜度：越低越便宜；无数据时取 0.5（标准档）。"""
+    from sell_trailing import row_field
+
     pos = row_price_position(row)
     if pos is not None:
         return pos
-    pe = _safe_float(row.get("pe_percentile") if hasattr(row, "get") else None)
+    pe = _safe_float(row_field(row, "pe_percentile"))
     if pe is not None:
         return max(0.0, min(1.0, pe / 100.0))
     return 0.5

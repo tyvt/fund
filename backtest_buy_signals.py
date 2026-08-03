@@ -432,35 +432,39 @@ def _count_buy_days(
 
 
 def _cn_broad_buy_snapshot(row, index_code):
+    from sell_trailing import row_field
+
     return evaluate_cn_broad_buy(
         {
             "code": index_code,
-            "pe_percentile": row.get("pe_percentile"),
-            "pb_percentile": row.get("pb_percentile"),
-            "dividend_percentile": row.get("dividend_percentile"),
-            "spread_percentile": row.get("spread_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
+            "pe_percentile": row_field(row, "pe_percentile"),
+            "pb_percentile": row_field(row, "pb_percentile"),
+            "dividend_percentile": row_field(row, "dividend_percentile"),
+            "spread_percentile": row_field(row, "spread_percentile"),
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "pct_below_high": row_field(row, "pct_below_high"),
+            "year_range_position": row_field(row, "year_range_position"),
+            "ma_slope_pct": row_field(row, "ma_slope_pct"),
         },
         buy_only=True,
     )["is_buy"]
 
 
 def _us_buy_snapshot(key, row, historical_growth=None):
+    from sell_trailing import row_field
+
     snapshot = {
-        "forward_pe": row.get("forward_pe"),
-        "trailing_pe": row.get("trailing_pe"),
-        "forward_pe_percentile": row.get("forward_pe_percentile"),
-        "trailing_pe_percentile": row.get("trailing_pe_percentile"),
-        "us10y_percentile": row.get("us10y_percentile"),
-        "implied_growth": row.get("implied_growth"),
+        "forward_pe": row_field(row, "forward_pe"),
+        "trailing_pe": row_field(row, "trailing_pe"),
+        "forward_pe_percentile": row_field(row, "forward_pe_percentile"),
+        "trailing_pe_percentile": row_field(row, "trailing_pe_percentile"),
+        "us10y_percentile": row_field(row, "us10y_percentile"),
+        "implied_growth": row_field(row, "implied_growth"),
         "historical_growth": historical_growth,
-        "pct_above_low": row.get("pct_above_low"),
-        "pct_below_high": row.get("pct_below_high"),
-        "year_range_position": row.get("year_range_position"),
-        "ma_slope_pct": row.get("ma_slope_pct"),
+        "pct_above_low": row_field(row, "pct_above_low"),
+        "pct_below_high": row_field(row, "pct_below_high"),
+        "year_range_position": row_field(row, "year_range_position"),
+        "ma_slope_pct": row_field(row, "ma_slope_pct"),
     }
     snapshot["expected_growth"] = resolve_expected_growth(key, snapshot)
     return is_us_index_buy(key, snapshot)

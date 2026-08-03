@@ -7,15 +7,25 @@ from price_position import price_position_sell_hit
 BUY_SIGNAL_COL = "_is_buy_signal"
 
 
+def row_field(row, name, default=None):
+    """兼容 DataFrame.iterrows 的 Series 与 itertuples 的 namedtuple。"""
+    getter = getattr(row, "get", None)
+    if callable(getter):
+        return getter(name, default)
+    return getattr(row, name, default)
+
+
 def attach_buy_signal_column(panel, buy_eval_fn, row_snapshot_fn, col=BUY_SIGNAL_COL):
     """一次性计算买入信号列，供后续峰值/成本统计复用。"""
     if panel is None or panel.empty:
         return panel
     out = panel.copy()
-    out[col] = [
-        bool(buy_eval_fn(row_snapshot_fn(row)).get("is_buy"))
-        for _, row in out.iterrows()
-    ]
+    # itertuples 比 iterrows 快数倍；row_snapshot_fn 需用 row_field 取值
+    flags = []
+    for row in out.itertuples(index=False):
+        snap = row_snapshot_fn(row)
+        flags.append(bool(buy_eval_fn(snap).get("is_buy")))
+    out[col] = flags
     return out
 
 
@@ -218,7 +228,9 @@ def simulate_trades_trailing(
     trail = trailing_cfg or {}
     use_trailing = trail.get("trailing_drawdown_pct") is not None
 
-    for _, row in sample.iterrows():
+    cols = sample.columns.tolist()
+    for tup in sample.itertuples(index=False, name=None):
+        row = dict(zip(cols, tup))
         price = float(row[val_col])
         dt = row["_dt"]
         day = dt.strftime("%Y-%m-%d")

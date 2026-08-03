@@ -164,6 +164,16 @@ def attach_cn_broad_percentiles(panel, index_code, window=None, min_days=None):
 
 def fetch_cn_broad_snapshot(index_code, bond_history=None):
     """拉取最新指标与历史分位。"""
+    from data_cache import run_memo
+
+    def _build():
+        return _fetch_cn_broad_snapshot_uncached(index_code, bond_history)
+
+    return run_memo(f"cn_broad:{index_code}", _build)
+
+
+def _fetch_cn_broad_snapshot_uncached(index_code, bond_history=None):
+    """拉取最新指标与历史分位（无进程内记忆）。"""
     meta = CN_BROAD_INDEX_BY_CODE.get(index_code)
     if meta is None:
         raise ValueError(f"未知宽基指数代码: {index_code}")
@@ -235,22 +245,23 @@ def fetch_cn_broad_snapshot(index_code, bond_history=None):
         compute_peak_since_last_buy_from_column,
         compute_recent_signal_buy_avg_from_column,
         last_buy_date_from_column,
+        row_field,
     )
 
     def _row_snap(row):
         return {
             "code": index_code,
-            "pe_percentile": row.get("pe_percentile"),
-            "pb_percentile": row.get("pb_percentile"),
-            "spread_percentile": row.get("spread_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
+            "pe_percentile": row_field(row, "pe_percentile"),
+            "pb_percentile": row_field(row, "pb_percentile"),
+            "spread_percentile": row_field(row, "spread_percentile"),
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "pct_below_high": row_field(row, "pct_below_high"),
+            "year_range_position": row_field(row, "year_range_position"),
+            "ma_slope_pct": row_field(row, "ma_slope_pct"),
         }
 
     def _buy_eval(snap):
-        return evaluate_cn_broad_buy({**snap, "code": index_code})
+        return evaluate_cn_broad_buy({**snap, "code": index_code}, buy_only=True)
 
     panel = attach_buy_signal_column(panel, _buy_eval, _row_snap)
     lookback = cfg.get("sell_cost_lookback_days", 252)

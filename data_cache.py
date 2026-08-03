@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -16,6 +17,29 @@ CACHE_DIR = DATA_CACHE_DIR
 US_CACHE_DIR = US_DATA_CACHE_DIR
 
 T = TypeVar("T")
+
+# 单次报告/推送进程内的 snapshot 记忆，避免额度分配与报告重复构建
+_RUN_MEMO: dict[str, object] = {}
+_RUN_MEMO_LOCK = threading.Lock()
+
+
+def run_memo(key: str, factory: Callable[[], T]) -> T:
+    """进程内按 key 记忆计算结果；factory 仅在首次调用。"""
+    with _RUN_MEMO_LOCK:
+        if key in _RUN_MEMO:
+            return _RUN_MEMO[key]  # type: ignore[return-value]
+    value = factory()
+    with _RUN_MEMO_LOCK:
+        existing = _RUN_MEMO.get(key)
+        if existing is not None:
+            return existing  # type: ignore[return-value]
+        _RUN_MEMO[key] = value
+        return value
+
+
+def clear_run_memo() -> None:
+    with _RUN_MEMO_LOCK:
+        _RUN_MEMO.clear()
 
 
 def _safe_name(key: str) -> str:

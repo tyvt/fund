@@ -98,7 +98,8 @@ def simulate_nav_series(
     flows = []
     prices = []
 
-    for _, row in sample.iterrows():
+    for tup in sample.itertuples(index=False, name=None):
+        row = dict(zip(sample.columns, tup))
         price = float(row[val_col])
         cf = 0.0
         is_buy = buy_fn(row) if buy_fn else False
