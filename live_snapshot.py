@@ -28,6 +28,7 @@ def resolve_live_price_params(index_code: str) -> dict:
         HSTECH_BUY_LOW_LOOKBACK_DAYS,
         HSTECH_BUY_TREND_MA_DAYS,
         HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
+        INDICES,
         get_cn_broad_signal_config,
         get_dividend_signal_config,
     )
@@ -62,7 +63,7 @@ def resolve_live_price_params(index_code: str) -> dict:
             "slope_lookback": BUY_TREND_SLOPE_LOOKBACK_DAYS,
             "close_col": "close",
         }
-    if index_code in ("930955", "H30269"):
+    if index_code in {i["code"] for i in INDICES}:
         cfg = get_dividend_signal_config(index_code)
         return {
             "low_lookback_days": cfg["buy_low_lookback_days"],

@@ -58,7 +58,6 @@ python report.py -m us
 
 # 红利模块：只看某只指数
 python report.py -m dividend --index H30269
-python report.py -m dividend --index 930955 --index H30269
 
 # 创业板：覆盖预期增速
 python report.py -m cyb --growth 0.35
@@ -131,7 +130,6 @@ python backtest_buy_signals.py --year 2025 --amount 500
 | SPX | 标普500 | 210 |
 | 399006 | 创业板指 | 118 |
 | 000688 | 科创50 | 38 |
-| 930955 | 红利低波100 | 28 |
 | H30269 | 红利低波动 | 28 |
 | 000510 | 中证A500 | 28 |
 | 000300 | 沪深300 | 28 |
@@ -206,7 +204,7 @@ python backtest_trade_signals.py --amount 300
 
 | 组别 | 权重 | 指数 | 单次买入（元） |
 |------|------|------|---------------|
-| 核心 | 50% | 红利 930955 / H30269、A500 | 944 / 902 / 638 |
+| 核心 | 50% | 红利 H30269、A500 | 902 / 638 |
 | 美股 | 20% | 纳指 NDX / 标普 SPX | 256 / 62（组内偏 NDX） |
 | 科创50 | 10% | 000688 | 155 |
 | 卫星 | 20% | 创业板 / 中证1000 | 239 / 49（组内偏创业板） |
@@ -215,7 +213,7 @@ python backtest_trade_signals.py --amount 300
 
 ### 买卖波段回测
 
-按当前买入/卖出标准模拟波段交易（触发卖点时清仓）。**长期持有、无卖出**：红利（930955/H30269）、美股（NDX/SPX）。**其余指数均探索止盈**：A 股宽基五只、创业板、恒生科技。
+按当前买入/卖出标准模拟波段交易（触发卖点时清仓）。**长期持有、无卖出**：红利（H30269）、美股（NDX/SPX）。**其余指数均探索止盈**：A 股宽基五只、创业板、恒生科技。
 
 ```bash
 python -c "from backtest_trade_signals import backtest_all, print_table, format_markdown, save_result; from config import resolve_backtest_amounts; a=resolve_backtest_amounts(portfolio_mode=True); r=backtest_all('2015-01-01', None, a); print_table(r, '2015-01-01', None, a)"
@@ -249,7 +247,7 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 | 模块 | 数据层 | 信号/报告层 | 覆盖指数 |
 |------|--------|-------------|----------|
-| 红利 | `dividend_data.py` | `core.py` | 930955、H30269 |
+| 红利 | `dividend_data.py` | `core.py` | H30269 |
 | A股宽基 | `cn_broad_data.py` | `cn_broad_signal.py` | 000510、000300、000905、000852、000688 |
 | 创业板 | `cyb_data.py` | `cyb_signal.py` | 399006 |
 | 恒生科技 | `hstech_data.py` | `hstech_signal.py` | HSTECH |
@@ -326,13 +324,12 @@ python -c "from backtest_trade_signals import backtest_all, print_table, format_
 
 | 指数 | 代码 | 买入条件（须全部满足） |
 |------|------|------------------------|
-| 中证红利低波100 | 930955 | 股息率−10Y国债 **> 3.4%**；利差滚动分位 **≥ 48%**；PE 分位 **≤ 65%**；距 90 日低点涨幅 **≤ 4%**；近1年区间位置 **≤ 55%**；距 252 日高点回撤 **≥ 12%** |
-| 中证红利低波动 | H30269 | 同上利差 **> 3.4%**；利差分位 **≥ 56%**；PE 分位 **≤ 60%**；距低点 **≤ 5%**；近1年区间 **≤ 55%**；高点回撤 **≥ 12%** |
+| 中证红利低波动 | H30269 | 利差 **> 2.8%**；利差分位 **≥ 40%**；PE 分位 **≤ 74%**；距低点 **≤ 6%**；近1年区间 **≤ 62%**；高点回撤 **≥ 10%** |
 
 - **分位窗口**：利差分位约 3 年（756 交易日）；PE 分位同窗口。
 - **近1年低位放宽**：区间位置 ≤ 20% 时，利差分位门槛 −10、PE 分位上限 +12，绝对利差门槛 −1.2%；区间位置 ≤ 5% 时可豁免绝对利差硬门槛；分位样本不足时允许仅凭价格位置买入。
 - **卖出**：无（长期持有型）。
-- **回测收益**：使用中证全收益指数（930955→H20955、H30269→H20269）估算，含分红再投资。
+- **回测收益**：使用中证全收益指数（H30269→H20269）估算，含分红再投资。
 
 ### A 股宽基（cn_broad）— 五只均启用止盈
 

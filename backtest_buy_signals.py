@@ -122,7 +122,7 @@ def _skip_or_excluded(sim_amt, amounts, code, panel, date_range, buy_fn, code2, 
     )
 
 BACKTEST_RETURN_FOOTNOTE = (
-    "红利指数（930955/H30269）收益率按中证全收益指数（H20955/H20269）估算，含分红再投资；"
+    "红利指数（H30269）收益率按中证全收益指数（H20269）估算，含分红再投资；"
     "其他指数为价格指数、未含分红。未计手续费；"
     "美股指数按美元点位估算收益（未计入汇率变动）。"
 )

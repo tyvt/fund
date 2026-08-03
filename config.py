@@ -25,13 +25,11 @@ BACKTEST_OUTPUT_DIR = PROJECT_DIR / "output" / "backtest"
 BACKTEST_PRESENT_LABEL = "inception_present"
 
 INDICES = [
-    {"code": "930955", "name": "中证红利低波100"},
     {"code": "H30269", "name": "中证红利低波动"},
 ]
 
 # 红利价格指数 → 中证全收益指数（分红再投资，同源 csindex-home/perf API）
 DIVIDEND_TOTAL_RETURN_INDEX = {
-    "930955": "H20955",
     "H30269": "H20269",
 }
 
@@ -183,7 +181,6 @@ PORTFOLIO_GROUP_WEIGHTS = {
     "satellite": 0.20,
 }
 PORTFOLIO_INDEX_GROUPS = {
-    "930955": "core",
     "H30269": "core",
     "000510": "core",
     "NDX": "us",
@@ -231,7 +228,6 @@ BUY_AMOUNT_BASE_BY_CODE = {
     "SPX": 151,
     "399006": 118,
     "000688": 38,
-    "930955": 28,
     "H30269": 28,
     "000510": 28,
     "000016": 28,
@@ -245,7 +241,6 @@ BUY_AMOUNT_BASE_BY_CODE = {
 
 # 组合模式分指数金额（--portfolio）；与收益最大化配置独立
 _BACKTEST_BUY_AMOUNT_DEFAULTS = {
-    "930955": 944,
     "H30269": 902,
     "000510": 638,
     "000016": 0,
@@ -304,7 +299,7 @@ def get_backtest_buy_amount(index_code, amounts=None):
             return float(amounts["dividend"])
         if amounts.get("portfolio") and index_code in PORTFOLIO_EXCLUDED_CODES:
             return 0.0
-        if index_code in ("930955", "H30269"):
+        if index_code in {i["code"] for i in INDICES}:
             return float(amounts.get("dividend", DIVIDEND_BUY_AMOUNT))
         if index_code in {i["code"] for i in CN_BROAD_INDICES}:
             return float(amounts.get("cn_broad", CN_BROAD_BUY_AMOUNT))
@@ -528,13 +523,11 @@ def format_backtest_amount_note(amounts):
 # 各指数买入 / 卖出信号阈值（可通过 push.env 覆盖）
 # =============================================================================
 
-# --- 红利指数（930955 / H30269，按指数拆分阈值）---
+# --- 红利指数（H30269，按指数拆分阈值）---
 # 买入：股息率-国债利差 > 阈值，且利差分位高、PE 分位低、距 N 日低点涨幅不过高（须同时满足）。
 # 红利指数仅配置买入阈值，不设卖点。
-# 两只指数价格走势接近，但 PE 中枢不同（低波100 约 8.5，低波动约 7.5），
-# 利差分位历史分布也不同，故使用分指数默认阈值；可用 DIVIDEND_{代码}_* 覆盖。
-# 默认阈值经 2016–2025 回测微调：利差 2.8%、930955 利差分位 44、H30269 利差分位 40/PE 74，
-# 适度放宽价格位置与回撤，买入频次提升（930955 +31 次、H30269 +130 次）且收益不明显降低。
+# 默认阈值经 2016–2025 回测微调：利差 2.8%、H30269 利差分位 40/PE 74，
+# 适度放宽价格位置与回撤，买入频次提升且收益不明显降低。
 DIVIDEND_BUY_SPREAD_MIN = _env_float_any(
     ("DIVIDEND_BUY_SPREAD_MIN", "BUY_CONDITION_SPREAD"), 0.028
 )
@@ -650,12 +643,6 @@ _DIVIDEND_GLOBAL_DEFAULTS = {
 }
 
 _DIVIDEND_PER_INDEX_DEFAULTS = {
-    "930955": {
-        "buy_spread_percentile_min": 44,
-        "buy_pe_percentile_max": 68,
-        "buy_max_above_low_pct": 0.04,
-        "buy_max_year_range_pct": 0.55,
-    },
     "H30269": {
         "buy_spread_percentile_min": 40,
         "buy_pe_percentile_max": 74,

@@ -9,7 +9,6 @@ from buy_amount_tiers import (
 )
 
 ALL_BUY_INDEX_CODES = (
-    "930955",
     "H30269",
     "000510",
     "000016",

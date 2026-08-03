@@ -12,6 +12,7 @@ from config import HEADERS, TENCENT_QUOTE_URL
 
 # 指数代码 -> 腾讯行情代码（无实时源的指数不在此表）
 TENCENT_SYMBOL_BY_INDEX: dict[str, str] = {
+    "H30269": "csH30269",
     "000510": "sh000510",
     "000016": "sh000016",
     "000300": "sh000300",

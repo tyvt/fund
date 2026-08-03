@@ -20,9 +20,7 @@ from config import (
 
 # 行情/估值缓存起点（YYYYMMDD，中证 perf API 格式）
 INDEX_BASE_DATES: dict[str, str] = {
-    "930955": "20170505",
     "H30269": "20081231",
-    "H20955": "20170505",
     "H20269": "20081231",
     "000510": A500_MARKET_DATA_START.replace("-", ""),
     "000016": "20040102",
