@@ -1,19 +1,13 @@
-"""A 股宽基指数（中证 A500 / 上证50 / 沪深300 / 中证500 / 中证1000 / 中证A50 / 中证A100 / 科创50 等）估值序列构建。"""
+"""A 股宽基指数（中证1000 / 科创50）估值序列构建。"""
 
 from datetime import date
 
 import pandas as pd
 
 from config import (
-    A100_INDEX,
-    A50_INDEX,
-    A500_INDEX,
     get_cn_broad_signal_config,
-    HS300_INDEX,
     KC50_INDEX,
-    SZ50_INDEX,
     ZZ1000_INDEX,
-    ZZ500_INDEX,
 )
 from market_data import (
     asof_datetime,
@@ -28,13 +22,7 @@ from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_bel
 from signal_format import merge_history_meta
 
 CN_BROAD_INDEX_BY_CODE = {
-    A500_INDEX["code"]: A500_INDEX,
-    SZ50_INDEX["code"]: SZ50_INDEX,
-    HS300_INDEX["code"]: HS300_INDEX,
-    ZZ500_INDEX["code"]: ZZ500_INDEX,
     ZZ1000_INDEX["code"]: ZZ1000_INDEX,
-    A50_INDEX["code"]: A50_INDEX,
-    A100_INDEX["code"]: A100_INDEX,
     KC50_INDEX["code"]: KC50_INDEX,
 }
 
@@ -270,6 +258,9 @@ def _fetch_cn_broad_snapshot_uncached(index_code, bond_history=None):
         lookback_days=lookback,
     )
     snapshot["peak_since_last_buy"] = compute_peak_since_last_buy_from_column(panel)
+    from sell_trailing import last_buy_signal_price_from_column
+
+    snapshot["last_buy_signal_price"] = last_buy_signal_price_from_column(panel)
     last_buy_date = last_buy_date_from_column(panel)
     if last_buy_date is not None:
         snapshot["days_since_last_buy"] = (

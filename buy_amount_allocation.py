@@ -31,6 +31,9 @@ def _position_factor(year_range_position: float | None) -> float:
 
 
 def _readiness_factor(signal_eval: dict) -> float:
+    strength = signal_eval.get("signal_strength")
+    if strength is not None:
+        return max(0.05, float(strength) / 100.0)
     if signal_eval.get("is_buy"):
         return 1.0
     passed = signal_eval.get("score")
@@ -169,16 +172,6 @@ def _fetch_one_index_state(task: dict, live_quotes=None) -> dict | None:
             signal_eval = evaluate_cyb_signal(snapshot)
             return {"code": code, "name": "创业板指", "snapshot": snapshot, "signal_eval": signal_eval}
 
-        if kind == "hstech":
-            from hstech_data import fetch_hstech_snapshot
-            from hstech_signal import evaluate_hstech_signal
-            from live_snapshot import maybe_apply_live
-
-            snapshot = fetch_hstech_snapshot()
-            snapshot = maybe_apply_live(snapshot, live_quotes)
-            signal_eval = evaluate_hstech_signal(snapshot)
-            return {"code": code, "name": "恒生科技指数", "snapshot": snapshot, "signal_eval": signal_eval}
-
         if kind == "us":
             from config import CYB_EXPECTED_GROWTH
             from live_snapshot import maybe_apply_live
@@ -205,7 +198,6 @@ def _build_index_tasks():
     for item in CN_BROAD_INDICES:
         tasks.append({"kind": "cn_broad", "code": item["code"]})
     tasks.append({"kind": "cyb", "code": "399006"})
-    tasks.append({"kind": "hstech", "code": "HSTECH"})
     for key in US_INDEX_KEYS:
         code = {"ndx": "NDX", "spx": "SPX"}[key]
         tasks.append({"kind": "us", "code": code, "us_key": key})

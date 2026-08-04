@@ -13,8 +13,6 @@ from cn_broad_data import (
 )
 from cn_broad_signal import evaluate_cn_broad_buy, vectorized_cn_broad_buy_mask
 from config import (
-    A500_INDEX,
-    A500_MARKET_DATA_START,
     BUY_RANGE_LOOKBACK_DAYS,
     BUY_TREND_MA_DAYS,
     BUY_TREND_SLOPE_LOOKBACK_DAYS,
@@ -23,9 +21,6 @@ from config import (
     CYB_BUY_LOW_LOOKBACK_DAYS,
     CYB_INDEX,
     DIVIDEND_SIGNAL_HISTORY_START,
-    HSTECH_BUY_HIGH_LOOKBACK_DAYS,
-    HSTECH_BUY_LOW_LOOKBACK_DAYS,
-    HSTECH_INDEX,
     INDICES,
     NDX_INDEX,
     BACKTEST_OUTPUT_DIR,
@@ -43,9 +38,6 @@ from buy_amount_config import resolve_simulate_amount
 from cyb_data import attach_percentiles as attach_cyb_percentiles
 from cyb_data import build_cyb_valuation_panel, fetch_cyb_price_history
 from cyb_signal import evaluate_cyb_signal
-from hstech_data import attach_percentiles as attach_hstech_percentiles
-from hstech_data import build_hstech_valuation_panel, fetch_hstech_price_history
-from hstech_signal import evaluate_hstech_signal
 from dividend_data import build_signal_history, is_buy_signal_row
 from market_data import configure_stdout_utf8, get_gov_bond_yield_history
 from us_index_data import (
@@ -102,7 +94,12 @@ def _excluded_signal_row(
 ):
     """未参与额度分配时，仍输出信号统计行（投入/收益为 —）。"""
     result = _count_buy_days(
-        panel, date_range, buy_fn, date_col=date_col, price_col=price_col
+        panel,
+        date_range,
+        buy_fn,
+        date_col=date_col,
+        price_col=price_col,
+        index_code=code,
     )
     if not result:
         return []
@@ -126,6 +123,16 @@ BACKTEST_RETURN_FOOTNOTE = (
     "美股指数按美元点位估算收益（未计入汇率变动）。"
 )
 
+BACKTEST_BUY_ONLY_NOTE = (
+    "本回测仅验证买入择时：信号触发日累加买入并持有，**不包含止盈/估值卖出**；"
+    "完整策略（分批止盈 + 估值卖点）见 `backtest_trade_signals.py` 输出的 "
+    "`trade_inception_present.md`。"
+)
+BACKTEST_AMOUNT_NOTE = (
+    "下列金额为**回测固定基准**（×当日涨跌缩放），与信号次数无关；"
+    "金额大小不改变买入次数。"
+)
+
 
 class BacktestPanels:
     """一次拉取全部估值面板，供多年份回测/列日期复用。"""
@@ -135,7 +142,6 @@ class BacktestPanels:
         self._dividend = {}
         self._cn_broad = {}
         self._cyb = None
-        self._hstech = None
         self._us = {}
 
     def dividend_panel(self, index_code):
@@ -194,34 +200,10 @@ class BacktestPanels:
                 ma_days=BUY_TREND_MA_DAYS,
                 slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
             )
-        return self._cyb
+            from cyb_data import attach_historical_growth_series
 
-    def hstech_panel(self):
-        if self._hstech is None:
-            panel = build_hstech_valuation_panel()
-            prices = fetch_hstech_price_history()
-            prices["date_only"] = pd.to_datetime(prices["date"]).dt.date
-            panel = panel.merge(
-                prices[["date_only", "close"]],
-                on="date_only",
-                how="left",
-            )
-            self._hstech = attach_hstech_percentiles(panel)
-            self._hstech = attach_pct_above_low(
-                self._hstech, lookback_days=HSTECH_BUY_LOW_LOOKBACK_DAYS
-            )
-            self._hstech = attach_pct_below_high(
-                self._hstech, lookback_days=HSTECH_BUY_HIGH_LOOKBACK_DAYS
-            )
-            self._hstech = attach_year_range_position(
-                self._hstech, lookback_days=BUY_RANGE_LOOKBACK_DAYS, date_col="date"
-            )
-            self._hstech = attach_ma_trend(
-                self._hstech,
-                ma_days=BUY_TREND_MA_DAYS,
-                slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
-            )
-        return self._hstech
+            self._cyb = attach_historical_growth_series(self._cyb)
+        return self._cyb
 
 
 _PANELS = None
@@ -288,8 +270,8 @@ def _filter_by_range(work, date_range: BacktestRange, date_col="date"):
     return work.loc[mask]
 
 
-def _resolve_buy_mask(panel, sample, buy_fn=None, buy_mask_fn=None):
-    """优先使用向量化买入掩码，否则逐行调用 buy_fn。"""
+def _resolve_raw_buy_mask(panel, sample, buy_fn=None, buy_mask_fn=None):
+    """原始买入掩码（不应用冷却期）。"""
     if buy_mask_fn is not None:
         mask = buy_mask_fn(panel)
         if mask is not None and not mask.empty:
@@ -299,8 +281,43 @@ def _resolve_buy_mask(panel, sample, buy_fn=None, buy_mask_fn=None):
     return sample.apply(lambda row: bool(buy_fn(row)), axis=1)
 
 
+def _resolve_buy_mask(panel, sample, buy_fn=None, buy_mask_fn=None, index_code=None):
+    """优先使用向量化买入掩码，否则逐行调用 buy_fn；应用冷却期过滤。"""
+    from buy_cooldown import apply_cooldown_to_mask
+
+    raw = _resolve_raw_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    prices = sample["close"] if "close" in sample.columns else None
+    return apply_cooldown_to_mask(raw, prices=prices, index_code=index_code)
+
+
+def _cooldown_amount_scale(
+    panel, sample, buy_fn=None, buy_mask_fn=None, index_code=None
+) -> float:
+    from config import (
+        BUY_COOLDOWN_AMOUNT_MAX_MULTIPLIER,
+        BUY_COOLDOWN_AMOUNT_SCALE_ENABLED,
+        buy_cooldown_enabled,
+    )
+
+    if not buy_cooldown_enabled(index_code) or not BUY_COOLDOWN_AMOUNT_SCALE_ENABLED:
+        return 1.0
+    raw = _resolve_raw_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    cooled = _resolve_buy_mask(
+        panel, sample, buy_fn, buy_mask_fn, index_code=index_code
+    )
+    raw_n = max(int(raw.sum()), 1)
+    cooled_n = max(int(cooled.sum()), 1)
+    return min(BUY_COOLDOWN_AMOUNT_MAX_MULTIPLIER, max(1.0, raw_n / cooled_n))
+
+
 def _range_price_stats(
-    panel, date_range, buy_fn, date_col="date", price_col="close", buy_mask_fn=None
+    panel,
+    date_range,
+    buy_fn,
+    date_col="date",
+    price_col="close",
+    buy_mask_fn=None,
+    index_code=None,
 ):
     """统计区间内指数收盘价最高/最低，及买入信号日的均价。"""
     if panel is None or panel.empty or price_col not in panel.columns:
@@ -311,7 +328,9 @@ def _range_price_stats(
         return None
 
     prices = sample[price_col].astype(float)
-    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    buy_mask = _resolve_buy_mask(
+        panel, sample, buy_fn, buy_mask_fn, index_code=index_code
+    )
     buy_prices = prices[buy_mask]
     avg_buy_price = float(buy_prices.mean()) if not buy_prices.empty else None
 
@@ -331,11 +350,18 @@ def _simulate_dca_returns(
     price_col="close",
     valuation_price_col=None,
     buy_mask_fn=None,
+    index_code=None,
 ):
     """每个买入日投入固定金额，按最新收盘价估算持仓市值与收益率。"""
     val_col = valuation_price_col or price_col
     price_stats = _range_price_stats(
-        panel, date_range, buy_fn, date_col, price_col, buy_mask_fn=buy_mask_fn
+        panel,
+        date_range,
+        buy_fn,
+        date_col,
+        price_col,
+        buy_mask_fn=buy_mask_fn,
+        index_code=index_code,
     )
     if price_stats is None:
         return None
@@ -355,13 +381,18 @@ def _simulate_dca_returns(
     if sample.empty:
         return None
 
-    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    buy_mask = _resolve_buy_mask(
+        panel, sample, buy_fn, buy_mask_fn, index_code=index_code
+    )
     buy_sample = sample.loc[buy_mask]
     buy_prices = buy_sample[val_col].astype(float).tolist()
+    scale = _cooldown_amount_scale(
+        panel, sample, buy_fn=buy_fn, buy_mask_fn=buy_mask_fn, index_code=index_code
+    )
     if callable(amount):
-        buy_amounts = [float(amount(row)) for _, row in buy_sample.iterrows()]
+        buy_amounts = [float(amount(row)) * scale for _, row in buy_sample.iterrows()]
     else:
-        buy_amounts = [float(amount)] * len(buy_prices)
+        buy_amounts = [float(amount) * scale] * len(buy_prices)
 
     buy_days = len(buy_prices)
     total_days = len(sample)
@@ -405,11 +436,23 @@ def _simulate_dca_returns(
 
 
 def _count_buy_days(
-    panel, date_range, buy_fn, date_col="date", price_col="close", buy_mask_fn=None
+    panel,
+    date_range,
+    buy_fn,
+    date_col="date",
+    price_col="close",
+    buy_mask_fn=None,
+    index_code=None,
 ):
     """统计区间内买入信号天数及有效样本天数。"""
     price_stats = _range_price_stats(
-        panel, date_range, buy_fn, date_col, price_col, buy_mask_fn=buy_mask_fn
+        panel,
+        date_range,
+        buy_fn,
+        date_col,
+        price_col,
+        buy_mask_fn=buy_mask_fn,
+        index_code=index_code,
     )
     if price_stats is None:
         return None
@@ -418,9 +461,11 @@ def _count_buy_days(
     if sample.empty:
         return None
 
-    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
-    buy_days = int(buy_mask.sum())
+    buy_mask = _resolve_buy_mask(
+        panel, sample, buy_fn, buy_mask_fn, index_code=index_code
+    )
     total = len(sample)
+    buy_days = int(buy_mask.sum())
     return {
         "buy_days": buy_days,
         "total_days": total,
@@ -459,6 +504,7 @@ def _us_buy_snapshot(key, row, historical_growth=None):
         "forward_pe_percentile": row_field(row, "forward_pe_percentile"),
         "trailing_pe_percentile": row_field(row, "trailing_pe_percentile"),
         "us10y_percentile": row_field(row, "us10y_percentile"),
+        "us10y_slope": row_field(row, "us10y_slope"),
         "implied_growth": row_field(row, "implied_growth"),
         "historical_growth": historical_growth,
         "pct_above_low": row_field(row, "pct_above_low"),
@@ -473,13 +519,15 @@ def _us_buy_snapshot(key, row, historical_growth=None):
 def _index_simulate_amount(
     code, amounts, panel, date_range, buy_fn, date_col="date"
 ):
-    """解析单指数回测金额（固定或分档）。"""
+    """解析单指数回测金额（固定或按涨跌缩放）。"""
     if amounts is None:
         return None
     base = get_backtest_buy_amount(code, amounts)
     if base <= 0:
         return 0
-    if amounts.get("tier_scheme"):
+    if amounts.get("change_scale") or amounts.get("tier_scheme") or amounts.get(
+        "annual_budget"
+    ):
         return resolve_simulate_amount(
             code,
             base,
@@ -496,13 +544,15 @@ def _index_simulate_amount(
 def _chart_simulate_amount(
     code, amounts, panel, date_range, buy_fn, date_col="date"
 ):
-    """HTML 图表用回测金额（组合未持仓指数回退基准金额）。"""
+    """HTML 图表用回测金额。"""
     if amounts is None:
         return None
     base = get_chart_buy_amount(code, amounts)
     if base <= 0:
         return 0
-    if amounts.get("tier_scheme"):
+    if amounts.get("change_scale") or amounts.get("tier_scheme") or amounts.get(
+        "annual_budget"
+    ):
         return resolve_simulate_amount(
             code,
             base,
@@ -543,9 +593,10 @@ def backtest_dividend(
                 buy_fn,
                 amount=sim_amt,
                 valuation_price_col="total_return_close",
+                index_code=code,
             )
         else:
-            result = _count_buy_days(panel, date_range, buy_fn)
+            result = _count_buy_days(panel, date_range, buy_fn, index_code=code)
         if result:
             rows.append(
                 _finalize_backtest_row(
@@ -557,10 +608,7 @@ def backtest_dividend(
 
 def _cn_broad_no_data_row(index_meta, amount=None):
     """当年无行情样本时仍输出一行，避免报告中指数「消失」。"""
-    if index_meta["code"] == A500_INDEX["code"]:
-        note = f"当年无行情（中证A500自{A500_MARKET_DATA_START[:7]}发布，与中证500不同）"
-    else:
-        note = "当年无指数行情数据"
+    note = "当年无指数行情数据"
     row = {
         "buy_days": 0,
         "total_days": 0,
@@ -603,10 +651,10 @@ def backtest_cn_broad(
         return excluded_rows
     if sim_amt is not None:
         result = _simulate_dca_returns(
-            panel, date_range, buy_fn, amount=sim_amt
+            panel, date_range, buy_fn, amount=sim_amt, index_code=code
         )
     else:
-        result = _count_buy_days(panel, date_range, buy_fn)
+        result = _count_buy_days(panel, date_range, buy_fn, index_code=code)
     if not result:
         return [{"code": code, "name": index_meta["name"], **_cn_broad_no_data_row(index_meta, amount)}]
     return [
@@ -618,8 +666,8 @@ def backtest_cn_broad(
 
 US_INDEX_META = {"ndx": NDX_INDEX, "spx": SPX_INDEX}
 US_INDEX_NOTES = {
-    "ndx": "日频（10Y日更，Forward PE按月对齐）",
-    "spx": "日频（10Y日更，Forward PE按季对齐）",
+    "ndx": "日频（10Y日更，Forward PE按月对齐）；QDII 限购下建议小额跟投",
+    "spx": "日频（10Y日更，Forward PE按季对齐）；QDII 限购下建议小额跟投",
 }
 
 
@@ -656,10 +704,11 @@ def backtest_us_index(
             buy_fn,
             amount=sim_amt,
             date_col="date",
+            index_code=code,
         )
     else:
         result = _count_buy_days(
-            daily, date_range, buy_fn, date_col="date"
+            daily, date_range, buy_fn, date_col="date", index_code=code
         )
     if not result:
         return []
@@ -688,6 +737,10 @@ def backtest_cyb(date_range, amount=None, amounts=None, panels=None):
             "pct_below_high": r.get("pct_below_high"),
             "year_range_position": r.get("year_range_position"),
             "ma_slope_pct": r.get("ma_slope_pct"),
+            "historical_growth": r.get("historical_growth"),
+            "close": r.get("close"),
+            "recent_signal_buy_avg": r.get("recent_signal_buy_avg"),
+            "peak_since_last_buy": r.get("peak_since_last_buy"),
         }
     )["is_buy"]
     sim_amt = (
@@ -710,69 +763,17 @@ def backtest_cyb(date_range, amount=None, amounts=None, panels=None):
         return excluded_rows
     if sim_amt is not None:
         result = _simulate_dca_returns(
-            panel, date_range, buy_fn, amount=sim_amt, date_col="date"
+            panel, date_range, buy_fn, amount=sim_amt, date_col="date", index_code=code
         )
     else:
         result = _count_buy_days(
-            panel, date_range, buy_fn, date_col="date"
+            panel, date_range, buy_fn, date_col="date", index_code=code
         )
     if not result:
         return []
     return [
         _finalize_backtest_row(
             {"code": CYB_INDEX["code"], "name": CYB_INDEX["name"], **result},
-            code,
-            amounts,
-        )
-    ]
-
-
-def backtest_hstech(date_range, amount=None, amounts=None, panels=None):
-    panels = panels or get_panels()
-    panel = panels.hstech_panel()
-    code = HSTECH_INDEX["code"]
-    buy_fn = lambda r: evaluate_hstech_signal(  # noqa: E731
-        {
-            "pe": r["pe"],
-            "pe_percentile": r.get("pe_percentile"),
-            "dividend_percentile": r.get("dividend_percentile"),
-            "pct_above_low": r.get("pct_above_low"),
-            "pct_below_high": r.get("pct_below_high"),
-            "year_range_position": r.get("year_range_position"),
-            "ma_slope_pct": r.get("ma_slope_pct"),
-        }
-    )["is_buy"]
-    sim_amt = (
-        _index_simulate_amount(code, amounts, panel, date_range, buy_fn)
-        if amounts
-        else amount
-    )
-    excluded_rows = _skip_or_excluded(
-        sim_amt,
-        amounts,
-        code,
-        panel,
-        date_range,
-        buy_fn,
-        code,
-        HSTECH_INDEX["name"],
-        date_col="date",
-    )
-    if excluded_rows is not None:
-        return excluded_rows
-    if sim_amt is not None:
-        result = _simulate_dca_returns(
-            panel, date_range, buy_fn, amount=sim_amt, date_col="date"
-        )
-    else:
-        result = _count_buy_days(
-            panel, date_range, buy_fn, date_col="date"
-        )
-    if not result:
-        return []
-    return [
-        _finalize_backtest_row(
-            {"code": HSTECH_INDEX["code"], "name": HSTECH_INDEX["name"], **result},
             code,
             amounts,
         )
@@ -837,27 +838,8 @@ def _iter_backtest_configs(panels):
                 "pct_below_high": r.get("pct_below_high"),
                 "year_range_position": r.get("year_range_position"),
                 "ma_slope_pct": r.get("ma_slope_pct"),
-            }
-        )["is_buy"],
-        "date_col": "date",
-        "price_col": "close",
-        "note": "日频，每交易日评估",
-    }
-
-    hstech = panels.hstech_panel()
-    yield {
-        "code": HSTECH_INDEX["code"],
-        "name": HSTECH_INDEX["name"],
-        "panel": hstech,
-        "buy_fn": lambda r: evaluate_hstech_signal(
-            {
-                "pe": r["pe"],
-                "pe_percentile": r.get("pe_percentile"),
-                "dividend_percentile": r.get("dividend_percentile"),
-                "pct_above_low": r.get("pct_above_low"),
-                "pct_below_high": r.get("pct_below_high"),
-                "year_range_position": r.get("year_range_position"),
-                "ma_slope_pct": r.get("ma_slope_pct"),
+                "historical_growth": r.get("historical_growth"),
+                "close": r.get("close"),
             }
         )["is_buy"],
         "date_col": "date",
@@ -902,6 +884,7 @@ def build_daily_table_range(
     price_col="close",
     amount=None,
     buy_mask_fn=None,
+    index_code=None,
 ):
     """构建区间内逐交易日表：日期、收盘价、是否买入（可选买入金额）。"""
     base_cols = ["date", "close", "buy"]
@@ -919,7 +902,9 @@ def build_daily_table_range(
     if sample.empty:
         return pd.DataFrame(columns=base_cols)
 
-    buy_mask = _resolve_buy_mask(panel, sample, buy_fn, buy_mask_fn)
+    buy_mask = _resolve_buy_mask(
+        panel, sample, buy_fn, buy_mask_fn, index_code=index_code
+    )
     date_values = (
         sample["date_only"]
         if date_col == "date_only"
@@ -977,6 +962,7 @@ def collect_daily_tables(
             price_col=cfg["price_col"],
             amount=sim_amt,
             buy_mask_fn=cfg.get("buy_mask_fn"),
+            index_code=cfg["code"],
         )
         if table.empty:
             continue
@@ -1100,6 +1086,8 @@ def print_daily_table(date_range, index_code, panels=None):
             cfg["buy_fn"],
             date_col=cfg["date_col"],
             price_col=cfg["price_col"],
+            buy_mask_fn=cfg.get("buy_mask_fn"),
+            index_code=cfg["code"],
         )
         if table.empty:
             print(
@@ -1179,11 +1167,6 @@ def run_backtest(date_range, amounts=None, panels=None):
         )
     rows.extend(
         backtest_cyb(
-            date_range, panels=panels, amount=other_amt, amounts=use_amounts
-        )
-    )
-    rows.extend(
-        backtest_hstech(
             date_range, panels=panels, amount=other_amt, amounts=use_amounts
         )
     )
@@ -1313,7 +1296,6 @@ def _format_backtest_summary_markdown(rows, date_range, amounts=None):
         "",
         "买入次/样本/占比：按交易日计次；纳指/标普 10Y 与价格日更，Forward PE 按月/按季对齐。",
         "年内高/低为价格指数收盘极值；买入均价为信号日收盘价算术平均（无买入为 —）；纳指美元计价。",
-        f"中证A500（000510）与中证500（000905）不同；A500 行情自 {A500_MARKET_DATA_START[:7]} 起。",
     ]
     if amounts is not None:
         footnotes.append(
@@ -1329,14 +1311,16 @@ def _format_backtest_markdown(
 ):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        "# 自基日全量买入信号回测",
+        "# 自基日全量买入信号回测（仅买入，不含止盈卖出）",
         "",
         f"> 生成时间：{generated_at}  ",
         "> 区间：各指数自基日起至最新数据  ",
         "> 买入标准：当前 config 阈值  ",
+        f"> {BACKTEST_BUY_ONLY_NOTE}  ",
     ]
     if amounts is not None:
         lines.append(f"> 每次买入金额：{format_backtest_amount_note(amounts)}")
+        lines.append(f"> {BACKTEST_AMOUNT_NOTE}  ")
     else:
         lines.append("> 每次买入金额：仅统计次数")
     lines.append("")
@@ -1533,14 +1517,24 @@ def main(argv=None):
         help="统一覆盖所有指数单次买入金额（元；设为0则只统计次数）",
     )
     parser.add_argument(
-        "--portfolio",
+        "--ranking",
         action="store_true",
-        help="使用组合仓位分指数金额（默认：收益最大化分指数+分档）",
+        help="按全历史收益率排名分配买入金额（有未来函数，仅作对比）",
     )
     parser.add_argument(
         "--no-tier",
         action="store_true",
-        help="禁用价格分档，仅使用基准单次金额",
+        help="禁用涨跌缩放，固定使用基准单次金额",
+    )
+    parser.add_argument(
+        "--start",
+        default=None,
+        help="起始日期 YYYY-MM-DD（默认自各指数基日；与买卖波段对比时可用 2015-01-01）",
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        help="结束日期 YYYY-MM-DD（默认最新）",
     )
     parser.add_argument(
         "--no-html",
@@ -1548,15 +1542,28 @@ def main(argv=None):
         help="不生成 HTML 折线图",
     )
     args = parser.parse_args(argv)
-    date_range = default_backtest_range()
+    if args.start:
+        date_range = BacktestRange(
+            start=args.start,
+            end=args.end,
+            label=f"{args.start}_to_{args.end or BACKTEST_PRESENT_LABEL}",
+        )
+    else:
+        date_range = default_backtest_range()
+        if args.end:
+            date_range = BacktestRange(
+                start=date_range.start,
+                end=args.end,
+                label=date_range.label,
+            )
     tier_enabled = not args.no_tier
     if args.amount is not None and args.amount <= 0:
         amounts = None
     elif args.amount is not None:
         amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
-    elif args.portfolio:
+    elif args.ranking:
         amounts = resolve_backtest_amounts(
-            portfolio_mode=True, tier_enabled=tier_enabled
+            ranking_mode=True, tier_enabled=tier_enabled
         )
     else:
         amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
@@ -1568,7 +1575,7 @@ def main(argv=None):
 
         if args.daily_table:
             if not args.index_codes:
-                print("请使用 --index 指定指数代码，例如: --daily-table --index 000510")
+                print("请使用 --index 指定指数代码，例如: --daily-table --index 000852")
                 return 1
             panels = get_panels()
             print("正在加载数据（仅首次较慢，后续区间复用缓存）...")

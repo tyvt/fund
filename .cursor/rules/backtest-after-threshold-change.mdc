@@ -14,12 +14,12 @@ alwaysApply: false
 2. 运行全量回测（买入 + 买卖波段，含 HTML）：
 
 ```bash
-# 推荐：一键脚本（组合仓位 + 分档，与日常组合一致）
+# 推荐：一键脚本（默认基准 100 + 涨跌缩放）
 run_backtest_inception.bat
 
 # 或分别执行
-python backtest_buy_signals.py --portfolio
-python backtest_trade_signals.py --portfolio
+python backtest_buy_signals.py
+python backtest_trade_signals.py
 ```
 
 3. 确认输出已更新：

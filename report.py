@@ -10,26 +10,18 @@ from signal_format import join_index_sections, log_fetch_done, log_fetch_start
 MODULE_DIVIDEND = "dividend"
 MODULE_CN_BROAD = "cn_broad"
 MODULE_CYB = "cyb"
-MODULE_HSTECH = "hstech"
 MODULE_US = "us"
 MODULE_ALL = "all"
 MODULE_CHOICES = (
     MODULE_DIVIDEND,
     MODULE_CN_BROAD,
     MODULE_CYB,
-    MODULE_HSTECH,
     MODULE_US,
     MODULE_ALL,
 )
 
 CN_BROAD_MODULE_BY_CODE = {
-    "000510": "a500",
-    "000016": "sz50",
-    "000300": "hs300",
-    "000905": "zz500",
     "000852": "zz1000",
-    "930050": "a50",
-    "000903": "a100",
     "000688": "kc50",
 }
 
@@ -41,10 +33,12 @@ def print_report(report):
     print("----------------")
 
 
-def _log_snapshot_ready(snapshot):
+def _log_snapshot_ready(snapshot, *, live_quotes=None):
     from live_snapshot import format_live_meta_extra
 
-    live_extra = format_live_meta_extra(snapshot)
+    live_extra = format_live_meta_extra(
+        snapshot, quotes_attempted=live_quotes is not None
+    )
     log_fetch_done(
         snapshot.get("name", "—"),
         code=snapshot.get("code"),
@@ -75,7 +69,7 @@ def generate_cn_broad_report(index_meta, bond_history=None, live_quotes=None):
         bond_history = get_gov_bond_yield_history()
     snapshot = fetch_cn_broad_snapshot(index_meta["code"], bond_history)
     snapshot = maybe_apply_live(snapshot, live_quotes)
-    _log_snapshot_ready(snapshot)
+    _log_snapshot_ready(snapshot, live_quotes=live_quotes)
     buy_eval = evaluate_cn_broad_buy(snapshot)
     module = CN_BROAD_MODULE_BY_CODE.get(index_meta["code"], "cn_broad")
     section = format_cn_broad_section(snapshot, buy_eval, module=module)
@@ -111,28 +105,10 @@ def generate_cyb_report(expected_growth=None, live_quotes=None):
     log_fetch_start("创业板指", "399006")
     snapshot = fetch_cyb_snapshot(expected_growth=expected_growth)
     snapshot = maybe_apply_live(snapshot, live_quotes)
-    _log_snapshot_ready(snapshot)
+    _log_snapshot_ready(snapshot, live_quotes=live_quotes)
     signal_eval = evaluate_cyb_signal(snapshot)
     section = format_cyb_section(snapshot, signal_eval)
     return format_cyb_report(snapshot, section)
-
-
-def generate_hstech_report(expected_growth=None, live_quotes=None):
-    from hstech_data import fetch_hstech_snapshot
-    from hstech_signal import (
-        evaluate_hstech_signal,
-        format_hstech_report,
-        format_hstech_section,
-    )
-    from live_snapshot import maybe_apply_live
-
-    log_fetch_start("恒生科技指数", "HSTECH")
-    snapshot = fetch_hstech_snapshot(expected_growth=expected_growth)
-    snapshot = maybe_apply_live(snapshot, live_quotes)
-    _log_snapshot_ready(snapshot)
-    signal_eval = evaluate_hstech_signal(snapshot)
-    section = format_hstech_section(snapshot, signal_eval)
-    return format_hstech_report(snapshot, section)
 
 
 def generate_us_index_report(key, expected_growth=None, live_quotes=None):
@@ -145,7 +121,7 @@ def generate_us_index_report(key, expected_growth=None, live_quotes=None):
     log_fetch_start(index_name, code)
     snapshot = fetch_snapshot(key, expected_growth=expected_growth)
     snapshot = maybe_apply_live(snapshot, live_quotes)
-    _log_snapshot_ready(snapshot)
+    _log_snapshot_ready(snapshot, live_quotes=live_quotes)
     signal_eval = evaluate_signal(key, snapshot)
     section = format_section(key, snapshot, signal_eval)
     return format_report(key, snapshot, section)
@@ -173,7 +149,6 @@ def _resolve_modules(modules):
             MODULE_DIVIDEND,
             MODULE_CN_BROAD,
             MODULE_CYB,
-            MODULE_HSTECH,
             MODULE_US,
         ]
     return modules
@@ -190,6 +165,11 @@ def generate_reports(
 
     clear_run_memo()
     live_quotes = fetch_live_quotes()
+    if live_quotes:
+        codes = "、".join(sorted(live_quotes))
+        print(f"实时行情已获取: {codes}（{len(live_quotes)} 只）")
+    else:
+        print("实时行情暂不可用，报告将使用最近收盘价")
 
     if BUY_AMOUNT_POSITION_ALLOC_ENABLED:
         from buy_amount_allocation import get_position_allocation
@@ -207,7 +187,6 @@ def generate_reports(
         ),
         MODULE_CN_BROAD: lambda: generate_cn_broad_reports(live_quotes=live_quotes),
         MODULE_CYB: lambda: generate_cyb_report(cyb_growth, live_quotes=live_quotes),
-        MODULE_HSTECH: lambda: generate_hstech_report(live_quotes=live_quotes),
         MODULE_US: lambda: generate_us_reports(us_growth, live_quotes=live_quotes),
     }
 
@@ -233,7 +212,21 @@ def generate_reports(
                 else:
                     all_sections.append(module_sections)
 
-    return join_index_sections(all_sections), all_sections
+    body = join_index_sections(all_sections)
+    return append_comparison_table(body, all_sections), all_sections
+
+
+def append_comparison_table(report: str, sections: list) -> str:
+    """在报告末尾追加跨指数对比表。"""
+    from config import SIGNAL_COMPARISON_ENABLED
+    from signal_comparison import format_signal_comparison_table
+
+    if not SIGNAL_COMPARISON_ENABLED or len(sections) < 2:
+        return report
+    table = format_signal_comparison_table(sections)
+    if not table:
+        return report
+    return report + table
 
 
 def main(argv=None):
@@ -245,7 +238,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="报告模块：dividend(红利)、cn_broad(A股宽基)、cyb(创业板)、hstech(恒生科技)、us(纳指+标普)、all(全部，默认)",
+        help="报告模块：dividend(红利)、cn_broad(A股宽基)、cyb(创业板)、us(纳指+标普)、all(全部，默认)",
     )
     parser.add_argument(
         "--index",

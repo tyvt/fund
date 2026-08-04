@@ -17,7 +17,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="推送模块：dividend、cn_broad、cyb、hstech、us、all(全部，默认)",
+        help="推送模块：dividend、cn_broad、cyb、us、all(全部，默认)",
     )
     parser.add_argument(
         "--index",
@@ -75,7 +75,6 @@ def main(argv=None):
             "dividend": "红利信号",
             "cn_broad": "A股宽基信号",
             "cyb": "创业板信号",
-            "hstech": "恒生科技信号",
             "us": "美股信号",
         }
         title = f"{titles[module]} {sections[0]['signal_short']}"

@@ -8,12 +8,6 @@ from config import (
     CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     CYB_PERCENTILE_MIN_DAYS,
     CYB_PERCENTILE_WINDOW,
-    HSTECH_BUY_HIGH_LOOKBACK_DAYS,
-    HSTECH_BUY_LOW_LOOKBACK_DAYS,
-    HSTECH_BUY_TREND_MA_DAYS,
-    HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-    HSTECH_PERCENTILE_MIN_DAYS,
-    HSTECH_PERCENTILE_WINDOW,
     DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
     DIVIDEND_SPREAD_PERCENTILE_WINDOW,
     get_cn_broad_signal_config,
@@ -489,53 +483,6 @@ def cyb_drop_to_buy(snapshot):
     return _estimate_buy_trigger(check_factor)
 
 
-def hstech_drop_to_buy(snapshot):
-    from hstech_signal import evaluate_hstech_signal
-
-    panel = snapshot.get("panel")
-    if panel is None or panel.empty:
-        return None
-
-    idx = len(panel) - 1
-    row = panel.iloc[-1]
-    if row["pe"] is None:
-        return None
-
-    def check_factor(factor):
-        if factor <= 0:
-            return False
-        pe = row["pe"] * factor
-        pe_pct = rolling_percentile(
-            panel["pe"], idx, pe, HSTECH_PERCENTILE_WINDOW, HSTECH_PERCENTILE_MIN_DAYS
-        )
-        new_close = row["close"] * factor
-        pct_above_low = pct_above_low_for_simulated_close(
-            panel, idx, new_close, HSTECH_BUY_LOW_LOOKBACK_DAYS
-        )
-        pct_below_high = pct_below_high_for_simulated_close(
-            panel, idx, new_close, HSTECH_BUY_HIGH_LOOKBACK_DAYS
-        )
-        year_range = range_position_for_simulated_close(
-            panel, idx, new_close, BUY_RANGE_LOOKBACK_DAYS
-        )
-        ma_slope = ma_slope_for_simulated_close(
-            panel, idx, new_close, HSTECH_BUY_TREND_MA_DAYS, HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS
-        )
-        return evaluate_hstech_signal(
-            {
-                "pe": pe,
-                "pe_percentile": pe_pct,
-                "dividend_percentile": row.get("dividend_percentile"),
-                "pct_above_low": pct_above_low,
-                "pct_below_high": pct_below_high,
-                "year_range_position": year_range,
-                "ma_slope_pct": ma_slope,
-            }
-        )["is_buy"]
-
-    return _estimate_buy_trigger(check_factor)
-
-
 def _estimate_sell_trigger(still_sell_at_factor, max_move=0.35, precision=0.002):
     """已满足卖出时，估算跌幅使卖出不再成立。"""
     return find_min_drop_breaks_condition(
@@ -618,40 +565,5 @@ def cyb_sell_trigger(snapshot):
                 "pb_percentile": pb_pct,
             }
         )["is_sell"]
-
-    return _estimate_sell_trigger(check_factor)
-
-
-def hstech_sell_trigger(snapshot):
-    from hstech_signal import evaluate_hstech_signal
-
-    panel = snapshot.get("panel")
-    if panel is None or panel.empty:
-        return None
-
-    idx = len(panel) - 1
-    row = panel.iloc[-1]
-    if row["pe"] is None:
-        return None
-
-    def check_factor(factor):
-        if factor <= 0:
-            return False
-        pe = row["pe"] * factor
-        pe_pct = rolling_percentile(
-            panel["pe"], idx, pe, HSTECH_PERCENTILE_WINDOW, HSTECH_PERCENTILE_MIN_DAYS
-        )
-        new_close = row["close"] * factor if row.get("close") is not None else None
-        snap = {
-            "pe": pe,
-            "pe_percentile": pe_pct,
-            "dividend_percentile": row.get("dividend_percentile"),
-            "pct_above_low": row.get("pct_above_low"),
-            "pct_below_high": row.get("pct_below_high"),
-            "year_range_position": row.get("year_range_position"),
-            "ma_slope_pct": row.get("ma_slope_pct"),
-            "close": new_close,
-        }
-        return evaluate_hstech_signal(snap)["is_sell"]
 
     return _estimate_sell_trigger(check_factor)

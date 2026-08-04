@@ -21,7 +21,6 @@ from config import (
     CYB_BUY_TREND_MA_DAYS,
     CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
     CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-    CYB_HISTORICAL_GROWTH,
     CYB_SELL_COMBO_PB_PERCENTILE_MIN,
     CYB_SELL_COMBO_PE_PERCENTILE_MIN,
     CYB_SELL_PB_PERCENTILE_MIN,
@@ -73,8 +72,19 @@ def compute_peg(pe, growth_rate):
 
 def evaluate_cyb_signal(snapshot):
     """加权估值为主：PE/PB 历史分位 + 保守 PEG（近5年增速）。"""
+    from cyb_data import resolve_cyb_historical_growth
+    from config import (
+        CYB_SELL_STAGES,
+        SELL_REBUY_GATE_ENABLED,
+        SELL_REBUY_MAX_GAIN_PCT,
+    )
+    from sell_trailing import rebuy_allowed_after_take_profit
+
     pe = snapshot.get("pe")
-    peg_historical = compute_peg(pe, CYB_HISTORICAL_GROWTH)
+    hist_growth = resolve_cyb_historical_growth(
+        panel=snapshot.get("panel"), snapshot=snapshot
+    )
+    peg_historical = compute_peg(pe, hist_growth)
 
     pe_pct = snapshot.get("pe_percentile")
     pb_pct = snapshot.get("pb_percentile")
@@ -122,8 +132,9 @@ def evaluate_cyb_signal(snapshot):
             "PEG(近5年增速)",
             peg_hist_ok,
             (
-                f"{peg_historical:.2f}（需≤{CYB_BUY_PEG_HIST_MAX:.1f}）"
-                if peg_historical is not None
+                f"{peg_historical:.2f}（需≤{CYB_BUY_PEG_HIST_MAX:.1f}，"
+                f"增速 {hist_growth * 100:.1f}%）"
+                if peg_historical is not None and hist_growth is not None
                 else "—"
             ),
             "估值相对历史盈利增速偏贵",
@@ -186,6 +197,19 @@ def evaluate_cyb_signal(snapshot):
         )
     )
 
+    first_stage = (
+        float(CYB_SELL_STAGES[0]["gain_pct"]) if CYB_SELL_STAGES else 0.50
+    )
+    if is_buy and not rebuy_allowed_after_take_profit(
+        close=snapshot.get("close"),
+        cost_basis=snapshot.get("recent_signal_buy_avg"),
+        peak_price=snapshot.get("peak_since_last_buy"),
+        max_gain_pct=SELL_REBUY_MAX_GAIN_PCT,
+        first_stage_gain_pct=first_stage,
+        gate_enabled=SELL_REBUY_GATE_ENABLED,
+    ):
+        is_buy = False
+
     is_sell = False
     sell_reasons = []
     if CYB_SELL_ENABLED:
@@ -235,7 +259,7 @@ def evaluate_cyb_signal(snapshot):
 
     return {
         "peg_historical": peg_historical,
-        "historical_growth": CYB_HISTORICAL_GROWTH,
+        "historical_growth": hist_growth,
         "is_buy": is_buy,
         "is_sell": is_sell,
         "score": score,
@@ -294,6 +318,9 @@ def format_cyb_section(snapshot, signal_eval):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
+    from signal_enrich import build_section_dict, enrich_signal_eval
+
+    signal_eval = enrich_signal_eval(snapshot, signal_eval)
     from live_snapshot import format_live_meta_extra
 
     live_extra = format_live_meta_extra(snapshot)
@@ -310,12 +337,7 @@ def format_cyb_section(snapshot, signal_eval):
     ]
     signal_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, signal_eval)
     append_signal_block(lines, signal_eval, "cyb")
-    return {
-        "code": snapshot["code"],
-        "name": snapshot["name"],
-        "text": "\n".join(lines),
-        "signal_short": signal_eval["signal_short"],
-    }
+    return build_section_dict(snapshot, signal_eval, lines)
 
 
 def format_cyb_report(snapshot, section):

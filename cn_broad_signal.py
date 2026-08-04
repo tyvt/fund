@@ -351,6 +351,24 @@ def evaluate_cn_broad_buy(snapshot, *, buy_only=False):
         cfg.get("buy_trend_downtrend_max_range_pct"),
     )
 
+    if is_buy and not buy_only:
+        from config import SELL_REBUY_GATE_ENABLED, SELL_REBUY_MAX_GAIN_PCT
+        from sell_trailing import rebuy_allowed_after_take_profit
+
+        stages = cfg.get("sell_stages") or []
+        first_stage = float(stages[0]["gain_pct"]) if stages else float(
+            cfg.get("sell_min_unrealized_gain_pct") or 0.50
+        )
+        if not rebuy_allowed_after_take_profit(
+            close=snapshot.get("close"),
+            cost_basis=snapshot.get("recent_signal_buy_avg"),
+            peak_price=snapshot.get("peak_since_last_buy"),
+            max_gain_pct=SELL_REBUY_MAX_GAIN_PCT,
+            first_stage_gain_pct=first_stage,
+            gate_enabled=SELL_REBUY_GATE_ENABLED,
+        ):
+            is_buy = False
+
     if buy_only:
         return {"is_buy": is_buy}
 
@@ -561,6 +579,9 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
         "buy_trigger_line": buy_line,
         "sell_trigger_line": sell_line,
     }
+    from signal_enrich import build_section_dict, enrich_signal_eval
+
+    buy_eval = enrich_signal_eval(snapshot, buy_eval)
     buy_eval = enrich_signal_buy_amount(snapshot["code"], snapshot, buy_eval)
     bond = snapshot.get("bond_yield")
     from live_snapshot import format_live_meta_extra
@@ -578,12 +599,7 @@ def format_cn_broad_section(snapshot, buy_eval, module="cn_broad"):
         meta_line,
     ]
     append_signal_block(lines, buy_eval, module)
-    return {
-        "code": snapshot["code"],
-        "name": snapshot["name"],
-        "text": "\n".join(lines),
-        "signal_short": buy_eval["signal_short"],
-    }
+    return build_section_dict(snapshot, buy_eval, lines)
 
 
 def format_cn_broad_report(snapshot, section, title=None):

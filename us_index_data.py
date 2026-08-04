@@ -459,6 +459,8 @@ def attach_daily_percentiles(panel, key: str):
     out["trailing_pe_percentile"] = rolling_percentile_series(
         out["trailing_pe"], window, min_days
     )
+    lookback = _cfg(key, "BUY_RATE_SLOPE_LOOKBACK_DAYS")
+    out["us10y_slope"] = out["us10y"] - out["us10y"].shift(lookback)
     return out
 
 
@@ -608,6 +610,11 @@ def _fetch_snapshot_uncached(key: str, expected_growth=None):
         "dividend_yield": fetch_dividend_yield_proxy(key),
         "us10y": float(latest["us10y"]) if pd.notna(latest.get("us10y")) else None,
         "us10y_percentile": latest.get("us10y_percentile"),
+        "us10y_slope": (
+            float(latest["us10y_slope"])
+            if pd.notna(latest.get("us10y_slope"))
+            else None
+        ),
         "pct_above_low": (
             float(latest["pct_above_low"])
             if pd.notna(latest.get("pct_above_low"))

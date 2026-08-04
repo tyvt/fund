@@ -214,8 +214,25 @@ def build_signal_history(
         lookback_days=cfg.get("buy_high_lookback_days", 252),
     )
     panel = attach_year_range_position(panel, lookback_days=BUY_RANGE_LOOKBACK_DAYS)
+    panel = attach_dividend_sustainability(panel)
     panel = attach_total_return_close(panel, index_code)
     return panel
+
+
+def attach_dividend_sustainability(panel):
+    """附加股息率同比飙升倍数，用于过滤暴跌推高股息的陷阱。"""
+    import numpy as np
+
+    from config import DIVIDEND_YIELD_SPIKE_LOOKBACK_DAYS
+
+    if panel is None or panel.empty or "dividend_yield" not in panel.columns:
+        return panel
+    out = panel.copy()
+    lookback = DIVIDEND_YIELD_SPIKE_LOOKBACK_DAYS
+    past = out["dividend_yield"].shift(lookback)
+    spike = out["dividend_yield"] / past
+    out["div_yield_spike"] = spike.where(np.isfinite(spike.to_numpy(dtype=float)))
+    return out
 
 
 def attach_total_return_close(panel, index_code):
@@ -262,6 +279,8 @@ def is_buy_signal(
     pct_above_low=None,
     pct_below_high=None,
     year_range_position=None,
+    pe=None,
+    div_yield_spike=None,
 ):
     """买入条件须全部满足（阈值按指数读取）。"""
     if spread is None:
@@ -322,7 +341,41 @@ def is_buy_signal(
         return False
     if not year_range_ok(year_range_position, cfg.get("buy_max_year_range_pct")):
         return False
+    if not dividend_sustainability_ok(
+        pe, div_yield_spike, year_range_position=year_range_position
+    ):
+        return False
     return base
+
+
+def dividend_sustainability_ok(
+    pe=None, div_yield_spike=None, year_range_position=None
+):
+    """过滤股息率暴涨与极端低 PE；近1年极低位可豁免股息率飙升检查。"""
+    from config import (
+        DIVIDEND_BUY_MAX_YIELD_SPIKE,
+        DIVIDEND_BUY_MIN_PE,
+        DIVIDEND_SUSTAINABILITY_ENABLED,
+        DIVIDEND_YIELD_SPIKE_WAIVE_RANGE_PCT,
+    )
+
+    if not DIVIDEND_SUSTAINABILITY_ENABLED:
+        return True
+    if pe is not None and not pd.isna(pe) and pe < DIVIDEND_BUY_MIN_PE:
+        return False
+    waive_spike = (
+        year_range_position is not None
+        and not pd.isna(year_range_position)
+        and year_range_position <= DIVIDEND_YIELD_SPIKE_WAIVE_RANGE_PCT
+    )
+    if (
+        not waive_spike
+        and div_yield_spike is not None
+        and not pd.isna(div_yield_spike)
+        and div_yield_spike > DIVIDEND_BUY_MAX_YIELD_SPIKE
+    ):
+        return False
+    return True
 
 
 def is_buy_signal_row(row, index_code):
@@ -337,6 +390,8 @@ def is_buy_signal_row(row, index_code):
         pct_above_low=row_field(row, "pct_above_low"),
         pct_below_high=row_field(row, "pct_below_high"),
         year_range_position=row_field(row, "year_range_position"),
+        pe=row_field(row, "pe"),
+        div_yield_spike=row_field(row, "div_yield_spike"),
     )
 
 
@@ -423,6 +478,11 @@ def _evaluate_buy_signal_uncached(
         "year_range_position": (
             float(latest["year_range_position"])
             if pd.notna(latest.get("year_range_position"))
+            else None
+        ),
+        "div_yield_spike": (
+            float(latest["div_yield_spike"])
+            if pd.notna(latest.get("div_yield_spike"))
             else None
         ),
         "is_buy": is_buy_signal_row(latest, index_code),

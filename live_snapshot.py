@@ -24,10 +24,6 @@ def resolve_live_price_params(index_code: str) -> dict:
         CYB_BUY_LOW_LOOKBACK_DAYS,
         CYB_BUY_TREND_MA_DAYS,
         CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-        HSTECH_BUY_HIGH_LOOKBACK_DAYS,
-        HSTECH_BUY_LOW_LOOKBACK_DAYS,
-        HSTECH_BUY_TREND_MA_DAYS,
-        HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
         INDICES,
         get_cn_broad_signal_config,
         get_dividend_signal_config,
@@ -40,15 +36,6 @@ def resolve_live_price_params(index_code: str) -> dict:
             "range_lookback_days": BUY_RANGE_LOOKBACK_DAYS,
             "ma_days": CYB_BUY_TREND_MA_DAYS,
             "slope_lookback": CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-            "close_col": "close",
-        }
-    if index_code == "HSTECH":
-        return {
-            "low_lookback_days": HSTECH_BUY_LOW_LOOKBACK_DAYS,
-            "high_lookback_days": HSTECH_BUY_HIGH_LOOKBACK_DAYS,
-            "range_lookback_days": BUY_RANGE_LOOKBACK_DAYS,
-            "ma_days": HSTECH_BUY_TREND_MA_DAYS,
-            "slope_lookback": HSTECH_BUY_TREND_SLOPE_LOOKBACK_DAYS,
             "close_col": "close",
         }
     if index_code in ("NDX", "SPX"):
@@ -202,10 +189,12 @@ def maybe_apply_live(
     return apply_live_quote(snapshot, quote)
 
 
-def format_live_meta_extra(snapshot: dict) -> str | None:
-    """报告元信息行附加：实时价与时间。"""
+def format_live_meta_extra(
+    snapshot: dict, *, quotes_attempted: bool = False
+) -> str | None:
+    """报告元信息行附加：实时价与时间；已请求但失败时标「实时暂无」。"""
     if not snapshot.get("live_price"):
-        return None
+        return "实时暂无" if quotes_attempted else None
     from price_position import format_index_price
 
     close = snapshot.get("close")

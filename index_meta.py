@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 from config import (
-    A50_MARKET_DATA_START,
-    A500_MARKET_DATA_START,
     CN_BROAD_INDICES,
     CYB_INDEX,
-    HSTECH_INDEX,
-    HSTECH_MARKET_DATA_START,
     INDICES,
     NDX_INDEX,
     NDX_MARKET_DATA_START,
@@ -21,16 +17,9 @@ from config import (
 INDEX_BASE_DATES: dict[str, str] = {
     "H30269": "20081231",
     "H20269": "20081231",
-    "000510": A500_MARKET_DATA_START.replace("-", ""),
-    "000016": "20040102",
-    "000300": "20050408",
-    "000905": "20070115",
     "000852": "20141017",
-    "930050": A50_MARKET_DATA_START.replace("-", ""),
-    "000903": "20060529",
     "000688": "20200723",
     "399006": "20100601",
-    "HSTECH": HSTECH_MARKET_DATA_START.replace("-", ""),
     "NDX": NDX_MARKET_DATA_START.replace("-", ""),
     "SPX": SPX_MARKET_DATA_START.replace("-", ""),
 }
@@ -38,7 +27,7 @@ INDEX_BASE_DATES: dict[str, str] = {
 
 def get_index_base_date(code: str) -> str | None:
     """返回指数基日 YYYYMMDD。"""
-    return INDEX_BASE_DATES.get(code.upper() if code != "HSTECH" else code)
+    return INDEX_BASE_DATES.get(code.upper())
 
 
 def get_index_base_date_iso(code: str) -> str | None:
@@ -71,7 +60,6 @@ def iter_tracked_index_labels() -> list[tuple[str, str]]:
             labels.append((tr, f"{item['name']}(全收益)"))
     labels.extend((i["code"], i["name"]) for i in CN_BROAD_INDICES)
     labels.append((CYB_INDEX["code"], CYB_INDEX["name"]))
-    labels.append((HSTECH_INDEX["code"], HSTECH_INDEX["name"]))
     labels.append((NDX_INDEX["code"], NDX_INDEX["name"]))
     labels.append((SPX_INDEX["code"], SPX_INDEX["name"]))
     return labels

@@ -13,16 +13,9 @@ from config import HEADERS, TENCENT_QUOTE_URL
 # 指数代码 -> 腾讯行情代码（无实时源的指数不在此表）
 TENCENT_SYMBOL_BY_INDEX: dict[str, str] = {
     "H30269": "csH30269",
-    "000510": "sh000510",
-    "000016": "sh000016",
-    "000300": "sh000300",
-    "000905": "sh000905",
     "000852": "sh000852",
-    "930050": "sh930050",
-    "000903": "sh000903",
     "000688": "sh000688",
     "399006": "sz399006",
-    "HSTECH": "hkHSTECH",
     "NDX": "usNDX",
     "SPX": "usINX",
 }
@@ -98,19 +91,27 @@ def fetch_live_quotes(index_codes: Iterable[str] | None = None) -> dict[str, Liv
         return {}
 
     url = TENCENT_QUOTE_URL + ",".join(symbols)
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        text = resp.content.decode("gbk", errors="replace")
-    except requests.RequestException:
+    text = None
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            text = resp.content.decode("gbk", errors="replace")
+            break
+        except requests.RequestException:
+            if attempt == 0:
+                continue
+            return {}
+
+    if not text:
         return {}
 
-    out: dict[str, LiveQuote] = {}
-    for chunk in re.split(r";[\r\n]*", text):
-        quote = _parse_quote_line(chunk)
+    results: dict[str, LiveQuote] = {}
+    for line in re.split(r";\s*", text):
+        quote = _parse_quote_line(line)
         if quote is not None:
-            out[quote.index_code] = quote
-    return out
+            results[quote.index_code] = quote
+    return results
 
 
 def fetch_live_quote(index_code: str) -> LiveQuote | None:

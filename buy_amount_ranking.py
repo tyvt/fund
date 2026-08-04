@@ -81,7 +81,6 @@ def _preload_ranking_panels(panels) -> None:
         for item in CN_BROAD_BACKTEST_INDICES:
             tasks.append(executor.submit(panels.cn_broad_panel, item["code"]))
         tasks.append(executor.submit(panels.cyb_panel))
-        tasks.append(executor.submit(panels.hstech_panel))
         for key in US_INDEX_KEYS:
             tasks.append(executor.submit(panels.us_index_panel, key))
         for task in tasks:

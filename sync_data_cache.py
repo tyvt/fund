@@ -13,7 +13,6 @@ from cyb_data import (
     fetch_cyb_pe_history,
     fetch_cyb_price_history,
 )
-from hstech_data import fetch_hstech_pe_dividend_history, fetch_hstech_price_history
 from index_meta import iter_tracked_csindex_perf_codes, iter_tracked_index_labels
 from market_data import (
     configure_stdout_utf8,
@@ -73,12 +72,6 @@ def sync_cyb(force: bool = False) -> list[str]:
     return [f"  创业板面板: {n} 行"]
 
 
-def sync_hstech(force: bool = False) -> list[str]:
-    fetch_hstech_pe_dividend_history()
-    fetch_hstech_price_history()
-    return ["  恒生科技: PE/价格已同步"]
-
-
 def sync_us(force: bool = False) -> list[str]:
     lines = list(trim_us_index_cache())
     for key in US_INDEX_KEYS:
@@ -109,10 +102,6 @@ def sync_all(force: bool = False) -> None:
 
     print("\n[创业板]")
     for line in sync_cyb(force=force):
-        print(line)
-
-    print("\n[恒生科技]")
-    for line in sync_hstech(force=force):
         print(line)
 
     print("\n[美股]")

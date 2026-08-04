@@ -36,23 +36,13 @@ from config import (
     get_backtest_buy_amount,
     get_chart_buy_amount,
     get_cn_broad_signal_config,
-    HSTECH_INDEX,
-    HSTECH_SELL_ENABLED,
-    HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT,
-    HSTECH_SELL_TRAILING_DRAWDOWN_PCT,
-    HSTECH_SELL_TRAILING_MIN_HOLD_DAYS,
     INDICES,
     BACKTEST_OUTPUT_DIR,
-    PORTFOLIO_EXCLUDED_CODES,
-    PORTFOLIO_GROUP_WEIGHTS,
-    PORTFOLIO_INDEX_GROUPS,
-    PORTFOLIO_TOTAL_BUDGET,
     resolve_backtest_amounts,
     US_INDEX_KEYS,
 )
 from buy_amount_config import resolve_simulate_amount
 from cyb_signal import evaluate_cyb_signal
-from hstech_signal import evaluate_hstech_signal
 from sell_trailing import simulate_trades_trailing, valuation_sell_hit_cn_broad
 from dividend_data import is_buy_signal_row
 
@@ -155,13 +145,17 @@ def _filter_panel(panel, start_date, end_date, date_col="date"):
 
 def _cn_broad_trailing_cfg(code):
     cfg = get_cn_broad_signal_config(code)
-    if cfg.get("sell_trailing_drawdown_pct") is None:
+    if cfg.get("sell_trailing_drawdown_pct") is None and not cfg.get("sell_stages"):
         return None
-    return {
-        "trailing_drawdown_pct": cfg["sell_trailing_drawdown_pct"],
-        "min_unrealized_gain_pct": cfg["sell_min_unrealized_gain_pct"],
+    trail = {
+        "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
+        "min_unrealized_gain_pct": cfg.get("sell_min_unrealized_gain_pct"),
         "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
     }
+    stages = cfg.get("sell_stages")
+    if stages:
+        trail["stages"] = stages
+    return trail
 
 
 def _cn_broad_valuation_sell_fn(code):
@@ -194,13 +188,62 @@ def _cn_broad_valuation_sell_fn(code):
 
 
 def _cyb_trailing_cfg():
-    if not CYB_SELL_ENABLED or CYB_SELL_TRAILING_DRAWDOWN_PCT is None:
+    from config import CYB_SELL_STAGES
+
+    if not CYB_SELL_ENABLED or (
+        CYB_SELL_TRAILING_DRAWDOWN_PCT is None and not CYB_SELL_STAGES
+    ):
         return None
-    return {
+    trail = {
         "trailing_drawdown_pct": CYB_SELL_TRAILING_DRAWDOWN_PCT,
         "min_unrealized_gain_pct": CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
         "min_hold_days": CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     }
+    if CYB_SELL_STAGES:
+        trail["stages"] = CYB_SELL_STAGES
+    return trail
+
+
+def _cooldown_buy_fn(
+    panel,
+    buy_fn,
+    index_code,
+    start_date,
+    end_date=None,
+    date_col="date",
+    price_col="close",
+):
+    """与 backtest_buy_signals 一致：对信号买入日应用冷却期（含大跌解除）。"""
+    from buy_cooldown import apply_cooldown_to_mask, buy_cooldown_enabled
+
+    if buy_fn is None or not buy_cooldown_enabled(index_code):
+        return buy_fn
+
+    sample = _filter_panel(panel, start_date, end_date, date_col=date_col)
+    if sample.empty:
+        return buy_fn
+
+    raw = sample.apply(lambda row: bool(buy_fn(row)), axis=1)
+    px_col = price_col if price_col in sample.columns else "close"
+    prices = sample[px_col] if px_col in sample.columns else None
+    cool = apply_cooldown_to_mask(raw, prices=prices, index_code=index_code)
+    allowed = {
+        pd.Timestamp(sample.loc[i, "_dt"]).strftime("%Y-%m-%d")
+        for i, ok in cool.items()
+        if ok
+    }
+
+    def wrapped(row, _allowed=allowed, _date_col=date_col):
+        from sell_trailing import row_field
+
+        dt = row_field(row, "_dt")
+        if dt is None:
+            dt = row_field(row, _date_col)
+        if dt is None:
+            return False
+        return pd.Timestamp(dt).strftime("%Y-%m-%d") in _allowed
+
+    return wrapped
 
 
 def _run_index_trades(
@@ -228,6 +271,7 @@ def _run_index_trades(
             valuation_sell_fn=valuation_sell_fn,
             trailing_cfg=trailing_cfg,
             valuation_price_col=valuation_price_col,
+            index_code=code,
         )
     return simulate_trades(
         panel,
@@ -239,17 +283,8 @@ def _run_index_trades(
         has_sell=has_sell,
         date_col=date_col,
         valuation_price_col=valuation_price_col,
+        index_code=code,
     )
-
-
-def _hstech_trailing_cfg():
-    if not HSTECH_SELL_ENABLED or HSTECH_SELL_TRAILING_DRAWDOWN_PCT is None:
-        return None
-    return {
-        "trailing_drawdown_pct": HSTECH_SELL_TRAILING_DRAWDOWN_PCT,
-        "min_unrealized_gain_pct": HSTECH_SELL_MIN_UNREALIZED_GAIN_PCT,
-        "min_hold_days": HSTECH_SELL_TRAILING_MIN_HOLD_DAYS,
-    }
 
 
 def _signal_cache_key(row):
@@ -321,6 +356,10 @@ def _cyb_signals(row):
             "pct_below_high": row_field(row, "pct_below_high"),
             "year_range_position": row_field(row, "year_range_position"),
             "ma_slope_pct": row_field(row, "ma_slope_pct"),
+            "historical_growth": row_field(row, "historical_growth"),
+            "close": row_field(row, "close"),
+            "recent_signal_buy_avg": row_field(row, "recent_signal_buy_avg"),
+            "peak_since_last_buy": row_field(row, "peak_since_last_buy"),
         }
     )
     return ev["is_buy"], ev.get("is_sell", False)
@@ -333,35 +372,6 @@ def _cyb_signal_fns(*, buy_only=False):
 
         return buy_fn, None
     return _cached_signal_pair(_cyb_signals)
-
-
-def _hstech_row_snapshot(row):
-    from sell_trailing import row_field
-
-    return {
-        "pe": row_field(row, "pe"),
-        "pe_percentile": row_field(row, "pe_percentile"),
-        "dividend_percentile": row_field(row, "dividend_percentile"),
-        "pct_above_low": row_field(row, "pct_above_low"),
-        "pct_below_high": row_field(row, "pct_below_high"),
-        "year_range_position": row_field(row, "year_range_position"),
-        "ma_slope_pct": row_field(row, "ma_slope_pct"),
-        "close": row_field(row, "close"),
-    }
-
-
-def _hstech_signals(row):
-    ev = evaluate_hstech_signal(_hstech_row_snapshot(row))
-    return ev["is_buy"], ev.get("is_sell", False)
-
-
-def _hstech_signal_fns(*, buy_only=False):
-    if buy_only:
-        def buy_fn(row):
-            return _hstech_signals(row)[0]
-
-        return buy_fn, None
-    return _cached_signal_pair(_hstech_signals)
 
 
 def _attach_risk_metrics(
@@ -410,11 +420,23 @@ def simulate_trades(
     sell_fn=None,
     has_sell=False,
     valuation_price_col=None,
+    index_code=None,
 ):
     """按日模拟买入/卖出；has_sell=False 时仅买入持有。
 
     amount 可为固定金额（float），或 amount_fn(row) 按行计算分档金额。
+    index_code 用于应用与买入信号回测一致的冷却期。
     """
+    if index_code and buy_fn is not None:
+        buy_fn = _cooldown_buy_fn(
+            panel,
+            buy_fn,
+            index_code,
+            start_date,
+            end_date,
+            date_col=date_col,
+            price_col="close",
+        )
     val_col = valuation_price_col or "close"
     sample = _filter_panel(panel, start_date, end_date, date_col=date_col)
     if sample.empty:
@@ -496,6 +518,9 @@ def _resolve_trade_amount(
     buy_fn,
     date_col="date",
 ):
+    buy_fn = _cooldown_buy_fn(
+        panel, buy_fn, code, start_date, end_date, date_col=date_col
+    )
     return resolve_simulate_amount(
         code, base_amt, amounts, panel, start_date, end_date, buy_fn, date_col
     )
@@ -548,6 +573,7 @@ def backtest_all(
             buy_fn=buy_fn,
             has_sell=False,
             valuation_price_col="total_return_close",
+            index_code=code,
         )
         if stats:
             ret = stats.get("buy_only_return_pct")
@@ -695,65 +721,6 @@ def backtest_all(
                 )
             )
 
-    hstech_panel = panels.hstech_panel()
-    hs_code = HSTECH_INDEX["code"]
-    hs_amt = get_backtest_buy_amount(hs_code, amounts)
-    trail_cfg = _hstech_trailing_cfg()
-    hs_buy, hs_sell = _hstech_signal_fns(buy_only=not HSTECH_SELL_ENABLED)
-    excluded = _skip_or_excluded_trade(
-        hs_amt,
-        amounts,
-        hs_code,
-        hstech_panel,
-        start_date,
-        end_date,
-        hs_buy,
-        HSTECH_INDEX["name"],
-        has_sell=HSTECH_SELL_ENABLED,
-        date_col="date",
-    )
-    if excluded is not None:
-        results.extend(excluded)
-    elif hs_amt > 0:
-        sim_amt = _resolve_trade_amount(
-            hs_code, hs_amt, amounts, hstech_panel, start_date, end_date, hs_buy
-        )
-        stats = _run_index_trades(
-            hstech_panel,
-            hs_code,
-            start_date,
-            end_date,
-            sim_amt,
-            hs_buy,
-            hs_sell,
-            HSTECH_SELL_ENABLED,
-            trailing_cfg=trail_cfg,
-            date_col="date",
-        )
-        if stats:
-            ret = stats.get("return_pct") if HSTECH_SELL_ENABLED else stats.get("buy_only_return_pct")
-            metrics = _attach_risk_metrics(
-                hstech_panel,
-                start_date,
-                end_date,
-                hs_amt,
-                hs_buy,
-                hs_sell,
-                HSTECH_SELL_ENABLED,
-                ret,
-                date_col="date",
-            )
-            metrics.pop("trading_days", None)
-            stats.update(metrics)
-            results.append(
-                TradeResult(
-                    code=HSTECH_INDEX["code"],
-                    name=HSTECH_INDEX["name"],
-                    has_sell=HSTECH_SELL_ENABLED,
-                    **stats,
-                )
-            )
-
     for key in US_INDEX_KEYS:
         daily, growth = panels.us_index_panel(key)
         meta = US_INDEX_META[key]
@@ -783,6 +750,7 @@ def backtest_all(
             amount=sim_amt,
             buy_fn=us_buy,
             has_sell=False,
+            index_code=meta["code"],
         )
         if stats:
             ret = stats.get("buy_only_return_pct")
@@ -875,24 +843,6 @@ def resolve_chart_sell_dates(
             )
             return stats.get("sell_dates", []) if stats else []
 
-    if code == HSTECH_INDEX["code"] and HSTECH_SELL_ENABLED:
-        trail_cfg = _hstech_trailing_cfg()
-        if trail_cfg:
-            stats = _run_index_trades(
-                panel,
-                code,
-                start_date,
-                end_date,
-                sim_amt,
-                buy_fn,
-                lambda r: False,
-                True,
-                trailing_cfg=trail_cfg,
-                date_col=date_col,
-                valuation_price_col=price_col,
-            )
-            return stats.get("sell_dates", []) if stats else []
-
     return []
 
 
@@ -947,7 +897,6 @@ def collect_trade_chart_tables(
     from backtest_buy_signals import (
         build_daily_table_range,
         CYB_INDEX,
-        HSTECH_INDEX,
         INDICES,
     )
 
@@ -993,6 +942,7 @@ def collect_trade_chart_tables(
             date_col=date_col,
             price_col=price_col,
             amount=sim_amt,
+            index_code=code,
         )
         if table.empty:
             return
@@ -1055,31 +1005,6 @@ def collect_trade_chart_tables(
         CYB_INDEX["name"],
         cyb_buy,
         sell_dates_fn=_cyb_sell_dates if CYB_SELL_ENABLED else None,
-    )
-
-    hstech_panel = panels.hstech_panel()
-    hs_buy, _ = _hstech_signal_fns(buy_only=not HSTECH_SELL_ENABLED)
-
-    def _hs_sell_dates():
-        if not HSTECH_SELL_ENABLED:
-            return []
-        return resolve_chart_sell_dates(
-            HSTECH_INDEX["code"],
-            hstech_panel,
-            start_date,
-            end_date,
-            amounts,
-            hs_buy,
-            date_col="date",
-        )
-
-    _maybe_add(
-        hstech_panel,
-        HSTECH_INDEX["code"],
-        HSTECH_INDEX["name"],
-        hs_buy,
-        sell_dates_fn=_hs_sell_dates if HSTECH_SELL_ENABLED else None,
-        date_col="date",
     )
 
     for key in US_INDEX_KEYS:
@@ -1178,45 +1103,6 @@ def _format_config_snapshot():
     return lines
 
 
-def _format_portfolio_snapshot(amounts):
-    if not amounts.get("portfolio"):
-        return []
-    weights = amounts.get("group_weights") or PORTFOLIO_GROUP_WEIGHTS
-    by_code = amounts.get("by_code") or {}
-    lines = [
-        "## 组合仓位与单次买入金额",
-        "",
-        f"> 总预算 **{amounts.get('total_budget', PORTFOLIO_TOTAL_BUDGET):,.0f}** 元；"
-        f"核心 {weights.get('core', 0):.0%} / 美股 {weights.get('us', 0):.0%} / "
-        f"科创50 {weights.get('kc50', 0):.0%} / 卫星 {weights.get('satellite', 0):.0%}；"
-        f"沪深300·中证500·恒科不买入",
-        "",
-        "| 组别 | 指数 | 代码 | 单次买入 |",
-        "| --- | --- | --- | ---: |",
-    ]
-    group_names = {
-        "core": "核心（红利+A500）",
-        "us": "美股",
-        "kc50": "科创50",
-        "satellite": "卫星（创业板+1000）",
-    }
-    name_map = {i["code"]: i["name"] for i in INDICES}
-    name_map.update({i["code"]: i["name"] for i in CN_BROAD_BACKTEST_INDICES})
-    name_map.update({CYB_INDEX["code"]: CYB_INDEX["name"], HSTECH_INDEX["code"]: HSTECH_INDEX["name"]})
-    name_map.update({"NDX": "纳斯达克100", "SPX": "标普500"})
-    for group, gname in group_names.items():
-        for code, grp in PORTFOLIO_INDEX_GROUPS.items():
-            if grp != group:
-                continue
-            amt = by_code.get(code, 0)
-            lines.append(
-                f"| {gname} | {name_map.get(code, code)} | {code} | "
-                f"{'—' if not amt else f'{amt:.0f}'} |"
-            )
-    lines.append("")
-    return lines
-
-
 def _format_amount_snapshot(amounts):
     if amounts.get("ranking"):
         from buy_amount_ranking import format_ranking_markdown_table
@@ -1229,14 +1115,13 @@ def _format_amount_snapshot(amounts):
                 "as_of": amounts.get("ranking_as_of"),
             }
         )
-    if amounts.get("return_max") and amounts.get("by_code"):
+    if amounts.get("by_code"):
         by_code = amounts.get("by_code") or {}
-        tier = amounts.get("tier_scheme")
+        change = amounts.get("change_scale")
         lines = [
-            "## 买入金额配置（收益最大化）",
+            "## 买入金额配置",
             "",
-            f"> 总预算 **{amounts.get('total_budget', PORTFOLIO_TOTAL_BUDGET):,.0f}** 元"
-            + (f"；分档 **{tier}**" if tier else ""),
+            f"> {format_backtest_amount_note(amounts)}",
             "",
             "| 代码 | 基准单次（元） |",
             "| --- | ---: |",
@@ -1245,9 +1130,17 @@ def _format_amount_snapshot(amounts):
             amt = by_code.get(code, 0)
             if amt > 0:
                 lines.append(f"| {code} | {amt:.0f} |")
+        if change:
+            lines.extend(
+                [
+                    "",
+                    "实际单次 = 基准 × clamp(1 − 敏感度 × 当日涨跌幅，"
+                    "下限–上限)；跌越多买越多，反弹少买。",
+                ]
+            )
         lines.append("")
         return lines
-    return _format_portfolio_snapshot(amounts)
+    return []
 
 
 def format_markdown(results, start_date, end_date, amounts):
@@ -1262,8 +1155,10 @@ def format_markdown(results, start_date, end_date, amounts):
         f"> 生成时间：{generated_at}  ",
         "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
-        "> 卖出规则：宽基/创业板/恒科等启用移动止盈（见 `CN_BROAD_SELL_ENABLED_CODES`）；红利/美股仅买入  ",
-        "> 红利/美股：仅买入持有，不设卖点",
+        "> 卖出规则：宽基/创业板启用移动止盈与估值卖点（见 `CN_BROAD_SELL_ENABLED_CODES`）；红利/美股仅买入  ",
+        "> 红利/美股：仅买入持有，不设卖点  ",
+        "> 买入触发：与 `backtest_buy_signals.py` 相同（信号日买入；默认无冷却期）；非每日定投  ",
+        "> 区间默认自 2015-01-01；买入信号回测默认自各指数基日，对比时请对齐起始日",
         "",
         f"估值截至 **{val_date}**。{BACKTEST_RETURN_FOOTNOTE}",
         "",
@@ -1461,14 +1356,14 @@ def main(argv=None):
     parser.add_argument("--start", default=DEFAULT_START, help="起始日期")
     parser.add_argument("--end", default=None, help="结束日期")
     parser.add_argument(
-        "--portfolio",
+        "--ranking",
         action="store_true",
-        help="使用组合仓位分指数金额",
+        help="按全历史收益率排名分配买入金额（有未来函数，仅作对比）",
     )
     parser.add_argument(
         "--no-tier",
         action="store_true",
-        help="禁用价格分档",
+        help="禁用涨跌缩放，固定使用基准单次金额",
     )
     parser.add_argument(
         "--no-html",
@@ -1495,9 +1390,9 @@ def main(argv=None):
         amounts = None
     elif args.amount is not None:
         amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
-    elif args.portfolio:
+    elif args.ranking:
         amounts = resolve_backtest_amounts(
-            portfolio_mode=True, tier_enabled=tier_enabled
+            ranking_mode=True, tier_enabled=tier_enabled
         )
     else:
         amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)

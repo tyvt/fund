@@ -1,4 +1,4 @@
-"""投入预算：剩余可用额度、预计全年投入与分档缩放。"""
+"""投入预算：剩余可用额度、预计全年投入与涨跌缩放。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import calendar
 from datetime import date
 
 import pandas as pd
-
-from buy_amount_tiers import estimate_avg_multiplier, resolve_tiered_amount
 
 
 def year_time_info(as_of: date | None = None) -> dict:
@@ -126,25 +124,6 @@ def format_annual_budget_note(year: int | None = None) -> str:
     return f"年度总投入 **{estimated:,.0f}** 元（{y}）"
 
 
-def _tier_scale_for_year(
-    panel,
-    year: int,
-    buy_fn,
-    tier_scheme,
-    date_col="date",
-) -> float:
-    """按自然年买入日计算分档归一化系数，与年度回测一致。"""
-    avg = estimate_avg_multiplier(
-        panel,
-        f"{year}-01-01",
-        f"{year}-12-31",
-        buy_fn,
-        tier_scheme,
-        date_col,
-    )
-    return 1.0 / avg if avg > 0 else 1.0
-
-
 def make_annual_amount_fn(
     code: str,
     reference_base: float,
@@ -155,25 +134,42 @@ def make_annual_amount_fn(
     buy_fn,
     date_col="date",
 ):
-    """回测用：按买入日年份动态计算分档金额。"""
-    tier_scheme = amounts.get("tier_scheme") if amounts else None
-    tier_normalize = bool(amounts and amounts.get("tier_normalize"))
-    tier_scale_cache: dict[int, float] = {}
+    """回测用：按买入日年份缩放基准，再按当日涨跌比例调整。"""
+    from buy_amount_change import change_multiplier, row_daily_change_pct
+    from config import BUY_AMOUNT_CHANGE_SCALE_ENABLED
 
-    def _tier_scale(year: int) -> float:
-        if not tier_scheme or not tier_normalize:
-            return 1.0
-        if year not in tier_scale_cache:
-            tier_scale_cache[year] = _tier_scale_for_year(
-                panel, year, buy_fn, tier_scheme, date_col
-            )
-        return tier_scale_cache[year]
+    change_scale = (
+        amounts.get("change_scale", BUY_AMOUNT_CHANGE_SCALE_ENABLED)
+        if amounts
+        else BUY_AMOUNT_CHANGE_SCALE_ENABLED
+    )
+
+    change_by_date: dict[str, float] = {}
+    if change_scale and panel is not None and not panel.empty:
+        work = panel.copy()
+        if date_col in work.columns:
+            work = work.sort_values(date_col)
+        closes = pd.to_numeric(work.get("close"), errors="coerce")
+        if closes is not None:
+            changes = closes.pct_change()
+            for dt, chg in zip(work[date_col], changes):
+                if pd.isna(chg):
+                    continue
+                change_by_date[pd.Timestamp(dt).strftime("%Y-%m-%d")] = float(chg)
 
     def _fn(row):
         year = _row_year(row, date_col)
-        base = scale_base_by_annual_budget(reference_base, year) * _tier_scale(year)
-        if tier_scheme:
-            return resolve_tiered_amount(base, row, tier_scheme)
-        return base
+        base = scale_base_by_annual_budget(reference_base, year)
+        if not change_scale:
+            return base
+        from sell_trailing import row_field
+
+        chg = None
+        raw = row_field(row, date_col) or row_field(row, "date_only")
+        if raw is not None:
+            chg = change_by_date.get(pd.Timestamp(raw).strftime("%Y-%m-%d"))
+        if chg is None:
+            chg = row_daily_change_pct(row)
+        return max(10.0, round(base * change_multiplier(chg)))
 
     return _fn

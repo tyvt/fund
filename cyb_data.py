@@ -153,6 +153,110 @@ def compute_annualized_volatility(price_history, window=252):
     return float(recent.std() * (252**0.5))
 
 
+def compute_historical_earnings_growth(
+    panel,
+    years=None,
+    min_days=None,
+):
+    """由日度 close/PE 隐含盈利估算滚动 CAGR（对齐美股逻辑）。"""
+    from config import (
+        CYB_HISTORICAL_GROWTH,
+        CYB_HISTORICAL_GROWTH_MIN_DAYS,
+        CYB_HISTORICAL_GROWTH_YEARS,
+    )
+
+    years = years if years is not None else CYB_HISTORICAL_GROWTH_YEARS
+    min_days = min_days if min_days is not None else CYB_HISTORICAL_GROWTH_MIN_DAYS
+    if panel is None or panel.empty:
+        return None
+    if "close" not in panel.columns or "pe" not in panel.columns:
+        return None
+    work = panel.dropna(subset=["close", "pe"]).copy()
+    if len(work) < min_days:
+        return None
+    work["implied_earnings"] = work["close"] / work["pe"]
+    work = work[work["implied_earnings"] > 0]
+    if len(work) < min_days:
+        return None
+    latest = work.iloc[-1]
+    date_col = "date" if "date" in work.columns else "date_only"
+    latest_dt = pd.Timestamp(latest[date_col])
+    target = latest_dt - pd.DateOffset(years=years)
+    past = work[pd.to_datetime(work[date_col]) <= target]
+    if past.empty:
+        return None
+    start = past.iloc[-1]
+    if start["implied_earnings"] <= 0:
+        return None
+    elapsed = (latest_dt - pd.Timestamp(start[date_col])).days / 365.25
+    if elapsed <= 0:
+        return None
+    return float(
+        (latest["implied_earnings"] / start["implied_earnings"]) ** (1 / elapsed) - 1
+    )
+
+
+def resolve_cyb_historical_growth(panel=None, snapshot=None):
+    """优先滚动 5 年 CAGR，不足时回退 CYB_HISTORICAL_GROWTH；自动值不低于 floor。"""
+    from config import (
+        CYB_HISTORICAL_GROWTH,
+        CYB_HISTORICAL_GROWTH_AUTO,
+        CYB_HISTORICAL_GROWTH_FLOOR,
+    )
+
+    growth = None
+    if snapshot is not None:
+        g = snapshot.get("historical_growth")
+        if g is not None and not (isinstance(g, float) and pd.isna(g)):
+            growth = float(g)
+    if growth is None and CYB_HISTORICAL_GROWTH_AUTO and panel is not None:
+        growth = compute_historical_earnings_growth(panel)
+    if growth is None:
+        return CYB_HISTORICAL_GROWTH
+    if CYB_HISTORICAL_GROWTH_AUTO and CYB_HISTORICAL_GROWTH_FLOOR is not None:
+        growth = max(growth, CYB_HISTORICAL_GROWTH_FLOOR)
+    return growth
+
+
+def attach_historical_growth_series(panel, years=None, min_days=None):
+    """为面板逐日附加截至当日的滚动盈利 CAGR（无未来函数）。"""
+    import numpy as np
+    from config import CYB_HISTORICAL_GROWTH_MIN_DAYS, CYB_HISTORICAL_GROWTH_YEARS
+
+    years = years if years is not None else CYB_HISTORICAL_GROWTH_YEARS
+    min_days = min_days if min_days is not None else CYB_HISTORICAL_GROWTH_MIN_DAYS
+    if panel is None or panel.empty:
+        return panel
+    out = panel.copy()
+    date_col = "date_only" if "date_only" in out.columns else "date"
+    if "close" not in out.columns or "pe" not in out.columns:
+        out["historical_growth"] = np.nan
+        return out
+    dts = pd.to_datetime(out[date_col])
+    earns = (out["close"] / out["pe"]).to_numpy(dtype=float)
+    n = len(out)
+    growth = np.full(n, np.nan)
+    # 用整数日序做 searchsorted，避免 datetime64 比较问题
+    day_ord = dts.map(lambda x: x.toordinal()).to_numpy(dtype=np.int64)
+    for i in range(min_days, n):
+        e1 = earns[i]
+        if not np.isfinite(e1) or e1 <= 0:
+            continue
+        target_ord = (dts.iloc[i] - pd.DateOffset(years=years)).toordinal()
+        j = int(np.searchsorted(day_ord, target_ord, side="right") - 1)
+        if j < 0:
+            continue
+        e0 = earns[j]
+        if not np.isfinite(e0) or e0 <= 0:
+            continue
+        elapsed = (dts.iloc[i] - dts.iloc[j]).days / 365.25
+        if elapsed <= 0:
+            continue
+        growth[i] = (e1 / e0) ** (1 / elapsed) - 1
+    out["historical_growth"] = growth
+    return out
+
+
 def attach_percentiles(
     panel,
     window=CYB_PERCENTILE_WINDOW,
@@ -212,8 +316,10 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
         ma_days=BUY_TREND_MA_DAYS,
         slope_lookback=BUY_TREND_SLOPE_LOOKBACK_DAYS,
     )
+    panel = attach_historical_growth_series(panel)
     latest = panel.iloc[-1]
     volatility = compute_annualized_volatility(price_history)
+    hist_growth = resolve_cyb_historical_growth(panel=panel, snapshot={"historical_growth": latest.get("historical_growth")})
     pct_above_low = (
         float(latest["pct_above_low"])
         if pd.notna(latest.get("pct_above_low"))
@@ -236,6 +342,7 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
         "pb_equal": pb_equal,
         "pb_median": pb_median,
         "dividend_yield": dividend_yield,
+        "historical_growth": hist_growth,
         "pe_percentile": latest["pe_percentile"],
         "pb_percentile": latest["pb_percentile"],
         "pb_equal_percentile": latest["pb_equal_percentile"],
@@ -271,6 +378,7 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
         compute_peak_since_last_buy_from_column,
         compute_recent_signal_buy_avg_from_column,
         last_buy_date_from_column,
+        last_buy_signal_price_from_column,
         row_field,
     )
 
@@ -292,6 +400,7 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
         lookback_days=CYB_SELL_COST_LOOKBACK_DAYS,
     )
     snapshot["peak_since_last_buy"] = compute_peak_since_last_buy_from_column(panel)
+    snapshot["last_buy_signal_price"] = last_buy_signal_price_from_column(panel)
     last_buy_date = last_buy_date_from_column(panel, date_col="date_only")
     if last_buy_date is not None:
         snapshot["days_since_last_buy"] = (

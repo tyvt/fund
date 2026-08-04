@@ -72,6 +72,23 @@ def last_buy_date_from_column(panel, col=BUY_SIGNAL_COL, date_col="date"):
     return buy_rows.iloc[-1][date_col]
 
 
+def last_buy_signal_price_from_column(
+    panel,
+    col=BUY_SIGNAL_COL,
+    close_col="close",
+):
+    """最近一次买入信号日的收盘价。"""
+    if panel is None or panel.empty or close_col not in panel.columns or col not in panel.columns:
+        return None
+    buy_rows = panel.loc[panel[col]]
+    if buy_rows.empty:
+        return None
+    price = buy_rows.iloc[-1][close_col]
+    if price is None or pd.isna(price):
+        return None
+    return float(price)
+
+
 def compute_recent_signal_buy_avg(
     panel,
     buy_eval_fn,
@@ -150,6 +167,34 @@ def trailing_sell_hit(
     return drawdown >= trailing_drawdown_pct
 
 
+def rebuy_allowed_after_take_profit(
+    *,
+    close,
+    cost_basis,
+    peak_price=None,
+    stages_triggered=None,
+    max_gain_pct=0.30,
+    first_stage_gain_pct=0.50,
+    gate_enabled=True,
+):
+    """止盈后再买入约束：已触发分批档或峰值曾达首档后，浮盈须回落至 max_gain_pct 及以下。
+
+    无持仓成本时不拦截。清仓后由调用方清空 stages 即可恢复买入。
+    """
+    if not gate_enabled:
+        return True
+    if close is None or cost_basis is None or cost_basis <= 0:
+        return True
+    take_profit_active = bool(stages_triggered)
+    if not take_profit_active and peak_price is not None and peak_price > 0:
+        peak_gain = (peak_price - cost_basis) / cost_basis
+        take_profit_active = peak_gain >= first_stage_gain_pct
+    if not take_profit_active:
+        return True
+    current_gain = (close - cost_basis) / cost_basis
+    return current_gain <= max_gain_pct
+
+
 def valuation_sell_hit_cn_broad(snapshot, cfg):
     """宽基估值卖点：PE 偏高 + 利差收敛/短期涨幅过大；或近1年区间高位 + PE 不低。"""
     pe_pct = snapshot.get("pe_percentile")
@@ -198,9 +243,25 @@ def simulate_trades_trailing(
     valuation_sell_fn=None,
     trailing_cfg=None,
     valuation_price_col=None,
+    index_code=None,
 ):
     """按日模拟买入；卖出支持移动止盈（优先）+ 可选估值卖点。"""
-    from backtest_trade_signals import _filter_panel, _resolve_buy_amount
+    from backtest_trade_signals import (
+        _cooldown_buy_fn,
+        _filter_panel,
+        _resolve_buy_amount,
+    )
+
+    if index_code and buy_fn is not None:
+        buy_fn = _cooldown_buy_fn(
+            panel,
+            buy_fn,
+            index_code,
+            start_date,
+            end_date,
+            date_col=date_col,
+            price_col="close",
+        )
 
     val_col = valuation_price_col or "close"
     sample = _filter_panel(panel, start_date, end_date, date_col=date_col)
@@ -219,6 +280,7 @@ def simulate_trades_trailing(
     total_sold = 0.0
     cost_basis = 0.0
     peak_since_buy = 0.0
+    initial_units_at_position = 0.0
     last_buy_dt = None
     buy_count = 0
     sell_count = 0
@@ -227,6 +289,19 @@ def simulate_trades_trailing(
 
     trail = trailing_cfg or {}
     use_trailing = trail.get("trailing_drawdown_pct") is not None
+    stages = trail.get("stages") or []
+    stages_triggered: set[float] = set()
+    rebuy_max_gain = trail.get("rebuy_max_gain_pct")
+    if rebuy_max_gain is None:
+        from config import SELL_REBUY_MAX_GAIN_PCT
+
+        rebuy_max_gain = SELL_REBUY_MAX_GAIN_PCT
+    rebuy_gate = trail.get("rebuy_gate_enabled")
+    if rebuy_gate is None:
+        from config import SELL_REBUY_GATE_ENABLED
+
+        rebuy_gate = SELL_REBUY_GATE_ENABLED
+    first_stage_gain = float(stages[0]["gain_pct"]) if stages else 0.50
 
     cols = sample.columns.tolist()
     for tup in sample.itertuples(index=False, name=None):
@@ -240,10 +315,28 @@ def simulate_trades_trailing(
             peak_since_buy = max(peak_since_buy, price)
 
         is_sell = False
+        partial_sell_units = 0.0
+        avg_cost = cost_basis / units if units > 0 else None
         if units > 0:
             days_since = (dt - last_buy_dt).days if last_buy_dt is not None else None
-            avg_cost = cost_basis / units if units > 0 else None
-            if use_trailing and avg_cost is not None:
+            gain = (price - avg_cost) / avg_cost if avg_cost and avg_cost > 0 else None
+
+            for stage in stages:
+                stage_key = float(stage["gain_pct"])
+                if stage_key in stages_triggered:
+                    continue
+                if gain is None or gain < stage_key:
+                    continue
+                if min_hold_days := trail.get("min_hold_days"):
+                    if days_since is not None and days_since < min_hold_days:
+                        continue
+                target = initial_units_at_position * float(stage["fraction_of_initial"])
+                partial_sell_units = min(units, target)
+                if partial_sell_units > 0:
+                    stages_triggered.add(stage_key)
+                    break
+
+            if partial_sell_units <= 0 and use_trailing and avg_cost is not None:
                 is_sell = trailing_sell_hit(
                     close=price,
                     cost_basis=avg_cost,
@@ -253,24 +346,55 @@ def simulate_trades_trailing(
                     min_hold_days=trail.get("min_hold_days"),
                     days_since_buy=days_since,
                 )
-            if not is_sell and valuation_sell_fn:
+            if partial_sell_units <= 0 and not is_sell and valuation_sell_fn:
                 is_sell = valuation_sell_fn(row)
+
+        if is_buy and units > 0 and avg_cost is not None:
+            if not rebuy_allowed_after_take_profit(
+                close=price,
+                cost_basis=avg_cost,
+                peak_price=peak_since_buy,
+                stages_triggered=stages_triggered,
+                max_gain_pct=rebuy_max_gain,
+                first_stage_gain_pct=first_stage_gain,
+                gate_enabled=rebuy_gate,
+            ):
+                is_buy = False
 
         buy_amount = _resolve_buy_amount(amount, row) if is_buy else 0.0
         if is_buy and buy_amount > 0:
-            units += buy_amount / price
-            buy_only_units += buy_amount / price
+            new_units = buy_amount / price
+            if units <= 0:
+                initial_units_at_position = 0.0
+                stages_triggered.clear()
+            units += new_units
+            initial_units_at_position += new_units
+            buy_only_units += new_units
             total_bought += buy_amount
             cost_basis += buy_amount
             buy_count += 1
             buy_dates.append(day)
             last_buy_dt = dt
             peak_since_buy = price
+        elif partial_sell_units > 0 and units > 0:
+            sold = partial_sell_units
+            total_sold += sold * price
+            cost_basis *= 1.0 - sold / units
+            units -= sold
+            sell_count += 1
+            sell_dates.append(day)
+            if units <= 0:
+                cost_basis = 0.0
+                peak_since_buy = 0.0
+                initial_units_at_position = 0.0
+                stages_triggered.clear()
         elif is_sell and units > 0:
             total_sold += units * price
             units = 0.0
             cost_basis = 0.0
             peak_since_buy = 0.0
+            initial_units_at_position = 0.0
+            stages_triggered.clear()
             sell_count += 1
             sell_dates.append(day)
 

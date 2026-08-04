@@ -95,21 +95,6 @@ LEGULEGU_INDEX_PB_API = "https://legulegu.com/api/stockdata/index-basic-pb"
 LEGULEGU_DIVIDEND_API = "https://legulegu.com/api/stockdata/guxilv"
 """A 股板块股息率（日频）。经 akshare stock_a_gxl_lg 调用"""
 
-LEGULEGU_HSTECH_PAGE = (
-    "https://www.legulegu.com/stockdata/hsi-theme-index?indexCode=HSTECH"
-)
-"""恒生科技指数市盈率/股息率页面"""
-
-LEGULEGU_HSTECH_DATA_API = (
-    "https://www.legulegu.com/api/stockdata/hsidata?indexCode=HSTECH"
-)
-"""恒生科技指数月度 PE、股息率历史"""
-
-TENCENT_HK_INDEX_KLINE_URL = (
-    "https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
-)
-"""腾讯财经港股指数日线。param 示例：hkHSTECH,day,{start},{end},4000"""
-
 
 # ---------------------------------------------------------------------------
 # 腾讯财经（预留）
@@ -169,7 +154,7 @@ DATA_SOURCES = [
             "dividend_data",
             "cn_broad_data",
         ],
-        "indices": "H30269、000510 等",
+        "indices": "H30269、000852 等",
         "env_override": "CSINDEX_INDICATOR_BASE_URL",
         "notes": "直接读取 Excel，无需 API Key。",
     },
@@ -185,7 +170,7 @@ DATA_SOURCES = [
             "dividend_data.build_signal_history",
             "cn_broad_data.build_cn_broad_valuation_history",
         ],
-        "indices": "000001、000300、000510、H30269 等",
+        "indices": "000001、000300、000852、H30269 等",
         "env_override": "INDEX_PERF_URL",
         "notes": "A 股宽基与中证策略指数的主力日频来源。",
     },
@@ -340,26 +325,6 @@ DATA_SOURCES = [
         "used_by": ["cyb_data.fetch_cyb_dividend_history"],
         "akshare": "ak.stock_a_gxl_lg(symbol='创业板')",
         "notes": "经 akshare 封装，需乐咕 CSRF Cookie。",
-    },
-    {
-        "id": "legulegu_hstech",
-        "name": "恒生科技指数市盈率/股息率",
-        "url": LEGULEGU_HSTECH_DATA_API,
-        "provider": "乐咕乐股",
-        "frequency": "月度",
-        "fields": "pe、dv（股息率%）",
-        "used_by": ["hstech_data.fetch_hstech_pe_dividend_history"],
-        "notes": "指数 2020-07-27 发布；无 PB/PS 历史，信号以 PE+PEG+股息率分位为主。",
-    },
-    {
-        "id": "tencent_hk_index",
-        "name": "港股指数日线（腾讯）",
-        "url": f"{TENCENT_HK_INDEX_KLINE_URL}?param=hkHSTECH,day,...",
-        "provider": "腾讯财经",
-        "frequency": "日频",
-        "fields": "开高低收、成交量",
-        "used_by": ["hstech_data.fetch_hstech_price_history"],
-        "notes": "恒生科技等港股指数日线主力来源。",
     },
     {
         "id": "tencent_quote",
