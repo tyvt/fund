@@ -137,7 +137,8 @@ def merge_dataframes_by_date(
     combined = pd.concat([left, right], ignore_index=True)
     combined = combined.sort_values("_merge_dt")
     combined = combined.drop_duplicates(subset=["_merge_dt"], keep="last")
-    combined[date_col] = combined["_merge_dt"].dt.date
+    # 保留 datetime64，供 merge_asof 等对齐；勿转为 python date（object dtype 会触发 pandas 报错）
+    combined[date_col] = combined["_merge_dt"]
     combined = combined.drop(columns=["_merge_dt"], errors="ignore")
     return combined.reset_index(drop=True)
 
