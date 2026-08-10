@@ -30,16 +30,27 @@ CYB_NAME = CYB_INDEX["name"]
 CYB_DAILY_SYMBOL = "sz399006"
 
 
-def fetch_cyb_pe_history():
-    """乐咕乐股创业板板块滚动市盈率（月度）。"""
+def fetch_cyb_pe_szse_official():
+    """深交所创业板平均滚动市盈率（乐咕乐股 marketId=4，含发布日指数点位）。
+
+    数据源对应 legulegu.com/stockdata/cybPE，口径为深交所创业板市场 PE。
+    """
     def _fetch():
         df = ak.stock_market_pe_lg(symbol="创业板")
-        out = df.rename(columns={"日期": "date", "平均市盈率": "pe"})
+        out = df.rename(
+            columns={"日期": "date", "指数": "index_close", "平均市盈率": "pe"}
+        )
         out["date"] = pd.to_datetime(out["date"])
         out["pe"] = pd.to_numeric(out["pe"], errors="coerce")
+        out["index_close"] = pd.to_numeric(out["index_close"], errors="coerce")
         return out.dropna(subset=["date", "pe"]).sort_values("date").reset_index(drop=True)
 
-    return get_or_fetch_dataframe("cyb_pe", _fetch, subdir="cyb")
+    return get_or_fetch_dataframe("cyb_pe_szse", _fetch, subdir="cyb")
+
+
+def fetch_cyb_pe_history():
+    """创业板 PE 历史（深交所官方口径，见 fetch_cyb_pe_szse_official）。"""
+    return fetch_cyb_pe_szse_official()
 
 
 def fetch_cyb_pb_history():
@@ -95,17 +106,17 @@ def build_cyb_valuation_panel():
     避免指数上涨而 PE 未更新导致分位与 PEG 被低估（如 2025 年 2 月）。
     """
     pb = fetch_cyb_pb_history()
-    pe = fetch_cyb_pe_history()
+    pe = fetch_cyb_pe_szse_official()
     dividend = fetch_cyb_dividend_history()
     prices = fetch_cyb_price_history()
 
     panel = pb.sort_values("date")
     pe_src = pe.sort_values("date").rename(
-        columns={"date": "pe_source_date", "pe": "pe_official"}
+        columns={"date": "pe_source_date", "pe": "pe_official", "index_close": "pe_index_close"}
     )
     panel = pd.merge_asof(
         panel,
-        pe_src,
+        pe_src[["pe_source_date", "pe_official", "pe_index_close"]],
         left_on="date",
         right_on="pe_source_date",
         direction="backward",
@@ -122,20 +133,30 @@ def build_cyb_valuation_panel():
         on="date",
         direction="backward",
     )
-    anchor = prices.rename(
-        columns={"date": "pe_source_date", "close": "close_at_pe_source"}
+    price_anchor = prices.rename(
+        columns={"date": "pe_source_date", "close": "close_at_price_source"}
     )
     panel = panel.merge(
-        anchor[["pe_source_date", "close_at_pe_source"]],
+        price_anchor[["pe_source_date", "close_at_price_source"]],
         on="pe_source_date",
         how="left",
+    )
+    panel["close_at_pe_source"] = panel["pe_index_close"].combine_first(
+        panel["close_at_price_source"]
     )
     panel["pe"] = panel["pe_official"] * (
         panel["close"] / panel["close_at_pe_source"]
     )
     panel = panel.dropna(subset=["pe", "pb", "pb_equal", "dividend_yield"])
     panel["date_only"] = panel["date"].dt.date
-    drop_cols = ["pe_source_date", "close_at_pe_source", "close"]
+    drop_cols = [
+        "pe_source_date",
+        "pe_index_close",
+        "close_at_pe_source",
+        "close_at_price_source",
+        "close",
+        "pe_official",
+    ]
     panel = panel.drop(columns=[c for c in drop_cols if c in panel.columns])
     return panel.reset_index(drop=True)
 

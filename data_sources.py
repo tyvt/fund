@@ -70,6 +70,15 @@ NASDAQ_ETF_SUMMARY_URL = (
 SHILLER_IE_DATA_URL = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
 """Robert Shiller《Irrational Exuberance》配套 Excel；含 S&P Composite 月频价格（1871 年起）"""
 
+MULTPL_SP500_PE_TABLE_URL = "https://www.multpl.com/s-p-500-pe-ratio/table/by-month"
+"""Multpl.com 标普 500 滚动市盈率月频表（用于交叉校验，非 Forward PE）"""
+
+YARDENI_FORWARD_PE_CHART_URL = "https://yardeni.com/charts/forward-p-es/"
+"""Yardeni Forward P/E 图表页（无公开 CSV；仅人工对照）"""
+
+BARRONS_PE_YIELDS_URL = "https://www.barrons.com/market-data/stocks/us/pe-yields"
+"""Barron's / WSJ Birinyi P/E & Yields 页；含 S&P 500 / NASDAQ 100 Forward PE（周频，需 VPN）"""
+
 
 # ---------------------------------------------------------------------------
 # 新浪财经（A 股 / 美股指数）
@@ -87,7 +96,7 @@ SINA_A_INDEX_HIST_URL = (
 # 乐咕乐股（Legulegu）
 # ---------------------------------------------------------------------------
 LEGULEGU_MARKET_PE_API = "https://legulegu.com/api/stock-data/market-pe"
-"""板块滚动市盈率（月度）。创业板等，经 akshare stock_market_pe_lg 调用"""
+"""板块滚动市盈率（月度）。创业板等，经 akshare stock_market_pe_lg 调用；marketId=4 为深交所创业板"""
 
 LEGULEGU_INDEX_PB_API = "https://legulegu.com/api/stockdata/index-basic-pb"
 """板块市净率（日频）。经 akshare stock_market_pb_lg 调用"""
@@ -199,7 +208,7 @@ DATA_SOURCES = [
             "cn_broad_data",
         ],
         "env_override": "BOND_YIELD_URL / BOND_YIELD_TOKEN",
-        "notes": "用于股债利差；2021 年前缺口由 config.BOND_YIELD_FALLBACK_BY_YEAR 按年回填。",
+        "notes": "用于股债利差；历史缺口优先用日度分页数据，仍缺失时由 config.BOND_YIELD_FALLBACK_BY_YEAR 按年回填。",
     },
     {
         "id": "fred_us10y",
@@ -302,7 +311,7 @@ DATA_SOURCES = [
         "fields": "创业板平均滚动 PE",
         "used_by": ["cyb_data.fetch_cyb_pe_history"],
         "akshare": "ak.stock_market_pe_lg(symbol='创业板')",
-        "notes": "月度发布；cyb_data 按指数收盘价折算为日度 PE 供信号使用。",
+        "notes": "月度发布；marketId=4 为深交所创业板官方口径（经乐咕乐股聚合）。cyb_data 按指数收盘价折算为日度 PE。",
     },
     {
         "id": "legulegu_pb",
@@ -347,6 +356,36 @@ DATA_SOURCES = [
         "used_by": ["us_index_data.fetch_us10y_history（FRED 失败时回退）"],
         "akshare": "ak.bond_zh_us_rate()",
         "notes": "字段单位为 %；FRED DGS10 不可用时启用。",
+    },
+    {
+        "id": "multpl_sp500_pe",
+        "name": "Multpl 标普 500 滚动 PE",
+        "url": MULTPL_SP500_PE_TABLE_URL,
+        "provider": "Multpl.com",
+        "frequency": "月频",
+        "fields": "S&P 500 Trailing PE",
+        "used_by": ["data_crosscheck.compare_us_forward_pe_sources"],
+        "notes": "与 History of Market Trailing PE 交叉校验；非 Forward PE。",
+    },
+    {
+        "id": "yardeni_forward_pe",
+        "name": "Yardeni Forward P/E 图表",
+        "url": YARDENI_FORWARD_PE_CHART_URL,
+        "provider": "Yardeni Research",
+        "frequency": "日/周/月",
+        "fields": "Forward P/E（图表）",
+        "used_by": ["data_crosscheck.compare_us_forward_pe_sources（人工对照）"],
+        "notes": "无公开 CSV 下载，仅作人工核对参考。",
+    },
+    {
+        "id": "barrons_forward_pe",
+        "name": "Barron's Birinyi Forward P/E",
+        "url": BARRONS_PE_YIELDS_URL,
+        "provider": "Barron's / WSJ Market Data（Birinyi Associates）",
+        "frequency": "周频",
+        "fields": "S&P 500 / NASDAQ 100 Trailing & Forward PE",
+        "used_by": ["data_crosscheck.fetch_barrons_forward_pe_snapshot", "compare_us_forward_pe_sources"],
+        "notes": "Operating earnings 口径；国内 Python requests 常 SSL 失败，抓取走 curl。",
     },
     {
         "id": "serverchan",

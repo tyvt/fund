@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 
 from config import (
+    BOND_HISTORY_MAX_PAGES,
     BOND_HISTORY_PAGE_SIZE,
     BOND_REQUEST_TIMEOUT,
     BOND_YIELD_FALLBACK_BY_YEAR,
@@ -172,19 +173,37 @@ def get_index_perf_history(index_code, start_date=None, end_date=None, years=10)
 
 
 def _fetch_gov_bond_yield_history():
-    params = {**BOND_YIELD_PARAMS, "ps": str(BOND_HISTORY_PAGE_SIZE)}
-    response = requests.get(
-        BOND_YIELD_URL,
-        params=params,
-        headers=HEADERS,
-        timeout=REQUEST_TIMEOUT,
-    )
-    records = response.json().get("result", {}).get("data", [])
-    if not records:
+    """东方财富国债收益率：接口单次最多 500 条，需分页拉取全历史。"""
+    page_size = BOND_HISTORY_PAGE_SIZE
+    all_records: list[dict] = []
+    for page in range(1, BOND_HISTORY_MAX_PAGES + 1):
+        params = {
+            **BOND_YIELD_PARAMS,
+            "ps": str(page_size),
+            "p": str(page),
+            "pageNo": str(page),
+            "pageNum": str(page),
+        }
+        response = requests.get(
+            BOND_YIELD_URL,
+            params=params,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        payload = response.json() or {}
+        result = payload.get("result") or {}
+        records = result.get("data") or []
+        if not records:
+            break
+        all_records.extend(records)
+        if len(records) < page_size:
+            break
+
+    if not all_records:
         print(" 无法从接口获取国债收益率历史。")
         return None
 
-    history = pd.DataFrame(records)
+    history = pd.DataFrame(all_records).drop_duplicates(subset=["SOLAR_DATE"])
     history["date"] = pd.to_datetime(history["SOLAR_DATE"]).dt.date
     history["bond_yield"] = (
         pd.to_numeric(history[BOND_YIELD_FIELD], errors="coerce") / 100
@@ -194,7 +213,19 @@ def _fetch_gov_bond_yield_history():
 
 
 def get_gov_bond_yield_history():
-    """从东方财富获取国债收益率历史。"""
+    """从东方财富获取国债收益率历史（分页拉取，自动升级旧版短缓存）。"""
+    from data_cache import cache_path, load_dataframe, save_dataframe
+
+    path = cache_path("bond_yield_history", subdir="cn")
+    cached = load_dataframe(path)
+    if cached is not None and len(cached) < 2000:
+        try:
+            fresh = _fetch_gov_bond_yield_history()
+            if fresh is not None and len(fresh) > len(cached):
+                save_dataframe(path, fresh)
+        except Exception as exc:
+            print(f" 升级国债收益率缓存时出错: {exc}")
+
     try:
         history = get_or_fetch_dataframe(
             "bond_yield_history",
