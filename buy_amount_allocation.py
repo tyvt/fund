@@ -169,19 +169,21 @@ def _fetch_one_index_state(task: dict, live_quotes=None) -> dict | None:
             from cyb_signal import evaluate_cyb_signal
             from live_snapshot import maybe_apply_live
 
-            snapshot = fetch_cyb_snapshot(expected_growth=CYB_EXPECTED_GROWTH)
+            cyb_growth = task.get("cyb_growth")
+            if cyb_growth is None:
+                cyb_growth = CYB_EXPECTED_GROWTH
+            snapshot = fetch_cyb_snapshot(expected_growth=cyb_growth)
             snapshot = maybe_apply_live(snapshot, live_quotes)
             signal_eval = evaluate_cyb_signal(snapshot)
             return {"code": code, "name": "创业板指", "snapshot": snapshot, "signal_eval": signal_eval}
 
         if kind == "us":
-            from config import CYB_EXPECTED_GROWTH
             from live_snapshot import maybe_apply_live
             from us_index_data import fetch_snapshot
             from us_index_signal import evaluate_signal
 
             key = task["us_key"]
-            snapshot = fetch_snapshot(key, expected_growth=CYB_EXPECTED_GROWTH)
+            snapshot = fetch_snapshot(key, expected_growth=task.get("us_growth"))
             snapshot = maybe_apply_live(snapshot, live_quotes)
             signal_eval = evaluate_signal(key, snapshot)
             name = {"ndx": "纳斯达克100", "spx": "标普500"}[key]
@@ -206,7 +208,9 @@ def _build_index_tasks():
     return tasks
 
 
-def collect_index_states(live_quotes=None) -> list[dict]:
+def collect_index_states(
+    live_quotes=None, *, cyb_growth=None, us_growth=None
+) -> list[dict]:
     from market_data import get_gov_bond_yield_history
 
     tasks = _build_index_tasks()
@@ -214,6 +218,10 @@ def collect_index_states(live_quotes=None) -> list[dict]:
     for task in tasks:
         if task["kind"] in ("dividend", "cn_broad"):
             task["bond_history"] = bond_history
+        if cyb_growth is not None:
+            task["cyb_growth"] = cyb_growth
+        if us_growth is not None:
+            task["us_growth"] = us_growth
 
     workers = min(8, max(1, len(tasks)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -239,16 +247,35 @@ def _live_quotes_fingerprint(live_quotes) -> str:
     return "|".join(parts) if parts else "nolive"
 
 
-def _light_allocation_fingerprint(live_quotes=None) -> str:
+def _growth_allocation_fingerprint(
+    cyb_growth=None, us_growth=None
+) -> str:
+    parts = []
+    if cyb_growth is not None:
+        parts.append(f"cyb:{cyb_growth}")
+    if us_growth is not None:
+        parts.append(f"us:{us_growth}")
+    return "|".join(parts) if parts else "def"
+
+
+def _light_allocation_fingerprint(
+    live_quotes=None, *, cyb_growth=None, us_growth=None
+) -> str:
     """不依赖全量状态的轻量指纹，用于在拉数前判断磁盘缓存是否可用。"""
     from buy_amount_ranking import _data_cache_fingerprint
 
-    return f"{_data_cache_fingerprint()}#live:{_live_quotes_fingerprint(live_quotes)}"
+    growth = _growth_allocation_fingerprint(cyb_growth, us_growth)
+    return (
+        f"{_data_cache_fingerprint()}#live:{_live_quotes_fingerprint(live_quotes)}"
+        f"#gr:{growth}"
+    )
 
 
 def compute_position_allocation(
     live_quotes=None,
     *,
+    cyb_growth=None,
+    us_growth=None,
     force: bool = False,
 ) -> dict:
     """按位置与就绪度分配剩余额度，并给出预计全年投入。"""
@@ -257,7 +284,9 @@ def compute_position_allocation(
     from buy_amount_ranking import compute_index_ranking
 
     today = date.today().isoformat()
-    light_fp = _light_allocation_fingerprint(live_quotes)
+    light_fp = _light_allocation_fingerprint(
+        live_quotes, cyb_growth=cyb_growth, us_growth=us_growth
+    )
 
     # 同进程复用：enrich 无 live_quotes 时直接复用；有 live 时指纹一致才复用
     if not force and _ALLOCATION_CACHE is not None and _ALLOCATION_CACHE.get("day") == today:
@@ -274,7 +303,9 @@ def compute_position_allocation(
             }
             return disk
 
-    states = collect_index_states(live_quotes=live_quotes)
+    states = collect_index_states(
+        live_quotes=live_quotes, cyb_growth=cyb_growth, us_growth=us_growth
+    )
     ranking = compute_index_ranking(force=False)
     returns = ranking.get("returns") or {}
     buy_counts = ranking.get("buy_counts") or {}
@@ -363,8 +394,19 @@ def compute_position_allocation(
     return result
 
 
-def get_position_allocation(live_quotes=None, *, force: bool = False) -> dict:
-    return compute_position_allocation(live_quotes=live_quotes, force=force)
+def get_position_allocation(
+    live_quotes=None,
+    *,
+    cyb_growth=None,
+    us_growth=None,
+    force: bool = False,
+) -> dict:
+    return compute_position_allocation(
+        live_quotes=live_quotes,
+        cyb_growth=cyb_growth,
+        us_growth=us_growth,
+        force=force,
+    )
 
 
 def _avg_at_buy(panel, buy_fn, date_col="date"):

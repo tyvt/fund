@@ -20,6 +20,7 @@ from price_position import (
     effective_drawdown_threshold,
     effective_max_above_low_pct,
     is_near_year_low,
+    make_drawdown_from_high_criterion,
     make_price_position_criterion,
 )
 from signal_format import (
@@ -140,6 +141,22 @@ def build_dividend_signal_eval(index_code, buy_eval, spread, spread_pct, pe_pct)
         )
         if price_criterion is not None:
             buy_criteria.append(price_criterion)
+
+    min_drawdown = effective_drawdown_threshold(
+        cfg.get("buy_min_drawdown_from_high_pct"),
+        year_range,
+        cfg.get("buy_near_year_low_range_pct"),
+    )
+    high_lookback = cfg.get("buy_high_lookback_days", 252)
+    drawdown_criterion = make_drawdown_from_high_criterion(
+        buy_eval.get("pct_below_high"),
+        min_drawdown,
+        high_lookback,
+        close=buy_eval.get("close"),
+        lookback_high=buy_eval.get("lookback_high_price"),
+    )
+    if drawdown_criterion is not None:
+        buy_criteria.append(drawdown_criterion)
 
     is_buy = buy_eval.get("is_buy", False)
     signal_short = SIGNAL_BUY if is_buy else SIGNAL_HOLD

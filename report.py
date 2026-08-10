@@ -174,7 +174,11 @@ def generate_reports(
     if BUY_AMOUNT_POSITION_ALLOC_ENABLED:
         from buy_amount_allocation import get_position_allocation
 
-        get_position_allocation(live_quotes=live_quotes)
+        get_position_allocation(
+            live_quotes=live_quotes,
+            cyb_growth=cyb_growth,
+            us_growth=us_growth,
+        )
     elif BUY_AMOUNT_RANKING_ENABLED:
         from buy_amount_ranking import get_ranking_allocation
 
