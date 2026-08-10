@@ -5,6 +5,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
+import pandas as pd
+
 from buy_amount_config import ALL_BUY_INDEX_CODES
 
 from buy_amount_budget import (
@@ -363,6 +365,106 @@ def compute_position_allocation(
 
 def get_position_allocation(live_quotes=None, *, force: bool = False) -> dict:
     return compute_position_allocation(live_quotes=live_quotes, force=force)
+
+
+def _avg_at_buy(panel, buy_fn, date_col="date"):
+    """回测：买入日的平均年区间位置（越低说明常在低位买）。"""
+    from backtest_trade_signals import _filter_panel
+
+    if panel is None or panel.empty:
+        return 0.5, 0
+    work = panel.copy()
+    if "_dt" not in work.columns:
+        work["_dt"] = pd.to_datetime(work.get(date_col, work.get("date")))
+    positions = []
+    n = 0
+    cols = work.columns.tolist()
+    for tup in work.itertuples(index=False, name=None):
+        row = dict(zip(cols, tup))
+        if not buy_fn(row):
+            continue
+        n += 1
+        pos = row.get("year_range_position")
+        if pos is not None and not pd.isna(pos):
+            positions.append(float(pos))
+    if not positions:
+        return 0.5, n
+    return sum(positions) / len(positions), n
+
+
+def compute_backtest_position_allocation(
+    panels=None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """回测用位置分配：按各指数历史买入日的平均区间位置分配额度（无收益率未来函数）。"""
+    from backtest_buy_signals import default_backtest_range, get_panels
+    from buy_amount_ranking import _iter_configs, _preload_ranking_panels
+    from buy_amount_budget import get_annual_budget
+
+    panels = panels or get_panels()
+    _preload_ranking_panels(panels)
+    dr = default_backtest_range()
+    if start_date:
+        dr = type(dr)(start=start_date, end=end_date or dr.end, label=dr.label)
+
+    weights: dict[str, float] = {}
+    buy_counts: dict[str, int] = {}
+    rows = []
+    for cfg in _iter_configs(panels):
+        code = cfg["code"]
+        avg_pos, n_buys = _avg_at_buy(cfg["panel"], cfg["buy_fn"], cfg.get("date_col", "date"))
+        buy_counts[code] = n_buys
+        pos_factor = max(0.05, 1.0 - avg_pos)
+        weights[code] = pos_factor
+
+    buy_values = [float(v) for v in buy_counts.values() if v > 0]
+    median_buys = sorted(buy_values)[len(buy_values) // 2] if buy_values else 1.0
+    for code in ALL_BUY_INDEX_CODES:
+        annual_buys = max(float(buy_counts.get(code, 1)), 1.0)
+        freq_factor = min(1.0, (annual_buys / median_buys) ** 0.5) if median_buys > 0 else 1.0
+        weights[code] = weights.get(code, 0.05) * max(freq_factor, 0.12)
+
+    budget = float(get_annual_budget())
+    total_weight = sum(weights.values()) or 1.0
+    by_code: dict[str, float] = {}
+    reference_by_code: dict[str, float] = {}
+    for code in ALL_BUY_INDEX_CODES:
+        share = budget * weights.get(code, 0.01) / total_weight
+        annual_buys = max(float(buy_counts.get(code, 1)), 1.0)
+        amt = max(10.0, round(share / annual_buys))
+        by_code[code] = amt
+        reference_by_code[code] = amt
+        rows.append(
+            {
+                "code": code,
+                "name": code,
+                "return_pct": None,
+                "buy_days": buy_counts.get(code, 0),
+                "amount": amt,
+                "weight": weights.get(code, 0),
+                "budget_share": share,
+                "year_range_position": 1.0 - weights.get(code, 0.5),
+                "readiness": None,
+                "is_buy": False,
+                "recommended": amt > 0,
+            }
+        )
+
+    rows.sort(key=lambda item: (item.get("weight") or 0, item.get("code")))
+    return {
+        "rows": rows,
+        "returns": {},
+        "buy_counts": dict(buy_counts),
+        "excluded_codes": frozenset(),
+        "by_code": by_code,
+        "reference_by_code": reference_by_code,
+        "as_of": dr.end or "present",
+        "exclude_bottom_n": 0,
+        "remaining_budget": budget,
+        "estimated_annual_investment": budget,
+        "allocation_mode": "position_backtest",
+    }
 
 
 def format_allocation_note(alloc=None) -> str:

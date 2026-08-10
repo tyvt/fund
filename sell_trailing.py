@@ -196,41 +196,29 @@ def rebuy_allowed_after_take_profit(
 
 
 def valuation_sell_hit_cn_broad(snapshot, cfg):
-    """宽基估值卖点：PE 偏高 + 利差收敛/短期涨幅过大；或近1年区间高位 + PE 不低。"""
-    pe_pct = snapshot.get("pe_percentile")
-    pb_pct = snapshot.get("pb_percentile")
-    spread_pct = snapshot.get("spread_percentile")
-    pct_above_low = snapshot.get("pct_above_low")
-    year_range = snapshot.get("year_range_position")
+    """宽基估值卖点已移除（ablation 验证无组合影响）。"""
+    del snapshot, cfg
+    return False
 
-    spread_hit = (
-        spread_pct is not None
-        and spread_pct <= cfg["sell_spread_percentile_max"]
-    )
-    pe_hit = pe_pct is not None and pe_pct >= cfg["sell_pe_percentile_min"]
-    pb_hit = (
-        pb_pct is not None and pb_pct >= cfg.get("sell_pb_percentile_min", 99)
+
+def valuation_sell_hit_dividend(snapshot, cfg):
+    """红利估值卖点已移除（ablation 验证无组合影响）。"""
+    del snapshot, cfg
+    return False
+
+
+def valuation_sell_hit_us_index(snapshot, cfg):
+    """美股估值卖点：仅 TTM PE 分位 + 距低点涨幅（Forward PE 门槛已移除）。"""
+    trail_pct = snapshot.get("trailing_pe_percentile")
+    pct_above_low = snapshot.get("pct_above_low")
+    pe_hit = (
+        trail_pct is not None
+        and trail_pct >= cfg["sell_trailing_pe_percentile_min"]
     )
     price_hit = price_position_sell_hit(
         pct_above_low, cfg["sell_max_above_low_pct"]
     )
-    classic = pe_hit and (spread_hit or price_hit or pb_hit)
-
-    min_range = cfg.get("sell_min_year_range_pct")
-    combo_pe_min = cfg.get("sell_pe_combo_min")
-    range_hit = (
-        min_range is not None
-        and year_range is not None
-        and year_range >= min_range
-    )
-    combo_pe_hit = (
-        combo_pe_min is not None
-        and pe_pct is not None
-        and pe_pct >= combo_pe_min
-    )
-    combo = range_hit and combo_pe_hit and (price_hit or spread_hit or pb_hit)
-
-    return classic or combo
+    return pe_hit and price_hit
 
 
 def simulate_trades_trailing(
@@ -302,6 +290,11 @@ def simulate_trades_trailing(
 
         rebuy_gate = SELL_REBUY_GATE_ENABLED
     first_stage_gain = float(stages[0]["gain_pct"]) if stages else 0.50
+
+    from backtest_metrics import CapitalTracker, merge_capital_metrics_pair
+
+    trade_capital = CapitalTracker()
+    buy_only_capital = CapitalTracker()
 
     cols = sample.columns.tolist()
     for tup in sample.itertuples(index=False, name=None):
@@ -376,9 +369,13 @@ def simulate_trades_trailing(
             buy_dates.append(day)
             last_buy_dt = dt
             peak_since_buy = price
+            trade_capital.record_buy(dt, buy_amount)
+            buy_only_capital.record_buy(dt, buy_amount)
         elif partial_sell_units > 0 and units > 0:
             sold = partial_sell_units
-            total_sold += sold * price
+            proceeds = sold * price
+            total_sold += proceeds
+            trade_capital.record_sell(dt, proceeds)
             cost_basis *= 1.0 - sold / units
             units -= sold
             sell_count += 1
@@ -389,7 +386,9 @@ def simulate_trades_trailing(
                 initial_units_at_position = 0.0
                 stages_triggered.clear()
         elif is_sell and units > 0:
-            total_sold += units * price
+            proceeds = units * price
+            total_sold += proceeds
+            trade_capital.record_sell(dt, proceeds)
             units = 0.0
             cost_basis = 0.0
             peak_since_buy = 0.0
@@ -397,6 +396,9 @@ def simulate_trades_trailing(
             stages_triggered.clear()
             sell_count += 1
             sell_dates.append(day)
+
+        trade_capital.record_day(units * price)
+        buy_only_capital.record_day(buy_only_units * price)
 
     final_value = total_sold + units * latest_price
     profit = final_value - total_bought
@@ -406,6 +408,20 @@ def simulate_trades_trailing(
     buy_only_profit = buy_only_value - total_bought
     buy_only_return_pct = (
         buy_only_profit / total_bought * 100 if total_bought > 0 else None
+    )
+
+    trading_days = len(sample)
+    capital = merge_capital_metrics_pair(
+        trade_capital.finalize(
+            latest_date, final_value, trading_days, profit, total_bought
+        ),
+        buy_only_capital.finalize(
+            latest_date,
+            buy_only_value,
+            trading_days,
+            buy_only_profit,
+            total_bought,
+        ),
     )
 
     return {
@@ -424,4 +440,5 @@ def simulate_trades_trailing(
         "buy_only_return_pct": buy_only_return_pct,
         "buy_dates": buy_dates,
         "sell_dates": sell_dates,
+        **capital,
     }

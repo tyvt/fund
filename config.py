@@ -164,7 +164,7 @@ ANNUAL_INVESTMENT_BUDGET = REMAINING_INVESTMENT_BUDGET
 BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET = _env_float(
     "BUY_AMOUNT_REFERENCE_ANNUAL_BUDGET", 72_577
 )
-ANNUAL_INVESTMENT_BUDGET_ENABLED = _env_bool("ANNUAL_INVESTMENT_BUDGET_ENABLED", False)
+ANNUAL_INVESTMENT_BUDGET_ENABLED = _env_bool("ANNUAL_INVESTMENT_BUDGET_ENABLED", True)
 ANNUAL_INVESTMENT_BUDGET_BY_YEAR = _build_annual_investment_budget_by_year()
 
 # --- 买入金额：按当日涨跌比例缩放（跌多买多，反弹少买）---
@@ -177,7 +177,7 @@ BUY_AMOUNT_CHANGE_MAX_MULT = _env_float("BUY_AMOUNT_CHANGE_MAX_MULT", 2.0)
 BUY_AMOUNT_TIER_SCHEME = _env_str("BUY_AMOUNT_TIER_SCHEME", "range_8_fine")
 BUY_AMOUNT_TIER_ENABLED = _env_bool("BUY_AMOUNT_TIER_ENABLED", False)
 BUY_AMOUNT_POSITION_ALLOC_ENABLED = _env_bool(
-    "BUY_AMOUNT_POSITION_ALLOC_ENABLED", False
+    "BUY_AMOUNT_POSITION_ALLOC_ENABLED", True
 )
 BUY_AMOUNT_RANKING_ENABLED = _env_bool("BUY_AMOUNT_RANKING_ENABLED", False)
 BUY_AMOUNT_RETURN_MAX = _env_bool("BUY_AMOUNT_RETURN_MAX", True)
@@ -282,14 +282,17 @@ def resolve_backtest_amounts(
     change_scale=None,
     tier_enabled=None,
     portfolio_mode=False,
+    panels=None,
+    position_alloc_mode=None,
 ):
-    """回测买入金额。默认各指数基准 100 + 当日涨跌缩放。"""
+    """回测买入金额。默认位置分配 + 年度预算 + 涨跌缩放。"""
+    from config import BUY_AMOUNT_POSITION_ALLOC_ENABLED
+
     if change_scale is None:
         if tier_enabled is not None:
             change_scale = bool(tier_enabled) and BUY_AMOUNT_CHANGE_SCALE_ENABLED
         else:
             change_scale = BUY_AMOUNT_CHANGE_SCALE_ENABLED
-    # portfolio_mode 已废弃，忽略
 
     def _pack(by_code=None, **extra):
         base = {
@@ -299,6 +302,7 @@ def resolve_backtest_amounts(
             "unified": False,
             "portfolio": False,
             "ranking": False,
+            "position_alloc": False,
             "return_max": False,
             "by_code": by_code,
             "change_scale": change_scale,
@@ -329,6 +333,22 @@ def resolve_backtest_amounts(
             excluded_codes=alloc["excluded_codes"],
             ranking_rows=alloc["rows"],
             ranking_as_of=alloc.get("as_of"),
+        )
+    use_position = (
+        BUY_AMOUNT_POSITION_ALLOC_ENABLED
+        if position_alloc_mode is None
+        else bool(position_alloc_mode)
+    )
+    if use_position:
+        from buy_amount_allocation import compute_backtest_position_allocation
+
+        alloc = compute_backtest_position_allocation(panels=panels)
+        return _pack(
+            by_code=dict(alloc["by_code"]),
+            position_alloc=True,
+            reference_by_code=dict(alloc["reference_by_code"]),
+            allocation_rows=alloc.get("rows"),
+            allocation_as_of=alloc.get("as_of"),
         )
     if return_max_mode is None:
         return_max_mode = BUY_AMOUNT_RETURN_MAX
@@ -369,6 +389,17 @@ def format_backtest_amount_note(amounts):
             }
         )
         return f"{head}{change_suffix}：{'；'.join(parts)}"
+    if amounts.get("position_alloc") and amounts.get("by_code"):
+        active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
+        parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
+        from buy_amount_allocation import format_allocation_note
+
+        head = "位置分配（回测按历史买入日低位程度）"
+        if amounts.get("annual_budget"):
+            from buy_amount_budget import format_annual_budget_note
+
+            head = format_annual_budget_note() + "；" + head
+        return head + change_suffix + "：" + "；".join(parts)
     if amounts.get("by_code"):
         active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
         parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
@@ -444,9 +475,6 @@ DIVIDEND_BUY_HIGH_LOOKBACK_DAYS = _env_int_any(
 DIVIDEND_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float_any(
     ("DIVIDEND_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT",), 0.12
 )
-DIVIDEND_BUY_MAX_YEAR_RANGE_PCT = _env_float_any(
-    ("DIVIDEND_BUY_MAX_YEAR_RANGE_PCT",), 0.60
-)
 DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float_any(
     ("DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT",), BUY_NEAR_YEAR_LOW_RANGE_PCT
 )
@@ -482,7 +510,6 @@ _DIVIDEND_CFG_SUFFIX = {
     "buy_low_lookback_days": "BUY_LOW_LOOKBACK_DAYS",
     "buy_high_lookback_days": "BUY_HIGH_LOOKBACK_DAYS",
     "buy_min_drawdown_from_high_pct": "BUY_MIN_DRAWDOWN_FROM_HIGH_PCT",
-    "buy_max_year_range_pct": "BUY_MAX_YEAR_RANGE_PCT",
     "buy_near_year_low_range_pct": "BUY_NEAR_YEAR_LOW_RANGE_PCT",
     "buy_near_year_low_spread_relax": "BUY_NEAR_YEAR_LOW_SPREAD_RELAX",
     "buy_near_year_low_pe_relax": "BUY_NEAR_YEAR_LOW_PE_RELAX",
@@ -501,7 +528,6 @@ _DIVIDEND_GLOBAL_DEFAULTS = {
     "buy_low_lookback_days": DIVIDEND_BUY_LOW_LOOKBACK_DAYS,
     "buy_high_lookback_days": DIVIDEND_BUY_HIGH_LOOKBACK_DAYS,
     "buy_min_drawdown_from_high_pct": DIVIDEND_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT,
-    "buy_max_year_range_pct": DIVIDEND_BUY_MAX_YEAR_RANGE_PCT,
     "buy_near_year_low_range_pct": DIVIDEND_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     "buy_near_year_low_spread_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_SPREAD_RELAX,
     "buy_near_year_low_pe_relax": DIVIDEND_BUY_NEAR_YEAR_LOW_PE_RELAX,
@@ -518,7 +544,6 @@ _DIVIDEND_PER_INDEX_DEFAULTS = {
         "buy_pe_percentile_max": 74,
         "buy_max_above_low_pct": 0.06,
         "buy_min_drawdown_from_high_pct": 0.10,
-        "buy_max_year_range_pct": 0.62,
     },
 }
 
@@ -552,12 +577,10 @@ SPREAD_PERCENTILE_WINDOW = DIVIDEND_SPREAD_PERCENTILE_WINDOW
 SPREAD_PERCENTILE_MIN_DAYS = DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS
 
 # --- A 股宽基（各指数独立阈值，不回退 CN_BROAD_* 全局默认）---
-# 买入：股债利差分位 + PE/PB 分位 + 价格位置（多数指标 favorable）；卖出见 cn_broad_signal。
+# 买入：股债利差分位 + 价格位置（多数指标 favorable）；卖出：仅移动止盈。
 # 覆盖方式：CN_BROAD_{代码}_*
 _CN_BROAD_CFG_SUFFIX = {
     "buy_spread_percentile_min": "BUY_SPREAD_PERCENTILE_MIN",
-    "buy_pe_percentile_max": "BUY_PE_PERCENTILE_MAX",
-    "buy_pb_percentile_max": "BUY_PB_PERCENTILE_MAX",
     "buy_require_spread": "BUY_REQUIRE_SPREAD",
     "buy_min_applicable_criteria": "BUY_MIN_APPLICABLE_CRITERIA",
     "buy_min_pass_score_floor": "BUY_MIN_PASS_SCORE_FLOOR",
@@ -570,7 +593,6 @@ _CN_BROAD_CFG_SUFFIX = {
     "buy_max_year_range_pct": "BUY_MAX_YEAR_RANGE_PCT",
     "buy_near_year_low_range_pct": "BUY_NEAR_YEAR_LOW_RANGE_PCT",
     "buy_near_year_low_spread_relax": "BUY_NEAR_YEAR_LOW_SPREAD_RELAX",
-    "buy_near_year_low_pe_relax": "BUY_NEAR_YEAR_LOW_PE_RELAX",
     "buy_near_year_low_above_low_relax": "BUY_NEAR_YEAR_LOW_ABOVE_LOW_RELAX",
     "buy_near_year_low_drawdown_waive_pct": "BUY_NEAR_YEAR_LOW_DRAWDOWN_WAIVE_PCT",
     "buy_mid_range_position_pct": "BUY_MID_RANGE_POSITION_PCT",
@@ -580,13 +602,6 @@ _CN_BROAD_CFG_SUFFIX = {
     "buy_trend_slope_lookback_days": "BUY_TREND_SLOPE_LOOKBACK_DAYS",
     "buy_trend_min_ma_slope_pct": "BUY_TREND_MIN_MA_SLOPE_PCT",
     "buy_trend_downtrend_max_range_pct": "BUY_TREND_DOWNTREND_MAX_RANGE_PCT",
-    "sell_spread_percentile_max": "SELL_SPREAD_PERCENTILE_MAX",
-    "sell_pe_percentile_min": "SELL_PE_PERCENTILE_MIN",
-    "sell_pb_percentile_min": "SELL_PB_PERCENTILE_MIN",
-    "sell_max_above_low_pct": "SELL_MAX_ABOVE_LOW_PCT",
-    "sell_min_year_range_pct": "SELL_MIN_YEAR_RANGE_PCT",
-    "sell_pe_combo_min": "SELL_PE_COMBO_MIN",
-    "sell_valuation_enabled": "SELL_VALUATION_ENABLED",
     "sell_trailing_drawdown_pct": "SELL_TRAILING_DRAWDOWN_PCT",
     "sell_min_unrealized_gain_pct": "SELL_MIN_UNREALIZED_GAIN_PCT",
     "sell_trailing_min_hold_days": "SELL_TRAILING_MIN_HOLD_DAYS",
@@ -612,8 +627,6 @@ def _cn_broad_index_defaults(**overrides):
     """构造单只宽基指数的完整默认阈值（五只指数各自独立，仅用于初始化）。"""
     cfg = {
         "buy_spread_percentile_min": 55,
-        "buy_pe_percentile_max": 68,
-        "buy_pb_percentile_max": 66,
         "buy_require_spread": True,
         "buy_min_applicable_criteria": 2,
         "buy_min_pass_score_floor": 3,
@@ -626,7 +639,6 @@ def _cn_broad_index_defaults(**overrides):
         "buy_max_year_range_pct": 0.48,
         "buy_near_year_low_range_pct": 0.20,
         "buy_near_year_low_spread_relax": 10.0,
-        "buy_near_year_low_pe_relax": 12.0,
         "buy_near_year_low_above_low_relax": 0.04,
         "buy_near_year_low_drawdown_waive_pct": 0.12,
         "buy_mid_range_position_pct": 0.45,
@@ -636,13 +648,6 @@ def _cn_broad_index_defaults(**overrides):
         "buy_trend_slope_lookback_days": 60,
         "buy_trend_min_ma_slope_pct": -0.02,
         "buy_trend_downtrend_max_range_pct": 0.10,
-        "sell_spread_percentile_max": 25.0,
-        "sell_pe_percentile_min": 88.0,
-        "sell_pb_percentile_min": 99.0,
-        "sell_max_above_low_pct": 0.20,
-        "sell_min_year_range_pct": None,
-        "sell_pe_combo_min": None,
-        "sell_valuation_enabled": None,
         "sell_trailing_drawdown_pct": None,
         "sell_min_unrealized_gain_pct": 0.60,
         "sell_trailing_min_hold_days": 90,
@@ -656,17 +661,10 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
     # 中证1000：二次收紧（最严）
     "000852": _cn_broad_index_defaults(
         buy_spread_percentile_min=70,
-        buy_pe_percentile_max=52,
-        buy_pb_percentile_max=56,
         buy_max_above_low_pct=0.05,
         buy_min_drawdown_from_high_pct=0.16,
         buy_max_year_range_pct=0.34,
         buy_mid_range_max_above_low_pct=0.04,
-        sell_spread_percentile_max=25,
-        sell_pe_percentile_min=82,
-        sell_max_above_low_pct=0.24,
-        sell_valuation_enabled=True,
-        # 估值+移动止盈：PE≥82% 且短期涨幅过大可卖；浮盈≥40% 后峰值回撤≥10% 兜底
         sell_trailing_drawdown_pct=0.10,
         sell_min_unrealized_gain_pct=0.40,
         sell_trailing_min_hold_days=60,
@@ -674,18 +672,11 @@ _CN_BROAD_PER_INDEX_DEFAULTS = {
     # 科创50：夏普偏低但绝对收益高，轻度收紧
     "000688": _cn_broad_index_defaults(
         buy_spread_percentile_min=64,
-        buy_pe_percentile_max=52,
-        buy_pb_percentile_max=58,
         buy_max_above_low_pct=0.07,
         buy_min_drawdown_from_high_pct=0.14,
         buy_max_year_range_pct=0.38,
         buy_mid_range_max_above_low_pct=0.05,
         buy_trend_downtrend_max_range_pct=0.06,
-        sell_spread_percentile_max=22,
-        sell_pe_percentile_min=92,
-        sell_max_above_low_pct=0.25,
-        sell_valuation_enabled=False,
-        # 移动止盈：浮盈≥80% 后，自峰值回撤 12.5% 卖出（回测较 14% 约 +8.4pp）
         sell_trailing_drawdown_pct=0.125,
         sell_min_unrealized_gain_pct=0.50,
         sell_trailing_min_hold_days=60,
@@ -707,7 +698,7 @@ def get_cn_broad_signal_config(index_code):
     for key, suffix in _CN_BROAD_CFG_SUFFIX.items():
         default = per_index[key]
         env_names = [f"CN_BROAD_{index_code}_{suffix}"]
-        if key in ("buy_require_spread", "sell_valuation_enabled"):
+        if key in ("buy_require_spread",):
             raw = None
             for name in env_names:
                 raw = os.environ.get(name)
@@ -728,15 +719,13 @@ def get_cn_broad_signal_config(index_code):
 
 
 def cn_broad_valuation_sell_enabled(cfg):
-    """宽基是否启用估值类卖点（显式配置优先；否则仅无移动止盈时默认启用）。"""
-    explicit = cfg.get("sell_valuation_enabled")
-    if explicit is not None:
-        return explicit
-    return cfg.get("sell_trailing_drawdown_pct") is None
+    """宽基估值类卖点已移除。"""
+    del cfg
+    return False
 
 
 # --- 创业板指（399006）---
-# 买入：加权 PE/PB 分位偏低 + PEG(近5年增速) ≤ 阈值（三项须同时满足）
+# 买入：PEG(近5年增速) + 价格位置 + MA 趋势
 CYB_EXPECTED_GROWTH = _env_float("CYB_EXPECTED_GROWTH", 0.3906)
 # 兜底固定增速；启用自动时优先用面板滚动 5 年盈利 CAGR（close/PE）
 CYB_HISTORICAL_GROWTH = _env_float("CYB_HISTORICAL_GROWTH", 0.1663)
@@ -748,34 +737,13 @@ CYB_HISTORICAL_GROWTH_MIN_DAYS = _env_int("CYB_HISTORICAL_GROWTH_MIN_DAYS", 756)
 CYB_HISTORICAL_GROWTH_FLOOR = _env_float("CYB_HISTORICAL_GROWTH_FLOOR", 0.1663)
 CYB_ROE_AVG = _env_float("CYB_ROE_AVG", 0.1229)
 # 创业板指：2016-2025 夏普偏低(0.41)且回撤大，收紧买入
-CYB_BUY_PE_PERCENTILE_MAX = _env_float("CYB_BUY_PE_PERCENTILE_MAX", 46)
-CYB_BUY_PB_PERCENTILE_MAX = _env_float("CYB_BUY_PB_PERCENTILE_MAX", 38)
-CYB_BUY_PEG_EXPECTED_MAX = _env_float("CYB_BUY_PEG_EXPECTED_MAX", 1.1)
 CYB_BUY_PEG_HIST_MAX = _env_float("CYB_BUY_PEG_HIST_MAX", 2.2)
-CYB_SELL_PE_PERCENTILE_MIN = _env_float("CYB_SELL_PE_PERCENTILE_MIN", 78)
-CYB_SELL_PB_PERCENTILE_MIN = _env_float("CYB_SELL_PB_PERCENTILE_MIN", 78)
-CYB_SELL_PEG_HIST_MIN = _env_float("CYB_SELL_PEG_HIST_MIN", 3.0)
-CYB_SELL_COMBO_PE_PERCENTILE_MIN = _env_float("CYB_SELL_COMBO_PE_PERCENTILE_MIN", 60)
-CYB_SELL_COMBO_PB_PERCENTILE_MIN = _env_float("CYB_SELL_COMBO_PB_PERCENTILE_MIN", 60)
-# 移动止盈：浮盈≥100% 后，自峰值回撤 12% 卖出（2015 至今回测超额约 +12%）
-CYB_SELL_TRAILING_DRAWDOWN_PCT = _env_float("CYB_SELL_TRAILING_DRAWDOWN_PCT", 0.12)
-CYB_SELL_MIN_UNREALIZED_GAIN_PCT = _env_float("CYB_SELL_MIN_UNREALIZED_GAIN_PCT", 0.50)
-CYB_SELL_TRAILING_MIN_HOLD_DAYS = _env_int("CYB_SELL_TRAILING_MIN_HOLD_DAYS", 120)
-CYB_SELL_COST_LOOKBACK_DAYS = _env_int("CYB_SELL_COST_LOOKBACK_DAYS", 252)
-CYB_SELL_STAGES = [
-    {"gain_pct": 0.50, "fraction_of_initial": 1 / 3},
-    {"gain_pct": 1.00, "fraction_of_initial": 1 / 3},
-]
 CYB_PERCENTILE_WINDOW = _env_int("CYB_PERCENTILE_WINDOW", 2520)
 CYB_DIV_PERCENTILE_WINDOW = _env_int("CYB_DIV_PERCENTILE_WINDOW", 1260)
 CYB_PERCENTILE_MIN_DAYS = _env_int("CYB_PERCENTILE_MIN_DAYS", 120)
 CYB_BUY_MAX_ABOVE_LOW_PCT = _env_float("CYB_BUY_MAX_ABOVE_LOW_PCT", 0.06)
 CYB_BUY_LOW_LOOKBACK_DAYS = _env_int("CYB_BUY_LOW_LOOKBACK_DAYS", 90)
 CYB_BUY_HIGH_LOOKBACK_DAYS = _env_int("CYB_BUY_HIGH_LOOKBACK_DAYS", 252)
-CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT = _env_float(
-    "CYB_BUY_MIN_DRAWDOWN_FROM_HIGH_PCT", 0.18
-)
-CYB_BUY_MAX_YEAR_RANGE_PCT = _env_float("CYB_BUY_MAX_YEAR_RANGE_PCT", 0.42)
 CYB_BUY_MID_RANGE_POSITION_PCT = _env_float(
     "CYB_BUY_MID_RANGE_POSITION_PCT", 0.45
 )
@@ -795,9 +763,6 @@ CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT = _env_float(
 CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT = _env_float(
     "CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT", BUY_NEAR_YEAR_LOW_RANGE_PCT
 )
-CYB_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
-    "CYB_BUY_NEAR_YEAR_LOW_PE_RELAX", BUY_NEAR_YEAR_LOW_PE_RELAX
-)
 
 # --- 纳斯达克 100（NDX）---
 # 买入：Forward PE 分位 + 10Y 利率分位 + 年区间位置 + MA 趋势
@@ -808,16 +773,9 @@ NDX_FORWARD_PE_URL = _env_str(
 NDX_DIVIDEND_PROXY_SYMBOL = _env_str("NDX_DIVIDEND_PROXY_SYMBOL", "QQQ")
 NDX_EXPECTED_GROWTH = _env_float("NDX_EXPECTED_GROWTH", 0.0) or None
 NDX_FALLBACK_EXPECTED_GROWTH = _env_float("NDX_FALLBACK_EXPECTED_GROWTH", 0.19)
-NDX_HIGH_GROWTH_THRESHOLD = _env_float("NDX_HIGH_GROWTH_THRESHOLD", 0.20)
-NDX_HIGH_GROWTH_PEG_BONUS = _env_float("NDX_HIGH_GROWTH_PEG_BONUS", 0.2)
-NDX_BUY_TRAILING_PE_PERCENTILE_MAX = _env_float(
-    "NDX_BUY_TRAILING_PE_PERCENTILE_MAX", 98
-)
 NDX_BUY_FORWARD_PE_PERCENTILE_MAX = _env_float(
     "NDX_BUY_FORWARD_PE_PERCENTILE_MAX", 87
 )
-NDX_BUY_PEG_FORWARD_MAX = _env_float("NDX_BUY_PEG_FORWARD_MAX", 2.5)
-NDX_BUY_PEG_HIST_MAX = _env_float("NDX_BUY_PEG_HIST_MAX", 1.5)
 NDX_BUY_RATE_PERCENTILE_MAX = _env_float("NDX_BUY_RATE_PERCENTILE_MAX", 99)
 NDX_BUY_RATE_SLOPE_LOOKBACK_DAYS = _env_int("NDX_BUY_RATE_SLOPE_LOOKBACK_DAYS", 21)
 NDX_BUY_RATE_MAX_SLOPE = _env_float("NDX_BUY_RATE_MAX_SLOPE", 0.004)
@@ -859,7 +817,6 @@ NDX_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
 NDX_BUY_NEAR_YEAR_LOW_RATE_RELAX = _env_float(
     "NDX_BUY_NEAR_YEAR_LOW_RATE_RELAX", 12
 )
-NDX_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float("NDX_BUY_NEAR_YEAR_LOW_PEG_RELAX", 0.5)
 
 # --- 标普 500（SPX，逻辑参考纳斯达克 100）---
 SPX_FORWARD_PE_URL = _env_str(
@@ -869,16 +826,9 @@ SPX_FORWARD_PE_URL = _env_str(
 SPX_DIVIDEND_PROXY_SYMBOL = _env_str("SPX_DIVIDEND_PROXY_SYMBOL", "SPY")
 SPX_EXPECTED_GROWTH = _env_float("SPX_EXPECTED_GROWTH", 0.0) or None
 SPX_FALLBACK_EXPECTED_GROWTH = _env_float("SPX_FALLBACK_EXPECTED_GROWTH", 0.10)
-SPX_HIGH_GROWTH_THRESHOLD = _env_float("SPX_HIGH_GROWTH_THRESHOLD", 0.15)
-SPX_HIGH_GROWTH_PEG_BONUS = _env_float("SPX_HIGH_GROWTH_PEG_BONUS", 0.15)
-SPX_BUY_TRAILING_PE_PERCENTILE_MAX = _env_float(
-    "SPX_BUY_TRAILING_PE_PERCENTILE_MAX", 98
-)
 SPX_BUY_FORWARD_PE_PERCENTILE_MAX = _env_float(
     "SPX_BUY_FORWARD_PE_PERCENTILE_MAX", 87
 )
-SPX_BUY_PEG_FORWARD_MAX = _env_float("SPX_BUY_PEG_FORWARD_MAX", 1.8)
-SPX_BUY_PEG_HIST_MAX = _env_float("SPX_BUY_PEG_HIST_MAX", 1.45)
 SPX_BUY_RATE_PERCENTILE_MAX = _env_float("SPX_BUY_RATE_PERCENTILE_MAX", 99)
 SPX_BUY_RATE_SLOPE_LOOKBACK_DAYS = _env_int("SPX_BUY_RATE_SLOPE_LOOKBACK_DAYS", 21)
 SPX_BUY_RATE_MAX_SLOPE = _env_float("SPX_BUY_RATE_MAX_SLOPE", 0.004)
@@ -920,7 +870,6 @@ SPX_BUY_NEAR_YEAR_LOW_PE_RELAX = _env_float(
 SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX = _env_float(
     "SPX_BUY_NEAR_YEAR_LOW_RATE_RELAX", 12
 )
-SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX = _env_float("SPX_BUY_NEAR_YEAR_LOW_PEG_RELAX", 0.5)
 
 # --- 信号强度与冷却期（默认关闭：频次由硬门槛自然决定，不再人为限频）---
 BUY_COOLDOWN_ENABLED = _env_bool("BUY_COOLDOWN_ENABLED", False)
@@ -956,15 +905,112 @@ BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
 # --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
 CN_BROAD_SELL_ENABLED_CODES = frozenset({"000852", "000688"})
-CYB_SELL_ENABLED = _env_bool("CYB_SELL_ENABLED", True)
+DIVIDEND_SELL_ENABLED = _env_bool("DIVIDEND_SELL_ENABLED", True)
+US_INDEX_SELL_ENABLED = _env_bool("US_INDEX_SELL_ENABLED", True)
 # 分批/移动止盈触发后：持仓浮盈须回落至该阈值及以下才允许再买入（默认关，与无人为限频一致）
 SELL_REBUY_GATE_ENABLED = _env_bool("SELL_REBUY_GATE_ENABLED", False)
 SELL_REBUY_MAX_GAIN_PCT = _env_float("SELL_REBUY_MAX_GAIN_PCT", 0.30)
+
+# --- 轮动卖出：仅在有其他指数买点时卖出，并优先复用释放资金 ---
+ROTATION_SELL_ENABLED = _env_bool("ROTATION_SELL_ENABLED", True)
+ROTATION_MARGINAL_HURDLE_ANN_PCT = _env_float(
+    "ROTATION_MARGINAL_HURDLE_ANN_PCT", 10.0
+)
+
+# --- 牛熊市场状态（基于年区间位置 + MA 斜率，无额外数据源）---
+MARKET_REGIME_ENABLED = _env_bool("MARKET_REGIME_ENABLED", False)
+MARKET_REGIME_PROXY_CODES = tuple(
+    c.strip()
+    for c in _env_str("MARKET_REGIME_PROXY_CODES", "000852,399006,NDX").split(",")
+    if c.strip()
+)
+MARKET_REGIME_BULL_RANGE_MIN = _env_float("MARKET_REGIME_BULL_RANGE_MIN", 0.58)
+MARKET_REGIME_BULL_MA_SLOPE_MIN = _env_float("MARKET_REGIME_BULL_MA_SLOPE_MIN", 0.0)
+MARKET_REGIME_BEAR_RANGE_MAX = _env_float("MARKET_REGIME_BEAR_RANGE_MAX", 0.40)
+MARKET_REGIME_BEAR_MA_SLOPE_MAX = _env_float("MARKET_REGIME_BEAR_MA_SLOPE_MAX", -0.025)
+# 牛市：少买、提高轮动估值门槛（难卖）；熊市：多买、降低门槛（易轮动）
+MARKET_REGIME_BULL_BUY_MULT = _env_float("MARKET_REGIME_BULL_BUY_MULT", 0.90)
+MARKET_REGIME_BEAR_BUY_MULT = _env_float("MARKET_REGIME_BEAR_BUY_MULT", 1.12)
+MARKET_REGIME_BULL_ROTATION_HURDLE = _env_float(
+    "MARKET_REGIME_BULL_ROTATION_HURDLE", 14.0
+)
+MARKET_REGIME_BEAR_ROTATION_HURDLE = _env_float(
+    "MARKET_REGIME_BEAR_ROTATION_HURDLE", 7.0
+)
 
 
 def cn_broad_sell_enabled(index_code):
     """单只 A 股宽基是否启用卖出逻辑。"""
     return index_code in CN_BROAD_SELL_ENABLED_CODES
+
+
+def dividend_sell_enabled(index_code=None):
+    """红利指数是否启用卖出逻辑。"""
+    return DIVIDEND_SELL_ENABLED
+
+
+def us_index_sell_enabled(key=None):
+    """美股指数是否启用卖出逻辑。"""
+    return US_INDEX_SELL_ENABLED
+
+
+# --- 红利指数卖出（仅移动止盈）---
+DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT = _env_float(
+    "DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT", 0.10
+)
+DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT = _env_float(
+    "DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT", 0.40
+)
+DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS = _env_int(
+    "DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS", 60
+)
+
+
+def get_dividend_sell_config(index_code):
+    """红利指数移动止盈参数。"""
+    return {
+        "sell_trailing_drawdown_pct": _env_float_any(
+            (
+                f"DIVIDEND_{index_code}_SELL_TRAILING_DRAWDOWN_PCT",
+                "DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT",
+            ),
+            DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT,
+        ),
+        "sell_min_unrealized_gain_pct": _env_float_any(
+            (
+                f"DIVIDEND_{index_code}_SELL_MIN_UNREALIZED_GAIN_PCT",
+                "DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT",
+            ),
+            DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT,
+        ),
+        "sell_trailing_min_hold_days": _env_int_any(
+            (
+                f"DIVIDEND_{index_code}_SELL_TRAILING_MIN_HOLD_DAYS",
+                "DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS",
+            ),
+            DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS,
+        ),
+    }
+
+
+def get_us_index_sell_config(key):
+    """美股指数移动止盈与估值卖点参数（key: ndx / spx）。"""
+    prefix = key.upper()
+    return {
+        "sell_trailing_pe_percentile_min": _env_float(
+            f"{prefix}_SELL_TRAILING_PE_PERCENTILE_MIN", 88
+        ),
+        "sell_max_above_low_pct": _env_float(f"{prefix}_SELL_MAX_ABOVE_LOW_PCT", 0.30),
+        "sell_trailing_drawdown_pct": _env_float(
+            f"{prefix}_SELL_TRAILING_DRAWDOWN_PCT", 0.12
+        ),
+        "sell_min_unrealized_gain_pct": _env_float(
+            f"{prefix}_SELL_MIN_UNREALIZED_GAIN_PCT", 0.50
+        ),
+        "sell_trailing_min_hold_days": _env_int(
+            f"{prefix}_SELL_TRAILING_MIN_HOLD_DAYS", 90
+        ),
+    }
 
 
 # 无日度国债数据时按年回填（2024-09 起用接口真实日度数据）

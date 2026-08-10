@@ -9,7 +9,6 @@ from config import (
     BUY_TREND_SLOPE_LOOKBACK_DAYS,
     CYB_BUY_HIGH_LOOKBACK_DAYS,
     CYB_BUY_LOW_LOOKBACK_DAYS,
-    CYB_BUY_MAX_YEAR_RANGE_PCT,
     CYB_DIV_PERCENTILE_WINDOW,
     CYB_INDEX,
     CYB_PERCENTILE_MIN_DAYS,
@@ -372,7 +371,6 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
         **row_price_position_fields(latest),
     }
     from cyb_signal import evaluate_cyb_signal
-    from config import CYB_SELL_COST_LOOKBACK_DAYS
     from sell_trailing import (
         attach_buy_signal_column,
         compute_peak_since_last_buy_from_column,
@@ -397,7 +395,7 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
     panel = attach_buy_signal_column(panel, evaluate_cyb_signal, _row_snap)
     snapshot["recent_signal_buy_avg"] = compute_recent_signal_buy_avg_from_column(
         panel,
-        lookback_days=CYB_SELL_COST_LOOKBACK_DAYS,
+        lookback_days=CYB_BUY_HIGH_LOOKBACK_DAYS,
     )
     snapshot["peak_since_last_buy"] = compute_peak_since_last_buy_from_column(panel)
     snapshot["last_buy_signal_price"] = last_buy_signal_price_from_column(panel)

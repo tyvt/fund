@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from backtest_metrics import compute_strategy_metrics
+from backtest_metrics import compute_strategy_metrics, merge_capital_metrics_pair
 from backtest_buy_signals import (
     BACKTEST_RETURN_FOOTNOTE,
     CN_BROAD_BACKTEST_INDICES,
@@ -20,34 +20,45 @@ from backtest_buy_signals import (
 from cn_broad_signal import evaluate_cn_broad_buy
 from config import (
     BACKTEST_RISK_FREE_RATE,
-    cn_broad_valuation_sell_enabled,
     CYB_BUY_MAX_ABOVE_LOW_PCT,
-    CYB_BUY_MAX_YEAR_RANGE_PCT,
-    CYB_BUY_PB_PERCENTILE_MAX,
-    CYB_BUY_PE_PERCENTILE_MAX,
     CYB_BUY_PEG_HIST_MAX,
     CYB_INDEX,
-    CYB_SELL_ENABLED,
-    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-    CYB_SELL_TRAILING_DRAWDOWN_PCT,
-    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     cn_broad_sell_enabled,
+    dividend_sell_enabled,
     format_backtest_amount_note,
     get_backtest_buy_amount,
     get_chart_buy_amount,
     get_cn_broad_signal_config,
+    get_dividend_sell_config,
+    get_dividend_signal_config,
+    get_us_index_sell_config,
     INDICES,
     BACKTEST_OUTPUT_DIR,
+    ROTATION_MARGINAL_HURDLE_ANN_PCT,
+    ROTATION_SELL_ENABLED,
     resolve_backtest_amounts,
     US_INDEX_KEYS,
+    us_index_sell_enabled,
 )
 from buy_amount_config import resolve_simulate_amount
 from cyb_signal import evaluate_cyb_signal
-from sell_trailing import simulate_trades_trailing, valuation_sell_hit_cn_broad
+from sell_trailing import (
+    simulate_trades_trailing,
+    valuation_sell_hit_cn_broad,
+    valuation_sell_hit_dividend,
+    valuation_sell_hit_us_index,
+)
 from dividend_data import is_buy_signal_row
 
 BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 DEFAULT_START = "2015-01-01"
+_rotation_sell_dates_cache: dict[str, list[str]] = {}
+
+
+@dataclass
+class PortfolioSummary:
+    rotation: object
+    hold: object
 
 
 @dataclass
@@ -72,9 +83,23 @@ class TradeResult:
     benchmark_sharpe: float | None = None
     max_drawdown_pct: float | None = None
     annualized_return_pct: float | None = None
+    xirr_pct: float | None = None
+    buy_only_xirr_pct: float | None = None
+    deployed_annualized_return_pct: float | None = None
+    buy_only_deployed_annualized_return_pct: float | None = None
+    capital_utilization_pct: float | None = None
+    buy_only_capital_utilization_pct: float | None = None
+    time_in_market_pct: float | None = None
+    buy_only_time_in_market_pct: float | None = None
     note: str = "日频，每交易日评估"
     buy_dates: list = field(default_factory=list)
     sell_dates: list = field(default_factory=list)
+
+
+def _trade_result_fields(stats: dict) -> dict:
+    skip = {"code", "name", "has_sell", "note"}
+    allowed = set(TradeResult.__dataclass_fields__) - skip
+    return {k: stats[k] for k in allowed if k in stats}
 
 
 def _excluded_trade_result(
@@ -159,49 +184,78 @@ def _cn_broad_trailing_cfg(code):
 
 
 def _cn_broad_valuation_sell_fn(code):
-    cfg = get_cn_broad_signal_config(code)
-    if not cn_broad_valuation_sell_enabled(cfg):
-        return None
-    from sell_trailing import row_field
+    return None
 
-    def _sell(row):
-        snap = {
-            "code": code,
-            "pe_percentile": row_field(row, "pe_percentile"),
-            "pb_percentile": row_field(row, "pb_percentile"),
-            "spread_percentile": row_field(row, "spread_percentile"),
+
+def _dividend_trailing_cfg(code):
+    if not dividend_sell_enabled(code):
+        return None
+    cfg = get_dividend_sell_config(code)
+    if cfg.get("sell_trailing_drawdown_pct") is None:
+        return None
+    return {
+        "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
+        "min_unrealized_gain_pct": cfg.get("sell_min_unrealized_gain_pct"),
+        "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
+    }
+
+
+def _dividend_valuation_sell_fn(code):
+    return None
+
+
+def _us_trailing_cfg(key):
+    if not us_index_sell_enabled(key):
+        return None
+    cfg = get_us_index_sell_config(key)
+    if cfg.get("sell_trailing_drawdown_pct") is None:
+        return None
+    min_gain = cfg.get("sell_min_unrealized_gain_pct")
+    if key.lower() == "spx":
+        min_gain = 0.0
+    return {
+        "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
+        "min_unrealized_gain_pct": min_gain,
+        "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
+    }
+
+
+def _us_valuation_sell_fn(key, historical_growth=None):
+    if not us_index_sell_enabled(key):
+        return None
+
+    from us_index_signal import is_buy as is_us_index_buy, resolve_expected_growth
+
+    cfg = get_us_index_sell_config(key)
+
+    def _sell(row, k=key, g=historical_growth):
+        from sell_trailing import row_field
+
+        sell_snap = {
+            "forward_pe_percentile": row_field(row, "forward_pe_percentile"),
+            "trailing_pe_percentile": row_field(row, "trailing_pe_percentile"),
             "pct_above_low": row_field(row, "pct_above_low"),
-            "year_range_position": row_field(row, "year_range_position"),
         }
-        buy_ev = evaluate_cn_broad_buy(
-            {
-                **snap,
-                "pct_below_high": row_field(row, "pct_below_high"),
-                "year_range_position": row_field(row, "year_range_position"),
-                "ma_slope_pct": row_field(row, "ma_slope_pct"),
-            },
-            buy_only=True,
+        buy_snap = {
+            "forward_pe": row_field(row, "forward_pe"),
+            "trailing_pe": row_field(row, "trailing_pe"),
+            "forward_pe_percentile": row_field(row, "forward_pe_percentile"),
+            "trailing_pe_percentile": row_field(row, "trailing_pe_percentile"),
+            "us10y_percentile": row_field(row, "us10y_percentile"),
+            "us10y_slope": row_field(row, "us10y_slope"),
+            "implied_growth": row_field(row, "implied_growth"),
+            "historical_growth": g,
+            "pct_above_low": row_field(row, "pct_above_low"),
+            "pct_below_high": row_field(row, "pct_below_high"),
+            "year_range_position": row_field(row, "year_range_position"),
+            "ma_slope_pct": row_field(row, "ma_slope_pct"),
+        }
+        buy_snap["expected_growth"] = resolve_expected_growth(k, buy_snap)
+        return valuation_sell_hit_us_index(sell_snap, cfg) and not is_us_index_buy(
+            k, buy_snap
         )
-        return valuation_sell_hit_cn_broad(snap, cfg) and not buy_ev["is_buy"]
 
     return _sell
-
-
-def _cyb_trailing_cfg():
-    from config import CYB_SELL_STAGES
-
-    if not CYB_SELL_ENABLED or (
-        CYB_SELL_TRAILING_DRAWDOWN_PCT is None and not CYB_SELL_STAGES
-    ):
-        return None
-    trail = {
-        "trailing_drawdown_pct": CYB_SELL_TRAILING_DRAWDOWN_PCT,
-        "min_unrealized_gain_pct": CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-        "min_hold_days": CYB_SELL_TRAILING_MIN_HOLD_DAYS,
-    }
-    if CYB_SELL_STAGES:
-        trail["stages"] = CYB_SELL_STAGES
-    return trail
 
 
 def _cooldown_buy_fn(
@@ -458,11 +512,17 @@ def simulate_trades(
     buy_dates = []
     sell_dates = []
 
+    from backtest_metrics import CapitalTracker
+
+    trade_capital = CapitalTracker()
+    buy_only_capital = CapitalTracker()
+
     cols = sample.columns.tolist()
     for tup in sample.itertuples(index=False, name=None):
         row = dict(zip(cols, tup))
         price = float(row[val_col])
-        day = row["_dt"].strftime("%Y-%m-%d")
+        dt = row["_dt"]
+        day = dt.strftime("%Y-%m-%d")
         is_buy = buy_fn(row) if buy_fn else False
         is_sell = sell_fn(row) if sell_fn and has_sell else False
 
@@ -473,11 +533,18 @@ def simulate_trades(
             total_bought += buy_amount
             buy_count += 1
             buy_dates.append(day)
+            trade_capital.record_buy(dt, buy_amount)
+            buy_only_capital.record_buy(dt, buy_amount)
         elif is_sell and units > 0:
-            total_sold += units * price
+            proceeds = units * price
+            total_sold += proceeds
+            trade_capital.record_sell(dt, proceeds)
             units = 0.0
             sell_count += 1
             sell_dates.append(day)
+
+        trade_capital.record_day(units * price)
+        buy_only_capital.record_day(buy_only_units * price)
 
     final_value = total_sold + units * latest_price
     profit = final_value - total_bought
@@ -487,6 +554,20 @@ def simulate_trades(
     buy_only_profit = buy_only_value - total_bought
     buy_only_return_pct = (
         buy_only_profit / total_bought * 100 if total_bought > 0 else None
+    )
+
+    trading_days = len(sample)
+    capital = merge_capital_metrics_pair(
+        trade_capital.finalize(
+            latest_date, final_value, trading_days, profit, total_bought
+        ),
+        buy_only_capital.finalize(
+            latest_date,
+            buy_only_value,
+            trading_days,
+            buy_only_profit,
+            total_bought,
+        ),
     )
 
     return {
@@ -505,6 +586,7 @@ def simulate_trades(
         "buy_only_return_pct": buy_only_return_pct,
         "buy_dates": buy_dates,
         "sell_dates": sell_dates,
+        **capital,
     }
 
 
@@ -526,11 +608,70 @@ def _resolve_trade_amount(
     )
 
 
+def _merge_rotation_results(hold_results, rotation_portfolio) -> list[TradeResult]:
+    rot_by_code = rotation_portfolio.per_index
+    merged = []
+    for hold in hold_results:
+        rot = rot_by_code.get(hold.code)
+        if rot is None:
+            merged.append(hold)
+            continue
+        note = hold.note
+        if rot.has_sell:
+            note = "智能轮动（共享资金池；单指数市值不含池内未分配现金）"
+        merged.append(
+            TradeResult(
+                code=hold.code,
+                name=hold.name,
+                has_sell=rot.has_sell,
+                buy_count=rot.buy_count,
+                sell_count=rot.sell_count,
+                total_bought=rot.new_money_in,
+                total_sold=rot.sell_proceeds,
+                final_units=rot.final_units,
+                final_price=rot.final_price,
+                final_date=rot.final_date,
+                final_value=rot.final_value,
+                profit=rot.profit,
+                return_pct=rot.return_pct,
+                buy_only_value=hold.buy_only_value,
+                buy_only_profit=hold.buy_only_profit,
+                buy_only_return_pct=hold.buy_only_return_pct,
+                sharpe_ratio=hold.sharpe_ratio,
+                benchmark_sharpe=hold.benchmark_sharpe,
+                max_drawdown_pct=hold.max_drawdown_pct,
+                annualized_return_pct=hold.annualized_return_pct,
+                xirr_pct=None,
+                buy_only_xirr_pct=hold.buy_only_xirr_pct,
+                deployed_annualized_return_pct=None,
+                buy_only_deployed_annualized_return_pct=hold.buy_only_deployed_annualized_return_pct,
+                capital_utilization_pct=None,
+                buy_only_capital_utilization_pct=hold.buy_only_capital_utilization_pct,
+                time_in_market_pct=None,
+                buy_only_time_in_market_pct=hold.buy_only_time_in_market_pct,
+                note=note,
+                buy_dates=list(rot.buy_dates),
+                sell_dates=list(rot.sell_dates),
+            )
+        )
+    return merged
+
+
+def _cache_rotation_sell_dates(per_index: dict) -> None:
+    global _rotation_sell_dates_cache
+    _rotation_sell_dates_cache = {
+        code: list(item.sell_dates) for code, item in per_index.items()
+    }
+
+
 def backtest_all(
     start_date=DEFAULT_START,
     end_date=None,
     amounts=None,
     panels=None,
+    *,
+    rotation: bool | None = None,
+    buy_only: bool = False,
 ):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -538,9 +679,52 @@ def backtest_all(
     from buy_amount_ranking import _preload_ranking_panels
 
     if amounts is None:
-        amounts = resolve_backtest_amounts()
+        amounts = resolve_backtest_amounts(panels=panels)
     panels = panels or get_panels()
     _preload_ranking_panels(panels)
+
+    if rotation is None:
+        rotation = ROTATION_SELL_ENABLED and not buy_only
+
+    if rotation:
+        hold_results, _ = backtest_all(
+            start_date,
+            end_date,
+            amounts=amounts,
+            panels=panels,
+            rotation=False,
+            buy_only=True,
+        )
+        from backtest_rotation import run_portfolio_rotation
+        from config import MARKET_REGIME_ENABLED
+        from market_regime import build_regime_by_day
+
+        regime_by_day = None
+        if MARKET_REGIME_ENABLED:
+            regime_by_day = build_regime_by_day(panels, start_date, end_date)
+
+        rot = run_portfolio_rotation(
+            start_date,
+            end_date,
+            amounts,
+            panels,
+            mode="rotation",
+            regime_by_day=regime_by_day,
+        )
+        hold_port = run_portfolio_rotation(
+            start_date,
+            end_date,
+            amounts,
+            panels,
+            mode="hold",
+            use_pool=False,
+            rotation_gate=False,
+            regime_by_day=regime_by_day,
+        )
+        results = _merge_rotation_results(hold_results, rot)
+        _cache_rotation_sell_dates(rot.per_index)
+        return results, PortfolioSummary(rotation=rot, hold=hold_port)
+
     results = []
 
     for item in INDICES:
@@ -565,18 +749,24 @@ def backtest_all(
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
-        stats = simulate_trades(
+        sell_on = False if buy_only else dividend_sell_enabled(code)
+        trail_cfg = _dividend_trailing_cfg(code) if sell_on else None
+        val_sell_fn = _dividend_valuation_sell_fn(code) if sell_on else None
+        stats = _run_index_trades(
             panel,
+            code,
             start_date,
             end_date,
-            amount=sim_amt,
-            buy_fn=buy_fn,
-            has_sell=False,
+            sim_amt,
+            buy_fn,
+            None,
+            sell_on,
+            trailing_cfg=trail_cfg,
+            valuation_sell_fn=val_sell_fn,
             valuation_price_col="total_return_close",
-            index_code=code,
         )
         if stats:
-            ret = stats.get("buy_only_return_pct")
+            ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
             metrics = _attach_risk_metrics(
                 panel,
                 start_date,
@@ -584,7 +774,7 @@ def backtest_all(
                 amt,
                 buy_fn,
                 None,
-                False,
+                sell_on,
                 ret,
                 valuation_price_col="total_return_close",
             )
@@ -594,8 +784,8 @@ def backtest_all(
                 TradeResult(
                     code=code,
                     name=item["name"],
-                    has_sell=False,
-                    **stats,
+                    has_sell=sell_on,
+                    **_trade_result_fields(stats),
                 )
             )
 
@@ -603,7 +793,7 @@ def backtest_all(
         panel = panels.cn_broad_panel(item["code"])
         code = item["code"]
         amt = get_backtest_buy_amount(code, amounts)
-        sell_on = cn_broad_sell_enabled(code)
+        sell_on = False if buy_only else cn_broad_sell_enabled(code)
         trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
         buy_fn, sell_fn = _cn_broad_signal_fns(code, buy_only=not sell_on)
         excluded = _skip_or_excluded_trade(
@@ -655,7 +845,7 @@ def backtest_all(
                 code=code,
                 name=item["name"],
                 has_sell=sell_on,
-                **stats,
+                **_trade_result_fields(stats),
             )
         ]
 
@@ -666,8 +856,7 @@ def backtest_all(
     cyb_panel = panels.cyb_panel()
     cyb_code = CYB_INDEX["code"]
     cyb_amt = get_backtest_buy_amount(cyb_code, amounts)
-    trail_cfg = _cyb_trailing_cfg()
-    cyb_buy, cyb_sell = _cyb_signal_fns(buy_only=not CYB_SELL_ENABLED)
+    cyb_buy, cyb_sell = _cyb_signal_fns(buy_only=buy_only)
     excluded = _skip_or_excluded_trade(
         cyb_amt,
         amounts,
@@ -677,7 +866,7 @@ def backtest_all(
         end_date,
         cyb_buy,
         CYB_INDEX["name"],
-        has_sell=CYB_SELL_ENABLED,
+        has_sell=False,
         date_col="date",
     )
     if excluded is not None:
@@ -694,8 +883,8 @@ def backtest_all(
             sim_amt,
             cyb_buy,
             cyb_sell,
-            CYB_SELL_ENABLED,
-            trailing_cfg=trail_cfg,
+            False,
+            trailing_cfg=None,
             date_col="date",
         )
         if stats:
@@ -707,7 +896,7 @@ def backtest_all(
                 cyb_amt,
                 cyb_buy,
                 cyb_sell,
-                CYB_SELL_ENABLED,
+                False,
                 ret,
             )
             metrics.pop("trading_days", None)
@@ -716,8 +905,8 @@ def backtest_all(
                 TradeResult(
                     code=CYB_INDEX["code"],
                     name=CYB_INDEX["name"],
-                    has_sell=CYB_SELL_ENABLED,
-                    **stats,
+                    has_sell=False,
+                    **_trade_result_fields(stats),
                 )
             )
 
@@ -743,17 +932,23 @@ def backtest_all(
         sim_amt = _resolve_trade_amount(
             meta["code"], us_amt, amounts, daily, start_date, end_date, us_buy
         )
-        stats = simulate_trades(
+        sell_on = False if buy_only else us_index_sell_enabled(key)
+        trail_cfg = _us_trailing_cfg(key) if sell_on else None
+        val_sell_fn = _us_valuation_sell_fn(key, growth) if sell_on else None
+        stats = _run_index_trades(
             daily,
+            meta["code"],
             start_date,
             end_date,
-            amount=sim_amt,
-            buy_fn=us_buy,
-            has_sell=False,
-            index_code=meta["code"],
+            sim_amt,
+            us_buy,
+            None,
+            sell_on,
+            trailing_cfg=trail_cfg,
+            valuation_sell_fn=val_sell_fn,
         )
         if stats:
-            ret = stats.get("buy_only_return_pct")
+            ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
             metrics = _attach_risk_metrics(
                 daily,
                 start_date,
@@ -761,7 +956,7 @@ def backtest_all(
                 us_amt,
                 us_buy,
                 None,
-                False,
+                sell_on,
                 ret,
             )
             metrics.pop("trading_days", None)
@@ -770,13 +965,13 @@ def backtest_all(
                 TradeResult(
                     code=meta["code"],
                     name=meta["name"],
-                    has_sell=False,
+                    has_sell=sell_on,
                     note=US_INDEX_NOTES[key],
-                    **stats,
+                    **_trade_result_fields(stats),
                 )
             )
 
-    return results
+    return results, None
 
 
 def _append_sell_dates_column(table, sell_dates):
@@ -795,7 +990,10 @@ def resolve_chart_sell_dates(
     date_col="date",
     price_col="close",
 ):
-    """按波段回测模拟结果返回图表用卖出日期（移动止盈与回测收益一致）。"""
+    """按波段/轮动回测模拟结果返回图表用卖出日期。"""
+    if _rotation_sell_dates_cache and code in _rotation_sell_dates_cache:
+        return list(_rotation_sell_dates_cache[code])
+
     amt = get_chart_buy_amount(code, amounts)
     if amt <= 0:
         return []
@@ -825,9 +1023,10 @@ def resolve_chart_sell_dates(
             )
             return stats.get("sell_dates", []) if stats else []
 
-    if code == CYB_INDEX["code"] and CYB_SELL_ENABLED:
-        trail_cfg = _cyb_trailing_cfg()
-        if trail_cfg:
+    if dividend_sell_enabled(code):
+        trail_cfg = _dividend_trailing_cfg(code)
+        val_fn = _dividend_valuation_sell_fn(code)
+        if trail_cfg or val_fn:
             stats = _run_index_trades(
                 panel,
                 code,
@@ -838,6 +1037,29 @@ def resolve_chart_sell_dates(
                 lambda r: False,
                 True,
                 trailing_cfg=trail_cfg,
+                valuation_sell_fn=val_fn,
+                date_col=date_col,
+                valuation_price_col=price_col,
+            )
+            return stats.get("sell_dates", []) if stats else []
+
+    for key, meta in US_INDEX_META.items():
+        if meta["code"] != code or not us_index_sell_enabled(key):
+            continue
+        trail_cfg = _us_trailing_cfg(key)
+        val_fn = _us_valuation_sell_fn(key)
+        if trail_cfg or val_fn:
+            stats = _run_index_trades(
+                panel,
+                code,
+                start_date,
+                end_date,
+                sim_amt,
+                buy_fn,
+                lambda r: False,
+                True,
+                trailing_cfg=trail_cfg,
+                valuation_sell_fn=val_fn,
                 date_col=date_col,
                 valuation_price_col=price_col,
             )
@@ -901,7 +1123,7 @@ def collect_trade_chart_tables(
     )
 
     if amounts is None:
-        amounts = resolve_backtest_amounts()
+        amounts = resolve_backtest_amounts(panels=panels)
     from backtest_buy_signals import get_panels
 
     panels = panels or get_panels()
@@ -955,11 +1177,24 @@ def collect_trade_chart_tables(
         code = item["code"]
         panel = panels.dividend_panel(code)
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
+
+        def _div_sell_dates(c=code, p=panel, bf=buy_fn):
+            return resolve_chart_sell_dates(
+                c,
+                p,
+                start_date,
+                end_date,
+                amounts,
+                bf,
+                price_col="total_return_close",
+            )
+
         _maybe_add(
             panel,
             code,
             item["name"],
             buy_fn,
+            sell_dates_fn=_div_sell_dates if dividend_sell_enabled(code) else None,
             price_col="total_return_close",
         )
 
@@ -985,33 +1220,33 @@ def collect_trade_chart_tables(
         )
 
     cyb_panel = panels.cyb_panel()
-    cyb_buy, _ = _cyb_signal_fns(buy_only=not CYB_SELL_ENABLED)
-
-    def _cyb_sell_dates():
-        if not CYB_SELL_ENABLED:
-            return []
-        return resolve_chart_sell_dates(
-            CYB_INDEX["code"],
-            cyb_panel,
-            start_date,
-            end_date,
-            amounts,
-            cyb_buy,
-        )
+    cyb_buy, _ = _cyb_signal_fns(buy_only=True)
 
     _maybe_add(
         cyb_panel,
         CYB_INDEX["code"],
         CYB_INDEX["name"],
         cyb_buy,
-        sell_dates_fn=_cyb_sell_dates if CYB_SELL_ENABLED else None,
+        sell_dates_fn=None,
     )
 
     for key in US_INDEX_KEYS:
         daily, growth = panels.us_index_panel(key)
         meta = US_INDEX_META[key]
         us_buy = lambda r, k=key, g=growth: _us_buy_snapshot(k, r, g)
-        _maybe_add(daily, meta["code"], meta["name"], us_buy)
+
+        def _us_sell_dates(c=meta["code"], p=daily, bf=us_buy, enabled=us_index_sell_enabled(key)):
+            if not enabled:
+                return []
+            return resolve_chart_sell_dates(c, p, start_date, end_date, amounts, bf)
+
+        _maybe_add(
+            daily,
+            meta["code"],
+            meta["name"],
+            us_buy,
+            sell_dates_fn=_us_sell_dates if us_index_sell_enabled(key) else None,
+        )
 
     return tables
 
@@ -1022,10 +1257,10 @@ def _md_money(value):
     return f"{value:,.0f}"
 
 
-def _md_pct(value):
+def _md_pct(value, digits: int = 1):
     if value is None:
         return "—"
-    return f"{value:+.1f}%"
+    return f"{value:+.{digits}f}%"
 
 
 def _md_sharpe(value):
@@ -1040,7 +1275,24 @@ def _effective_return(r: TradeResult):
     return r.buy_only_return_pct
 
 
-def _trade_totals(results):
+def _trade_totals(results, portfolio=None):
+    if portfolio is not None:
+        rot = portfolio.rotation
+        hold = portfolio.hold
+        return {
+            "buy_count": rot.buy_count,
+            "sell_count": rot.sell_count,
+            "total_bought": rot.total_new_money,
+            "trade_value": rot.final_value,
+            "trade_profit": rot.profit,
+            "trade_ret": rot.return_pct,
+            "buy_only_value": hold.final_value,
+            "buy_only_profit": hold.profit,
+            "buy_only_ret": hold.return_pct,
+            "rotation_xirr": rot.xirr_pct,
+            "hold_xirr": hold.xirr_pct,
+            "pool_reused": rot.pool_reused,
+        }
     total_bought = sum(r.total_bought for r in results)
     trade_value = 0.0
     trade_profit = 0.0
@@ -1075,31 +1327,131 @@ def _format_config_snapshot():
     lines = [
         "## 当前买入阈值（本报告依据）",
         "",
-        "| 指数 | 代码 | 利差分位 | PE | PB | 距低点 | 年区间 | 卖出 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| 指数 | 代码 | 利差分位 | PE/估值 | 距低点 | 年区间 | 卖出 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
     ]
     for item in CN_BROAD_BACKTEST_INDICES:
         cfg = get_cn_broad_signal_config(item["code"])
-        sell = "移动止盈"
-        if cn_broad_valuation_sell_enabled(cfg):
-            sell += "+估值"
         lines.append(
             f"| {item['name']} | {item['code']} | "
-            f"≥{cfg['buy_spread_percentile_min']:.0f}% | "
-            f"≤{cfg['buy_pe_percentile_max']:.0f}% | "
-            f"≤{cfg['buy_pb_percentile_max']:.0f}% | "
+            f"≥{cfg['buy_spread_percentile_min']:.0f}% | — | "
             f"≤{cfg['buy_max_above_low_pct'] * 100:.0f}% | "
-            f"≤{cfg['buy_max_year_range_pct'] * 100:.0f}% | {sell} |"
+            f"≤{cfg['buy_max_year_range_pct'] * 100:.0f}% | 移动止盈 |"
+        )
+    for item in INDICES:
+        code = item["code"]
+        buy_cfg = get_dividend_signal_config(code)
+        lines.append(
+            f"| {item['name']} | {code} | "
+            f"≥{buy_cfg['buy_spread_percentile_min']:.0f}% | "
+            f"≤{buy_cfg['buy_pe_percentile_max']:.0f}% | "
+            f"≤{buy_cfg['buy_max_above_low_pct'] * 100:.0f}% | — | 移动止盈 |"
         )
     lines.extend([
         f"| 创业板指 | {CYB_INDEX['code']} | — | "
-        f"≤{CYB_BUY_PE_PERCENTILE_MAX:.0f}% | ≤{CYB_BUY_PB_PERCENTILE_MAX:.0f}% | "
-        f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | "
-        f"≤{CYB_BUY_MAX_YEAR_RANGE_PCT * 100:.0f}% | 移动止盈 |",
+        f"PEG≤{CYB_BUY_PEG_HIST_MAX:.1f} | "
+        f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | — | — |",
+    ])
+    for key in US_INDEX_KEYS:
+        meta = US_INDEX_META[key]
+        import config as _cfg
+
+        prefix = key.upper()
+        fwd_pe_max = getattr(_cfg, f"{prefix}_BUY_FORWARD_PE_PERCENTILE_MAX")
+        yr_max = getattr(_cfg, f"{prefix}_BUY_MAX_YEAR_RANGE_PCT")
+        lines.append(
+            f"| {meta['name']} | {meta['code']} | — | "
+            f"Fwd PE≤{fwd_pe_max:.0f}% | — | "
+            f"≤{yr_max * 100:.0f}% | 移动止盈+估值 |"
+        )
+    lines.extend([
         "",
-        f"创业板 PEG(5年) ≤ {CYB_BUY_PEG_HIST_MAX}；完整阈值见 `config.py` / `README.md`。",
+        "完整阈值见 `config.py` / `README.md`。",
         "",
     ])
+    return lines
+
+
+def _effective_xirr(r: TradeResult) -> float | None:
+    if r.has_sell:
+        return r.xirr_pct
+    return r.buy_only_xirr_pct
+
+
+def _capital_efficiency_verdict(r: TradeResult) -> str:
+    trade_xirr = _effective_xirr(r)
+    hold_xirr = r.buy_only_xirr_pct
+    if trade_xirr is None or hold_xirr is None:
+        return "—"
+    diff = trade_xirr - hold_xirr
+    if diff >= 1.0:
+        return "轮动更优"
+    if diff <= -1.0:
+        return "持有更优"
+    return "接近"
+
+
+def _format_capital_efficiency_section(results):
+    lines = [
+        "",
+        "## 资金时间利用效率（轮动 vs 持有）",
+        "",
+        "> **XIRR**：货币加权年化收益率，考虑每次买卖的时间点；"
+        "半年赚 100% 与一年赚 110% 在 XIRR 上可区分。",
+        "> **持仓年化**：利润 ÷ 日均持仓市值，再按回测区间年化；"
+        "反映单位在仓资金的时间产出。",
+        "> **资金占用率**：日均持仓市值 ÷ 累计投入；越低说明卖出后闲置现金越多。",
+        "> **在仓占比**：有持仓的交易日占区间比例。",
+        "",
+        "| 指数 | 代码 | 轮动XIRR | 持有XIRR | 差值 | 轮动持仓年化 | 持有持仓年化 | "
+        "轮动占用率 | 持有占用率 | 在仓占比(轮/持) | 结论 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    trade_xirr_sum = 0.0
+    hold_xirr_sum = 0.0
+    n = 0
+    band_wins = 0
+    hold_wins = 0
+    for r in results:
+        trade_xirr = _effective_xirr(r)
+        hold_xirr = r.buy_only_xirr_pct
+        if trade_xirr is not None and hold_xirr is not None:
+            n += 1
+            trade_xirr_sum += trade_xirr
+            hold_xirr_sum += hold_xirr
+            diff = trade_xirr - hold_xirr
+            if diff >= 1.0:
+                band_wins += 1
+            elif diff <= -1.0:
+                hold_wins += 1
+            diff_text = f"{diff:+.1f}%"
+        else:
+            diff_text = "—"
+        time_text = "—"
+        if r.time_in_market_pct is not None and r.buy_only_time_in_market_pct is not None:
+            time_text = (
+                f"{r.time_in_market_pct:.0f}%/"
+                f"{r.buy_only_time_in_market_pct:.0f}%"
+            )
+        lines.append(
+            f"| {r.name} | {r.code} | {_md_pct(trade_xirr)} | {_md_pct(hold_xirr)} | "
+            f"{diff_text} | {_md_pct(r.deployed_annualized_return_pct)} | "
+            f"{_md_pct(r.buy_only_deployed_annualized_return_pct)} | "
+            f"{_md_pct(r.capital_utilization_pct, 0)} | "
+            f"{_md_pct(r.buy_only_capital_utilization_pct, 0)} | "
+            f"{time_text} | {_capital_efficiency_verdict(r)} |"
+        )
+    if n:
+        lines.extend([
+            "",
+            f"**汇总**：{n} 个指数中，按 XIRR 轮动更优 **{band_wins}** 个、"
+            f"持有更优 **{hold_wins}** 个、接近 **{n - band_wins - hold_wins}** 个；"
+            f"平均 XIRR 轮动 {trade_xirr_sum / n:+.1f}%、"
+            f"持有 {hold_xirr_sum / n:+.1f}%。",
+            "",
+            "**解读**：组合级 XIRR 见上文「组合收益」；单指数 XIRR 在共享资金池下不单独计算。",
+            "若轮动总收益高于持有且 XIRR 接近，说明资金池复用有效。",
+        ])
     return lines
 
 
@@ -1134,7 +1486,7 @@ def _format_amount_snapshot(amounts):
             lines.extend(
                 [
                     "",
-                    "实际单次 = 基准 × clamp(1 − 敏感度 × 当日涨跌幅，"
+                    "实际单次 = 基准 × 年度预算缩放 × clamp(1 − 敏感度 × 当日涨跌幅，"
                     "下限–上限)；跌越多买越多，反弹少买。",
                 ]
             )
@@ -1143,20 +1495,46 @@ def _format_amount_snapshot(amounts):
     return []
 
 
-def format_markdown(results, start_date, end_date, amounts):
+def _format_portfolio_section(portfolio):
+    rot = portfolio.rotation
+    hold = portfolio.hold
+    diff_ret = (rot.return_pct or 0) - (hold.return_pct or 0)
+    diff_xirr = (rot.xirr_pct or 0) - (hold.xirr_pct or 0)
+    return [
+        "## 组合收益（智能轮动 vs 全持有）",
+        "",
+        "> **智能轮动**：共享资金池 + 轮动门控（仅当同日有其他指数买点时卖出；"
+        f"估值卖需持仓年化 < **{ROTATION_MARGINAL_HURDLE_ANN_PCT:.0f}%**）",
+        "",
+        "| 策略 | 净投入 | 期末市值 | 利润 | 总收益率 | XIRR | 买入次 | 卖出次 | 池复用 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        f"| 全持有 | {_md_money(hold.total_new_money)} | {_md_money(hold.final_value)} | "
+        f"{hold.profit:+.0f} | {_md_pct(hold.return_pct)} | {_md_pct(hold.xirr_pct)} | "
+        f"{hold.buy_count} | {hold.sell_count} | 0 |",
+        f"| **智能轮动** | {_md_money(rot.total_new_money)} | {_md_money(rot.final_value)} | "
+        f"{rot.profit:+.0f} | {_md_pct(rot.return_pct)} | {_md_pct(rot.xirr_pct)} | "
+        f"{rot.buy_count} | {rot.sell_count} | {_md_money(rot.pool_reused)} |",
+        "",
+        f"- 智能轮动 vs 全持有：总收益率差 **{diff_ret:+.1f}** pct，"
+        f"XIRR 差 **{diff_xirr:+.1f}** pct",
+        "",
+    ]
+
+
+def format_markdown(results, start_date, end_date, amounts, portfolio=None):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     val_dates = [r.final_date for r in results if r.final_date is not None]
     val_date = max(val_dates).strftime("%Y-%m-%d") if val_dates else "—"
     end_label = end_date or "最新"
 
     lines = [
-        f"# {start_date} 至 {end_label} 买卖信号回测",
+        f"# {start_date} 至 {end_label} 智能轮动回测",
         "",
         f"> 生成时间：{generated_at}  ",
         "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
-        "> 卖出规则：宽基/创业板启用移动止盈与估值卖点（见 `CN_BROAD_SELL_ENABLED_CODES`）；红利/美股仅买入  ",
-        "> 红利/美股：仅买入持有，不设卖点  ",
+        f"> 策略：**智能轮动**（共享资金池 + 轮动门控，门槛 {ROTATION_MARGINAL_HURDLE_ANN_PCT:.0f}% 年化）  ",
+        "> 卖出规则：全指数启用移动止盈与估值卖点（见 `config.py` 各指数 SELL_* 参数）  ",
         "> 买入触发：与 `backtest_buy_signals.py` 相同（信号日买入；默认无冷却期）；非每日定投  ",
         "> 区间默认自 2015-01-01；买入信号回测默认自各指数基日，对比时请对齐起始日",
         "",
@@ -1164,18 +1542,19 @@ def format_markdown(results, start_date, end_date, amounts):
         "",
         *_format_config_snapshot(),
         *_format_amount_snapshot(amounts),
+        *(_format_portfolio_section(portfolio) if portfolio else []),
         "## 交易统计",
         "",
         "| 指数 | 代码 | 策略 | 买入次 | 卖出次 | 总投入 | 备注 |",
         "| --- | --- | --- | ---: | ---: | ---: | --- |",
     ]
     for r in results:
-        strategy = "买卖波段" if r.has_sell else "仅买入"
+        strategy = "智能轮动" if r.has_sell else "仅买入"
         lines.append(
             f"| {r.name} | {r.code} | {strategy} | {r.buy_count} | "
             f"{r.sell_count} | {_md_money(r.total_bought)} | {r.note} |"
         )
-    totals = _trade_totals(results)
+    totals = _trade_totals(results, portfolio)
     lines.append(
         f"| **合计** | — | — | {totals['buy_count']} | "
         f"{totals['sell_count']} | {_md_money(totals['total_bought'])} | "
@@ -1184,7 +1563,7 @@ def format_markdown(results, start_date, end_date, amounts):
 
     lines.extend([
         "",
-        "## 收益对比（买卖波段 vs 仅买入持有）",
+        "## 收益对比（智能轮动 vs 仅买入持有）",
         "",
         "| 指数 | 代码 | 买卖市值 | 买卖盈亏 | 买卖收益率 | "
         "仅买市值 | 仅买盈亏 | 仅买收益率 | 备注 |",
@@ -1205,7 +1584,7 @@ def format_markdown(results, start_date, end_date, amounts):
             f"{_md_money(r.buy_only_value)} | {r.buy_only_profit:+.0f} | "
             f"{_md_pct(r.buy_only_return_pct)} | {r.note} |"
         )
-    totals = _trade_totals(results)
+    totals = _trade_totals(results, portfolio)
     lines.append(
         f"| **合计** | — | {_md_money(totals['trade_value'])} | "
         f"{totals['trade_profit']:+.0f} | {_md_pct(totals['trade_ret'])} | "
@@ -1213,13 +1592,15 @@ def format_markdown(results, start_date, end_date, amounts):
         f"{_md_pct(totals['buy_only_ret'])} | — |"
     )
 
+    lines.extend(_format_capital_efficiency_section(results))
+
     lines.extend([
         "",
         "**说明**",
         "",
-        "- **买卖波段**：有卖点的指数按指标买入、触发卖点时全部卖出；无卖点指数等同仅买入。",
+        "- **智能轮动**：按指标买入，轮动门控下触发卖点时卖出，释放资金优先投入其他买点。",
         "- **仅买入持有**：同期所有买入信号均执行，不因卖点卖出（对照组）。",
-        "- 有卖点指数的「买卖收益率」与「仅买收益率」差异反映卖点策略效果。",
+        "- 有卖点指数的「轮动收益率」与「仅买收益率」差异反映轮动策略效果；单指数市值不含池内未分配现金。",
         "",
         "## 风险调整收益（夏普比率）",
         "",
@@ -1278,21 +1659,29 @@ def format_markdown(results, start_date, end_date, amounts):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def print_table(results, start_date, end_date, amounts):
+def print_table(results, start_date, end_date, amounts, portfolio=None):
     end_label = end_date or "最新"
     val_dates = [r.final_date for r in results if r.final_date is not None]
     val_date = max(val_dates).strftime("%Y-%m-%d") if val_dates else "—"
     print(
-        f"\n=== {start_date} 至 {end_label} 买卖信号回测 "
+        f"\n=== {start_date} 至 {end_label} 智能轮动回测 "
         f"（{format_backtest_amount_note(amounts)}，截至 {val_date}） ==="
     )
+    if portfolio is not None:
+        rot = portfolio.rotation
+        hold = portfolio.hold
+        print(
+            f"组合 轮动 {rot.return_pct:+.1f}% / XIRR {rot.xirr_pct:+.1f}% | "
+            f"持有 {hold.return_pct:+.1f}% / XIRR {hold.xirr_pct:+.1f}% | "
+            f"池复用 {_md_money(rot.pool_reused)}"
+        )
     print(
         f"{'指数':<14} {'代码':<8} {'策略':<8} {'买入':>5} {'卖出':>5} "
         f"{'投入':>8} {'收益':>8} {'夏普':>6} {'回撤':>8}"
     )
     print("-" * 88)
     for r in results:
-        strategy = "买卖" if r.has_sell else "仅买"
+        strategy = "轮动" if r.has_sell else "仅买"
         trade_ret = _effective_return(r)
         trade_text = f"{trade_ret:+.1f}%" if trade_ret is not None else "   —"
         sharpe_text = f"{r.sharpe_ratio:.2f}" if r.sharpe_ratio is not None else "   —"
@@ -1306,7 +1695,7 @@ def print_table(results, start_date, end_date, amounts):
             f"{r.buy_count:>5} {r.sell_count:>5} "
             f"{r.total_bought:>8.0f} {trade_text:>8} {sharpe_text:>6} {mdd_text:>8}"
         )
-    totals = _trade_totals(results)
+    totals = _trade_totals(results, portfolio)
     trade_ret = totals["trade_ret"]
     trade_text = f"{trade_ret:+.1f}%" if trade_ret is not None else "   —"
     print("-" * 88)
@@ -1315,6 +1704,21 @@ def print_table(results, start_date, end_date, amounts):
         f"{totals['buy_count']:>5} {totals['sell_count']:>5} "
         f"{totals['total_bought']:>8.0f} {trade_text:>8} {'—':>6} {'—':>8}"
     )
+    print("-" * 88)
+    print(
+        f"{'指数':<14} {'代码':<8} {'轮动XIRR':>9} {'持有XIRR':>9} "
+        f"{'结论':<8}"
+    )
+    print("-" * 88)
+    for r in results:
+        trade_xirr = _effective_xirr(r)
+        hold_xirr = r.buy_only_xirr_pct
+        tx = f"{trade_xirr:+.1f}%" if trade_xirr is not None else "   —"
+        hx = f"{hold_xirr:+.1f}%" if hold_xirr is not None else "   —"
+        print(
+            f"{r.name:<14} {r.code:<8} {tx:>9} {hx:>9} "
+            f"{_capital_efficiency_verdict(r):<8}"
+        )
     print("-" * 88)
 
 
@@ -1392,20 +1796,20 @@ def main(argv=None):
         amounts = resolve_backtest_amounts(args.amount, tier_enabled=tier_enabled)
     elif args.ranking:
         amounts = resolve_backtest_amounts(
-            ranking_mode=True, tier_enabled=tier_enabled
+            ranking_mode=True, tier_enabled=tier_enabled, panels=panels
         )
     else:
-        amounts = resolve_backtest_amounts(tier_enabled=tier_enabled)
+        amounts = resolve_backtest_amounts(tier_enabled=tier_enabled, panels=panels)
 
     try:
-        results = backtest_all(
+        results, portfolio = backtest_all(
             args.start, args.end, amounts=amounts, panels=panels
         )
-        print_table(results, args.start, args.end, amounts)
+        print_table(results, args.start, args.end, amounts, portfolio=portfolio)
         daily_tables = collect_trade_chart_tables(
             args.start, args.end, amounts=amounts, panels=panels
         )
-        md = format_markdown(results, args.start, args.end, amounts)
+        md = format_markdown(results, args.start, args.end, amounts, portfolio=portfolio)
         from backtest_html import resolve_return_pct_by_code
 
         path, html_path = save_result(
@@ -1413,7 +1817,7 @@ def main(argv=None):
             filename="trade_inception_present.md",
             write_html=not args.no_html,
             daily_tables=daily_tables,
-            title="自基日全量买卖信号回测",
+            title="自基日全量智能轮动回测",
             start_date=args.start,
             end_date=args.end,
             subtitle=format_backtest_amount_note(amounts),

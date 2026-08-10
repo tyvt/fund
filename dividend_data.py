@@ -339,8 +339,6 @@ def is_buy_signal(
         return False
     if not drawdown_from_high_ok(pct_below_high, min_drawdown):
         return False
-    if not year_range_ok(year_range_position, cfg.get("buy_max_year_range_pct")):
-        return False
     if not dividend_sustainability_ok(
         pe, div_yield_spike, year_range_position=year_range_position
     ):
