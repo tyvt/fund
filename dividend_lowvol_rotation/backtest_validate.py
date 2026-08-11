@@ -31,12 +31,42 @@ from dividend_lowvol_rotation.config import (
     TOP_N_BUY,
     resolve_sell_rank,
 )
+from dividend_lowvol_rotation.strategy_params import StrategyParams
 from config import get_dividend_total_return_code
 from market_data import configure_stdout_utf8, get_index_perf_history
 
 DEFAULT_MC_PERMUTATIONS = 200
 DEFAULT_WFA_FREQ = "year"
 FAST_MC_PERMUTATIONS = 100
+DEFAULT_OPTIMIZE_JSON = BACKTEST_OUTPUT_DIR / "optimize.json"
+
+
+def load_optimal_params(path: Path | str | None = None) -> StrategyParams:
+    """从 optimize.json 读取综合最优参数。"""
+    path = Path(path) if path else DEFAULT_OPTIMIZE_JSON
+    if not path.exists():
+        raise FileNotFoundError(f"未找到优化结果：{path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    trials = data.get("grid_results", []) + data.get("bayes_results", [])
+    if not trials:
+        raise ValueError(f"{path} 中无试验结果")
+    best = max(trials, key=lambda t: t["metrics"]["score"])
+    allowed = {f.name for f in StrategyParams.__dataclass_fields__.values()}
+    clean = {k: v for k, v in best["params"].items() if k in allowed}
+    return StrategyParams(**clean)
+
+
+def _resolve_run_args(
+    top_n: int,
+    sell_rank: int | None,
+    rebalance_days: int,
+    strategy_params: StrategyParams | None,
+) -> tuple[int, int, int, StrategyParams]:
+    sp = strategy_params or StrategyParams()
+    tn = sp.resolved_top_n(top_n)
+    rb = sp.resolved_rebalance_days(rebalance_days)
+    sr = sp.resolved_sell_rank(tn) if sell_rank is None else sell_rank
+    return tn, sr, rb, sp
 
 
 @dataclass
@@ -166,8 +196,11 @@ def run_benchmark_compare(
     freq: str = DEFAULT_WFA_FREQ,
     verbose: bool = True,
     ctx: BacktestContext | None = None,
+    strategy_params: StrategyParams | None = None,
 ) -> tuple[list[BenchmarkWindowResult], BenchmarkSummary, dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    sell_rank = resolve_sell_rank(top_n, sell_rank)
+    top_n, sell_rank, rebalance_days, sp = _resolve_run_args(
+        top_n, sell_rank, rebalance_days, strategy_params
+    )
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
 
     if ctx is None:
@@ -192,6 +225,7 @@ def run_benchmark_compare(
         ctx=ctx,
         record_details=False,
         verbose=False,
+        strategy_params=sp,
     )
     if verbose:
         print("运行买入持有对照…")
@@ -207,6 +241,7 @@ def run_benchmark_compare(
         ctx=ctx,
         record_details=False,
         verbose=False,
+        strategy_params=sp,
     )
     if verbose:
         print(f"加载指数 {index_code}（全收益）…")
@@ -266,6 +301,8 @@ def run_benchmark_compare(
         "index_tr_code": tr_code,
         "index_name": _index_name(index_code),
         "index_tr_name": _index_name(tr_code),
+        "strategy_params": sp.to_dict(),
+        "strategy_params_summary": sp.summary(),
     }
     return windows, summary, meta, strat_nav, index_nav, hold_nav
 
@@ -361,8 +398,11 @@ def run_wfa(
     freq: str = DEFAULT_WFA_FREQ,
     verbose: bool = True,
     ctx: BacktestContext | None = None,
+    strategy_params: StrategyParams | None = None,
 ) -> tuple[list[WfaWindowResult], WfaSummary, dict, pd.DataFrame, pd.DataFrame]:
-    sell_rank = resolve_sell_rank(top_n, sell_rank)
+    top_n, sell_rank, rebalance_days, sp = _resolve_run_args(
+        top_n, sell_rank, rebalance_days, strategy_params
+    )
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
 
     if ctx is None:
@@ -387,6 +427,7 @@ def run_wfa(
         ctx=ctx,
         record_details=False,
         verbose=False,
+        strategy_params=sp,
     )
     if verbose:
         print("运行买入持有对照…")
@@ -402,6 +443,7 @@ def run_wfa(
         ctx=ctx,
         record_details=False,
         verbose=False,
+        strategy_params=sp,
     )
 
     windows: list[WfaWindowResult] = []
@@ -446,6 +488,8 @@ def run_wfa(
         "sell_rank": sell_rank,
         "initial_capital": initial_capital,
         "rebalance_days": rebalance_days,
+        "strategy_params": sp.to_dict(),
+        "strategy_params_summary": sp.summary(),
     }
     return windows, summary, meta, strat_nav, hold_nav
 
@@ -556,9 +600,12 @@ def run_monte_carlo_bootstrap(
     seed: int = 42,
     verbose: bool = True,
     ctx: BacktestContext | None = None,
+    strategy_params: StrategyParams | None = None,
 ) -> tuple[MonteCarloResult, list[float], dict]:
     """对调仓期收益率自助抽样，估计收益分布。"""
-    sell_rank = resolve_sell_rank(top_n, sell_rank)
+    top_n, sell_rank, rebalance_days, sp = _resolve_run_args(
+        top_n, sell_rank, rebalance_days, strategy_params
+    )
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
 
     if ctx is None:
@@ -580,6 +627,7 @@ def run_monte_carlo_bootstrap(
         ctx=ctx,
         record_details=False,
         verbose=False,
+        strategy_params=sp,
     )
     actual_ret = actual_meta.get("total_return_pct")
     rets = nav_df["nav"].pct_change().dropna().values
@@ -589,6 +637,8 @@ def run_monte_carlo_bootstrap(
             "end": end,
             "permutations": permutations,
             "method": "bootstrap",
+            "strategy_params": sp.to_dict(),
+            "strategy_params_summary": sp.summary(),
         }
 
     rng = np.random.default_rng(seed)
@@ -605,6 +655,8 @@ def run_monte_carlo_bootstrap(
         "end": end,
         "permutations": permutations,
         "method": "bootstrap",
+        "strategy_params": sp.to_dict(),
+        "strategy_params_summary": sp.summary(),
     }
 
 
@@ -676,6 +728,10 @@ def format_benchmark_markdown(
         f"> 区间：{meta['start']} ~ {meta['end']}  ",
         f"> 基准：**{idx_label}**（含分红再投资）  ",
         f"> 策略：持仓 {meta['top_n']} 只，跌出前 {meta['sell_rank']} 卖（含分红个税）",
+    ]
+    if meta.get("strategy_params_summary"):
+        lines.append(f"> 参数：**{meta['strategy_params_summary']}**")
+    lines.extend([
         "",
         "## 汇总",
         "",
@@ -696,7 +752,7 @@ def format_benchmark_markdown(
         "",
         "| 窗口 | 区间 | 轮动 | 指数 | 买入持有 | 超额(轮动−指数) | 备注 |",
         "|------|------|------|------|----------|-----------------|------|",
-    ]
+    ])
     for w in windows:
         win = ""
         if w.strategy_edge_pct is not None:
@@ -792,9 +848,11 @@ def save_benchmark_outputs(
     meta: dict,
     strat_nav: pd.DataFrame,
     index_nav: pd.DataFrame,
+    *,
+    stem: str = "benchmark",
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    paths = {"md": out_dir / "benchmark.md", "html": out_dir / "benchmark.html"}
+    paths = {"md": out_dir / f"{stem}.md", "html": out_dir / f"{stem}.html"}
     paths["md"].write_text(format_benchmark_markdown(windows, summary, meta), encoding="utf-8")
     paths["html"].write_text(
         render_benchmark_html(windows, summary, meta, strat_nav, index_nav), encoding="utf-8"
@@ -813,6 +871,10 @@ def format_wfa_markdown(windows: list[WfaWindowResult], summary: WfaSummary, met
         f"> 区间：{meta['start']} ~ {meta['end']}  ",
         f"> 切分：按 **{meta['freq']}**  ",
         f"> 持仓 {meta['top_n']} 只，跌出前 {meta['sell_rank']} 卖",
+    ]
+    if meta.get("strategy_params_summary"):
+        lines.append(f"> 参数：**{meta['strategy_params_summary']}**")
+    lines.extend([
         "",
         "## 方法",
         "",
@@ -833,7 +895,7 @@ def format_wfa_markdown(windows: list[WfaWindowResult], summary: WfaSummary, met
         "",
         "| 窗口 | 区间 | 轮动收益 | 持有收益 | 利差 | 成交笔数 | 备注 |",
         "|------|------|----------|----------|------|----------|------|",
-    ]
+    ])
     for w in windows:
         win = "轮动更优" if w.return_edge_pct and w.return_edge_pct > 0 else (
             "持有更优" if w.return_edge_pct and w.return_edge_pct < 0 else ""
@@ -942,9 +1004,11 @@ c.setOption({{
 </script></body></html>"""
 
 
-def save_wfa_outputs(out_dir: Path, windows, summary, meta) -> dict[str, Path]:
+def save_wfa_outputs(
+    out_dir: Path, windows, summary, meta, *, stem: str = "wfa"
+) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    paths = {"md": out_dir / "wfa.md", "html": out_dir / "wfa.html"}
+    paths = {"md": out_dir / f"{stem}.md", "html": out_dir / f"{stem}.html"}
     paths["md"].write_text(format_wfa_markdown(windows, summary, meta), encoding="utf-8")
     paths["html"].write_text(render_wfa_html(windows, summary, meta), encoding="utf-8")
     return paths
@@ -983,6 +1047,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prefetch", type=int, default=BACKTEST_PREFETCH_SIZE)
     parser.add_argument("--fast", action="store_true", help="快速模式：prefetch=80，MC 100 次")
     parser.add_argument("--benchmark", default=None, metavar="CODE", help="对比指数（如 H30269）")
+    parser.add_argument(
+        "--optimized",
+        action="store_true",
+        help="使用 optimize.json 中的最优参数",
+    )
+    parser.add_argument(
+        "--params-json",
+        default=None,
+        help="自定义参数 JSON（optimize.json 格式）",
+    )
     parser.add_argument("-o", "--output-dir", default=None)
     args = parser.parse_args(argv)
 
@@ -998,7 +1072,25 @@ def main(argv: list[str] | None = None) -> int:
 
     start = args.start or default_start_years(args.years)
     out_dir = Path(args.output_dir) if args.output_dir else BACKTEST_OUTPUT_DIR
-    sell_rank = resolve_sell_rank(args.top, args.sell_rank)
+    output_stem = ""
+
+    strategy_params: StrategyParams | None = None
+    if args.optimized or args.params_json:
+        strategy_params = load_optimal_params(args.params_json)
+        output_stem = "optimized_"
+        print(f"已加载最优参数：{strategy_params.summary()}")
+
+    top_n = strategy_params.resolved_top_n(args.top) if strategy_params else args.top
+    rebalance_days = (
+        strategy_params.resolved_rebalance_days(args.rebalance_days)
+        if strategy_params
+        else args.rebalance_days
+    )
+    sell_rank = (
+        strategy_params.resolved_sell_rank(top_n)
+        if strategy_params and args.sell_rank is None
+        else resolve_sell_rank(top_n, args.sell_rank)
+    )
     t0 = time.time()
 
     shared_ctx = None
@@ -1009,7 +1101,7 @@ def main(argv: list[str] | None = None) -> int:
             start,
             args.end,
             prefetch_size=args.prefetch,
-            rebalance_days=args.rebalance_days,
+            rebalance_days=rebalance_days,
             verbose=True,
         )
 
@@ -1018,15 +1110,16 @@ def main(argv: list[str] | None = None) -> int:
         windows, summary, meta, _, _ = run_wfa(
             start=start,
             end=args.end,
-            top_n=args.top,
+            top_n=top_n,
             sell_rank=sell_rank,
-            rebalance_days=args.rebalance_days,
+            rebalance_days=rebalance_days,
             initial_capital=args.capital,
             prefetch_size=args.prefetch,
             freq=args.freq,
             ctx=shared_ctx,
+            strategy_params=strategy_params,
         )
-        paths = save_wfa_outputs(out_dir, windows, summary, meta)
+        paths = save_wfa_outputs(out_dir, windows, summary, meta, stem=f"{output_stem}wfa")
         print(format_wfa_markdown(windows, summary, meta))
         print(f"已写入 {paths['md']} / {paths['html']}")
 
@@ -1050,15 +1143,16 @@ def main(argv: list[str] | None = None) -> int:
                 mc, perm, meta = run_monte_carlo_bootstrap(
                     start=start,
                     end=args.end,
-                    top_n=args.top,
+                    top_n=top_n,
                     sell_rank=sell_rank,
-                    rebalance_days=args.rebalance_days,
+                    rebalance_days=rebalance_days,
                     initial_capital=args.capital,
                     prefetch_size=args.prefetch,
                     permutations=args.permutations,
                     ctx=shared_ctx,
+                    strategy_params=strategy_params,
                 )
-            stem = "monte_carlo" if len(methods) == 1 else f"monte_carlo_{method}"
+            stem = f"{output_stem}monte_carlo" if len(methods) == 1 else f"{output_stem}monte_carlo_{method}"
             paths = save_mc_outputs(out_dir, mc, perm, meta, stem=stem)
             print(format_mc_markdown(mc, meta))
             print(f"已写入 {paths['md']} / {paths['html']}")
@@ -1069,16 +1163,19 @@ def main(argv: list[str] | None = None) -> int:
             index_code=args.benchmark,
             start=start,
             end=args.end,
-            top_n=args.top,
+            top_n=top_n,
             sell_rank=sell_rank,
-            rebalance_days=args.rebalance_days,
+            rebalance_days=rebalance_days,
             initial_capital=args.capital,
             prefetch_size=args.prefetch,
             freq=args.freq,
             ctx=shared_ctx,
             verbose=True,
+            strategy_params=strategy_params,
         )
-        b_paths = save_benchmark_outputs(out_dir, b_windows, b_summary, b_meta, strat_nav, index_nav)
+        b_paths = save_benchmark_outputs(
+            out_dir, b_windows, b_summary, b_meta, strat_nav, index_nav, stem=f"{output_stem}benchmark"
+        )
         print(format_benchmark_markdown(b_windows, b_summary, b_meta))
         print(f"已写入 {b_paths['md']} / {b_paths['html']}")
 

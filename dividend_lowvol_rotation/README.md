@@ -17,6 +17,9 @@ python -m dividend_lowvol_rotation.backtest_validate --wfa --monte-carlo --top 1
 # 对比指数 H30269（全收益 H20269，含分红再投资）
 python -m dividend_lowvol_rotation.backtest_validate --benchmark H30269 --years 10 --top 10
 
+# 参数优化（筛选 + 网格 + 贝叶斯，训练/验证分离）
+python -m dividend_lowvol_rotation.backtest_optimize --task all --years 10
+
 # 置换调仓日蒙特卡洛（慢，慎用）
 python -m dividend_lowvol_rotation.backtest_validate --monte-carlo --mc-method rebalance --permutations 50
 

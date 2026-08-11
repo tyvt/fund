@@ -26,6 +26,7 @@ from dividend_lowvol_rotation.fundamentals import (
     fundamental_filter_mask,
     ocf_filter_mask,
 )
+from dividend_lowvol_rotation.strategy_params import StrategyParams
 
 
 def dynamic_dividend_yield_pct(cash_per_share: float, price: float) -> float | None:
@@ -40,12 +41,19 @@ def yield_threshold_price(cash_per_share: float, min_yield_pct: float = MIN_DIVI
     return cash_per_share / (min_yield_pct / 100.0)
 
 
-def ex_date_cooldown_mask(df: pd.DataFrame, as_of: pd.Timestamp | None = None) -> pd.Series:
+def ex_date_cooldown_mask(
+    df: pd.DataFrame,
+    as_of: pd.Timestamp | None = None,
+    *,
+    strategy_params: StrategyParams | None = None,
+) -> pd.Series:
+    sp = strategy_params or StrategyParams()
+    cooldown_days = sp.ex_date_cooldown_days if sp.ex_date_cooldown_days is not None else EX_DATE_COOLDOWN_DAYS
     if not EX_DATE_COOLDOWN_ENABLED or "ex_date" not in df.columns:
         return pd.Series(True, index=df.index)
     today = as_of or pd.Timestamp(date.today())
     days = (today - pd.to_datetime(df["ex_date"])).dt.days
-    return days.isna() | (days > EX_DATE_COOLDOWN_DAYS)
+    return days.isna() | (days > cooldown_days)
 
 
 def rank_score_panel(
@@ -68,8 +76,9 @@ def select_with_industry_cap(
     top_n: int,
     *,
     max_industry_weight: float = MAX_INDUSTRY_WEIGHT,
+    industry_cap_enabled: bool = INDUSTRY_CAP_ENABLED,
 ) -> pd.DataFrame:
-    if not INDUSTRY_CAP_ENABLED or ranked.empty or "industry" not in ranked.columns:
+    if not industry_cap_enabled or ranked.empty or "industry" not in ranked.columns:
         out = ranked.head(top_n).copy()
         out["portfolio_rank"] = range(1, len(out) + 1)
         return out
@@ -119,21 +128,31 @@ def run_screening(
     sell_rank: int = SELL_RANK_BUFFER,
     dynamic: DynamicParams | None = None,
     as_of: pd.Timestamp | None = None,
+    strategy_params: StrategyParams | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    sp = strategy_params or StrategyParams()
     stats: dict = {}
-    min_yield = dynamic.min_dividend_yield_pct if dynamic else MIN_DIVIDEND_YIELD_PCT
-    max_vol = dynamic.max_annualized_vol_pct if dynamic else MAX_ANNUALIZED_VOL_PCT
-    yield_w = dynamic.yield_rank_weight if dynamic else YIELD_RANK_WEIGHT
-    vol_w = dynamic.vol_rank_weight if dynamic else VOL_RANK_WEIGHT
+    min_yield = dynamic.min_dividend_yield_pct if dynamic else (
+        sp.min_dividend_yield_pct if sp.min_dividend_yield_pct is not None else MIN_DIVIDEND_YIELD_PCT
+    )
+    max_vol = dynamic.max_annualized_vol_pct if dynamic else (
+        sp.max_annualized_vol_pct if sp.max_annualized_vol_pct is not None else MAX_ANNUALIZED_VOL_PCT
+    )
+    yield_w = dynamic.yield_rank_weight if dynamic else (
+        sp.yield_rank_weight if sp.yield_rank_weight is not None else YIELD_RANK_WEIGHT
+    )
+    vol_w = dynamic.vol_rank_weight if dynamic else (
+        sp.vol_rank_weight if sp.vol_rank_weight is not None else VOL_RANK_WEIGHT
+    )
 
     work = attach_fundamentals_from_fhps(panel.copy())
     work = work.dropna(subset=["price", "cash_per_share", "dividend_yield_pct", "ann_vol_pct"])
 
-    ex_mask = ex_date_cooldown_mask(work, as_of=as_of)
+    ex_mask = ex_date_cooldown_mask(work, as_of=as_of, strategy_params=sp)
     stats["ex_date_cooldown_excluded"] = int((~ex_mask).sum())
     work = work[ex_mask]
 
-    fund_mask = fundamental_filter_mask(work)
+    fund_mask = fundamental_filter_mask(work, strategy_params=sp)
     stats["fundamental_excluded"] = int((~fund_mask).sum())
     work = work[fund_mask]
 
@@ -163,7 +182,11 @@ def run_screening(
     ranked["in_buy_pool"] = ranked["rank"] <= sell_rank
     ranked["in_top_n"] = ranked["rank"] <= top_n
 
-    buy_pool = select_with_industry_cap(ranked, top_n)
+    max_ind = sp.max_industry_weight if sp.max_industry_weight is not None else MAX_INDUSTRY_WEIGHT
+    cap_on = INDUSTRY_CAP_ENABLED if sp.industry_cap_enabled is None else sp.industry_cap_enabled
+    buy_pool = select_with_industry_cap(
+        ranked, top_n, max_industry_weight=max_ind, industry_cap_enabled=cap_on
+    )
     stats["buy_pool_count"] = len(buy_pool)
     return ranked, buy_pool, stats
 

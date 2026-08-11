@@ -38,14 +38,27 @@ def attach_fundamentals_from_fhps(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def fundamental_filter_mask(df: pd.DataFrame) -> pd.Series:
-    if not FUNDAMENTAL_FILTER_ENABLED:
+from dividend_lowvol_rotation.strategy_params import StrategyParams
+
+
+def fundamental_filter_mask(
+    df: pd.DataFrame,
+    *,
+    strategy_params: StrategyParams | None = None,
+) -> pd.Series:
+    sp = strategy_params or StrategyParams()
+    enabled = (
+        FUNDAMENTAL_FILTER_ENABLED if sp.fundamental_filter_enabled is None else sp.fundamental_filter_enabled
+    )
+    if not enabled:
         return pd.Series(True, index=df.index)
+    min_roe = sp.min_roe_pct if sp.min_roe_pct is not None else MIN_ROE_PCT
+    min_yoy = sp.min_profit_yoy_pct if sp.min_profit_yoy_pct is not None else MIN_PROFIT_YOY_PCT
     ok = pd.Series(True, index=df.index)
     if "roe_pct" in df.columns:
-        ok &= df["roe_pct"].notna() & (df["roe_pct"] >= MIN_ROE_PCT)
+        ok &= df["roe_pct"].notna() & (df["roe_pct"] >= min_roe)
     if "profit_yoy_pct" in df.columns:
-        ok &= df["profit_yoy_pct"].isna() | (df["profit_yoy_pct"] >= MIN_PROFIT_YOY_PCT)
+        ok &= df["profit_yoy_pct"].isna() | (df["profit_yoy_pct"] >= min_yoy)
     return ok
 
 

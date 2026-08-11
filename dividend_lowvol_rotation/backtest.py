@@ -27,7 +27,7 @@ from dividend_lowvol_rotation.backtest_report import format_backtest_report, sav
 from dividend_lowvol_rotation.costs import max_buy_shares, single_side_commission
 from dividend_lowvol_rotation.dividend import build_dividend_panel, load_fhps_all_records
 from dividend_lowvol_rotation.dividend_tax import accrue_dividend_taxes, build_dividend_index
-from dividend_lowvol_rotation.dynamic_params import resolve_dynamic_params
+from dividend_lowvol_rotation.dynamic_params import DynamicParams, resolve_dynamic_params
 from dividend_lowvol_rotation.industry import attach_industry
 from dividend_lowvol_rotation.prices import (
     baostock_session,
@@ -35,6 +35,7 @@ from dividend_lowvol_rotation.prices import (
     metrics_as_of,
 )
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct, run_screening
+from dividend_lowvol_rotation.strategy_params import StrategyParams
 from dividend_lowvol_rotation.symbols import is_excluded_name
 from market_data import configure_stdout_utf8
 
@@ -318,10 +319,14 @@ def run_backtest(
     ctx: BacktestContext | None = None,
     record_details: bool = True,
     apply_dividend_tax: bool | None = None,
+    strategy_params: StrategyParams | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, pd.DataFrame]:
+    strategy_params = strategy_params or StrategyParams()
     start = start or default_start_years()
     end = end or date.today().isoformat()
-    sell_rank = resolve_sell_rank(top_n, sell_rank)
+    top_n = strategy_params.resolved_top_n(top_n)
+    rebalance_days = strategy_params.resolved_rebalance_days(rebalance_days)
+    sell_rank = strategy_params.resolved_sell_rank(top_n) if sell_rank is None else sell_rank
     if apply_dividend_tax is None:
         apply_dividend_tax = DIVIDEND_TAX_ENABLED
 
@@ -381,9 +386,14 @@ def run_backtest(
         for _, r in panel.iterrows():
             name_cache[str(r["code"])] = str(r.get("name", ""))
 
-        dynamic = resolve_dynamic_params(panel)
+        dynamic = resolve_dynamic_params(panel, strategy_params=strategy_params)
         ranked, buy_pool, _stats_panel = run_screening(
-            panel, top_n=top_n, sell_rank=sell_rank, dynamic=dynamic, as_of=rb_date
+            panel,
+            top_n=top_n,
+            sell_rank=sell_rank,
+            dynamic=dynamic,
+            as_of=rb_date,
+            strategy_params=strategy_params,
         )
         if ranked.empty:
             continue
