@@ -193,7 +193,7 @@ W01（2015-08 起点）年化 13.2%、maxDD -33%；W12（2016-07 起点）年化
 | `scripts/wfa_extreme_year_compare.py` | 硬剔除 vs 软性评分，2018/2024 候选池与 WFA |
 | `scripts/sweep_drawdown_params.py` | 降回撤参数扫描 |
 | `scripts/rolling_calendar_backtest.py` | 12 组固定窗口滚动日历稳健性验证 |
-| `scripts/monthly_rolling_backtest.py` | 自 2015-01 起每月一组 **5 年**窗口（默认 79 组） |
+| `scripts/monthly_rolling_backtest.py` | 自 2015-01 起 **79 组** × **10 年**窗口（至 2021-07 起点） |
 
 ---
 

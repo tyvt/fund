@@ -16,27 +16,29 @@ if str(ROOT) not in sys.path:
 
 OUTPUT_DIR = ROOT / "output" / "dividend_lowvol"
 FIRST_START = pd.Timestamp(os.environ.get("DLV_MONTHLY_ROLLING_START", "2015-01-15"))
-WINDOW_YEARS = float(os.environ.get("DLV_MONTHLY_ROLLING_YEARS", "5"))
-MAX_END = pd.Timestamp(os.environ.get("DLV_MONTHLY_ROLLING_MAX_END", "2026-07-01"))
+WINDOW_YEARS = float(os.environ.get("DLV_MONTHLY_ROLLING_YEARS", "10"))
+WINDOW_COUNT = int(os.environ.get("DLV_MONTHLY_ROLLING_COUNT", "79"))
+# 可选：限制窗口结束日；默认不截断，固定生成 WINDOW_COUNT 组
+_MAX_END_RAW = os.environ.get("DLV_MONTHLY_ROLLING_MAX_END", "").strip()
+MAX_END = pd.Timestamp(_MAX_END_RAW) if _MAX_END_RAW else None
 CAGR_STD_THRESHOLD = float(os.environ.get("DLV_ROLLING_CAGR_STD_THRESHOLD", "4.0"))
-OUT_STEM = os.environ.get("DLV_MONTHLY_ROLLING_OUT", "monthly_rolling_5y")
+OUT_STEM = os.environ.get("DLV_MONTHLY_ROLLING_OUT", "monthly_rolling_10y")
 
 
 def monthly_windows(
     *,
     first_start: pd.Timestamp = FIRST_START,
     years: float = WINDOW_YEARS,
-    max_end: pd.Timestamp = MAX_END,
+    count: int = WINDOW_COUNT,
+    max_end: pd.Timestamp | None = MAX_END,
 ) -> list[tuple[str, str, str]]:
-    """每月同步滚动起止日，窗口时长恒定。"""
+    """每月同步滚动起止日，固定生成 count 组（默认 79）。"""
     rows: list[tuple[str, str, str]] = []
     cur = first_start
-    idx = 0
-    while True:
+    for idx in range(1, count + 1):
         end = pd.Timestamp(year=int(cur.year + years), month=cur.month, day=1)
-        if end > max_end:
+        if max_end is not None and end > max_end:
             break
-        idx += 1
         label = f"M{idx:03d} {cur.date()}~{end.date()}"
         rows.append((label, cur.date().isoformat(), end.date().isoformat()))
         cur += pd.DateOffset(months=1)
@@ -52,7 +54,15 @@ def _fmt_pct(v: float | None, digits: int = 2) -> str:
 def run_all(*, verbose: bool = True) -> tuple[pd.DataFrame, dict]:
     windows = monthly_windows()
     if not windows:
-        raise SystemExit("无可用窗口：请检查 DLV_MONTHLY_ROLLING_START / MAX_END / YEARS")
+        raise SystemExit(
+            "无可用窗口：请检查 DLV_MONTHLY_ROLLING_START / COUNT / YEARS / MAX_END"
+        )
+    if len(windows) < WINDOW_COUNT:
+        print(
+            f"警告：仅生成 {len(windows)}/{WINDOW_COUNT} 组"
+            f"（MAX_END={max_end.date() if MAX_END is not None else '无'} 截断）",
+            flush=True,
+        )
 
     union_start = min(w[1] for w in windows)
     union_end = max(w[2] for w in windows)
@@ -76,7 +86,7 @@ def run_all(*, verbose: bool = True) -> tuple[pd.DataFrame, dict]:
         if verbose:
             print(f"[{idx}/{len(windows)}] {label} …", flush=True)
         t1 = time.perf_counter()
-        _, trades, _, _, meta, _ = run_backtest(
+        nav_df, trades, _, _, meta, _ = run_backtest(
             start=start,
             end=end,
             ctx=ctx,
@@ -84,12 +94,21 @@ def run_all(*, verbose: bool = True) -> tuple[pd.DataFrame, dict]:
             record_details=False,
         )
         sec = time.perf_counter() - t1
-        years = (pd.Timestamp(end) - pd.Timestamp(start)).days / 365.25
+        nominal_years = (pd.Timestamp(end) - pd.Timestamp(start)).days / 365.25
+        if not nav_df.empty:
+            effective_years = (
+                pd.Timestamp(nav_df["date"].iloc[-1]) - pd.Timestamp(nav_df["date"].iloc[0])
+            ).days / 365.25
+        else:
+            effective_years = nominal_years
+        complete = effective_years >= WINDOW_YEARS * 0.95
         row = {
             "window": label,
             "start": start,
             "end": end,
-            "years": round(years, 3),
+            "years": round(nominal_years, 3),
+            "effective_years": round(effective_years, 3),
+            "complete": complete,
             "total_return_pct": meta.get("total_return_pct"),
             "cagr_pct": meta.get("cagr_pct"),
             "max_drawdown_pct": meta.get("max_drawdown_pct"),
@@ -109,12 +128,15 @@ def run_all(*, verbose: bool = True) -> tuple[pd.DataFrame, dict]:
             )
 
     df = pd.DataFrame(results)
-    cagrs = df["cagr_pct"].dropna().astype(float)
-    dds = df["max_drawdown_pct"].dropna().astype(float)
+    complete_df = df[df["complete"]] if "complete" in df.columns else df
+    cagrs = complete_df["cagr_pct"].dropna().astype(float)
+    dds = complete_df["max_drawdown_pct"].dropna().astype(float)
     summary = {
         "window_count": len(df),
+        "complete_count": int(complete_df.shape[0]) if not complete_df.empty else 0,
         "window_years": WINDOW_YEARS,
         "first_start": FIRST_START.date().isoformat(),
+        "last_start": df["start"].iloc[-1] if not df.empty else None,
         "cagr_mean": float(cagrs.mean()) if len(cagrs) else None,
         "cagr_std": float(cagrs.std(ddof=0)) if len(cagrs) else None,
         "cagr_min": float(cagrs.min()) if len(cagrs) else None,
@@ -135,7 +157,8 @@ def render_report(df: pd.DataFrame, summary: dict) -> str:
         "",
         f"> 自 **{summary['first_start']}** 起每月一组，起止同步滚动，时长恒定。",
         "",
-        f"- 窗口数：**{summary['window_count']}**",
+        f"- 窗口数：**{summary['window_count']}**（满 {summary['window_years']:g} 年可比：**{summary['complete_count']}**）",
+        f"- 起点范围：{summary['first_start']} ~ {summary.get('last_start', '—')}",
         f"- 联合区间：{summary['union_start']} ~ {summary['union_end']}",
         f"- 年化均值：**{_fmt_pct(summary['cagr_mean'])}**",
         f"- 年化标准差：**{_fmt_pct(summary['cagr_std'])}**（阈值 < {_fmt_pct(summary['cagr_std_threshold'])}）",
@@ -147,7 +170,7 @@ def render_report(df: pd.DataFrame, summary: dict) -> str:
     ]
     if summary["all_weather"]:
         lines.append(
-            f"✅ **全天候底仓特征**：{summary['window_count']} 组年化标准差 "
+            f"✅ **全天候底仓特征**（{summary['complete_count']} 组满窗口）：年化标准差 "
             f"{_fmt_pct(summary['cagr_std'])} < {_fmt_pct(summary['cagr_std_threshold'])}。"
         )
     else:
@@ -179,8 +202,8 @@ def render_report(df: pd.DataFrame, summary: dict) -> str:
             "",
             "## 各窗口结果",
             "",
-            "| 窗口 | 区间 | 时长(年) | 总收益 | 年化 | 最大回撤 | Sharpe | 成交 |",
-            "|------|------|---:|---:|---:|---:|---:|---:|",
+            "| 窗口 | 区间 | 目标(年) | 实际(年) | 总收益 | 年化 | 最大回撤 | Sharpe | 成交 |",
+            "|------|------|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for _, r in df.iterrows():
@@ -188,6 +211,7 @@ def render_report(df: pd.DataFrame, summary: dict) -> str:
         sharpe_s = f"{sharpe:.2f}" if pd.notna(sharpe) else "—"
         lines.append(
             f"| {r['window']} | {r['start']}~{r['end']} | {r['years']:.2f} | "
+            f"{r.get('effective_years', r['years']):.2f} | "
             f"{_fmt_pct(r['total_return_pct'])} | {_fmt_pct(r['cagr_pct'])} | "
             f"{_fmt_pct(r['max_drawdown_pct'])} | {sharpe_s} | {int(r['trades'])} |"
         )
