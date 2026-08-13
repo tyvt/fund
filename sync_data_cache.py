@@ -13,7 +13,7 @@ from cyb_data import (
     fetch_cyb_pe_history,
     fetch_cyb_price_history,
 )
-from index_meta import iter_tracked_csindex_perf_codes, iter_tracked_index_labels
+from index_meta import iter_all_csindex_perf_codes, iter_tracked_index_labels
 from market_data import (
     configure_stdout_utf8,
     get_gov_bond_yield,
@@ -33,7 +33,7 @@ from us_index_data import (
 
 def sync_cn_perf(force: bool = False) -> list[str]:
     lines = []
-    for code in iter_tracked_csindex_perf_codes():
+    for code in iter_all_csindex_perf_codes():
         hist = load_index_perf_history(code, force=force)
         n = len(hist) if hist is not None else 0
         lines.append(f"  {code}: {n} 行")
@@ -45,7 +45,7 @@ def sync_cn_indicators(force: bool = False) -> list[str]:
 
     skip = frozenset(DIVIDEND_TOTAL_RETURN_INDEX.values())
     lines = []
-    for code in iter_tracked_csindex_perf_codes():
+    for code in iter_all_csindex_perf_codes():
         if code in skip:
             lines.append(f"  {code}: 跳过（全收益指数无指标文件）")
             continue
@@ -132,7 +132,12 @@ def sync_all(force: bool = False) -> None:
     except Exception as exc:
         print(f"  额度分配刷新失败: {exc}")
 
+    print("\n[DuckDB]")
+    print("  请运行统一同步: python sync_market_duckdb.py")
+    print("  （或收盘后 StockDB: python sync_stockdb_to_duckdb.py）")
+
     print("\n缓存目录: cache/（当日已同步则跳过重拉，次日自动增量更新）")
+    print("DuckDB: data/market.duckdb（统一入口 sync_market_duckdb.py）")
 
 
 def main(argv=None) -> int:

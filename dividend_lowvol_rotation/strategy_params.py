@@ -37,6 +37,7 @@ class StrategyParams:
     fundamental_filter_enabled: bool | None = None
     industry_cap_enabled: bool | None = None
     ex_date_cooldown_days: int | None = None
+    stop_atr_multiplier: float | None = None
 
     def resolved_top_n(self, default: int = TOP_N_BUY) -> int:
         return int(self.top_n if self.top_n is not None else default)

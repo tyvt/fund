@@ -66,6 +66,22 @@ def is_fresh_today(path: Path) -> bool:
 
 
 def load_dataframe(path: Path, parse_dates: list[str] | None = None) -> pd.DataFrame | None:
+    from duckdb_cache import ensure_duckdb_cache_ready, infer_cache_params, load_dataframe_from_duckdb
+
+    ensure_duckdb_cache_ready()
+
+    key, subdir, us = infer_cache_params(path)
+    try:
+        cached = load_dataframe_from_duckdb(key, subdir=subdir, us=us)
+        if cached is not None and not cached.empty:
+            if parse_dates:
+                for col in parse_dates:
+                    if col in cached.columns:
+                        cached[col] = pd.to_datetime(cached[col])
+            return cached
+    except Exception:
+        pass
+
     if not path.exists():
         return None
     try:
@@ -77,9 +93,28 @@ def load_dataframe(path: Path, parse_dates: list[str] | None = None) -> pd.DataF
 def save_dataframe(path: Path, frame: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False, encoding="utf-8")
+    from duckdb_cache import infer_cache_params, sync_dataframe_to_duckdb
+
+    key, subdir, us = infer_cache_params(path)
+    try:
+        sync_dataframe_to_duckdb(key, frame, subdir=subdir, us=us)
+    except Exception:
+        pass
 
 
 def load_json(path: Path):
+    from duckdb_cache import infer_cache_params, load_json_from_duckdb
+
+    key, subdir, us = infer_cache_params(path)
+    try:
+        from duckdb_cache import load_json_from_duckdb
+
+        cached = load_json_from_duckdb(key, subdir=subdir, us=us)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     if not path.exists():
         return None
     try:
@@ -91,6 +126,13 @@ def load_json(path: Path):
 def save_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    from duckdb_cache import infer_cache_params, sync_json_to_duckdb
+
+    key, subdir, us = infer_cache_params(path)
+    try:
+        sync_json_to_duckdb(key, payload, subdir=subdir, us=us)
+    except Exception:
+        pass
 
 
 def load_text(path: Path) -> str | None:
@@ -108,7 +150,7 @@ def save_text(path: Path, text: str) -> None:
 
 
 def _normalize_date_series(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, errors="coerce").dt.normalize()
+    return pd.to_datetime(series, errors="coerce").dt.normalize().astype("datetime64[ns]")
 
 
 def merge_dataframes_by_date(

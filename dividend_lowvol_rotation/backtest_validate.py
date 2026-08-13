@@ -22,12 +22,15 @@ from dividend_lowvol_rotation.backtest import (
     prepare_backtest_context,
     run_backtest,
 )
+from dividend_lowvol_rotation.backtest_report import _rebalance_mode_label, _sell_mode_label
 from dividend_lowvol_rotation.config import (
     BACKTEST_INITIAL_CAPITAL,
     BACKTEST_OUTPUT_DIR,
     BACKTEST_PREFETCH_SIZE,
     BACKTEST_REBALANCE_DAYS,
+    BACKTEST_REBALANCE_MODE,
     BACKTEST_YEARS,
+    SELL_MODE,
     TOP_N_BUY,
     resolve_sell_rank,
 )
@@ -197,6 +200,9 @@ def run_benchmark_compare(
     verbose: bool = True,
     ctx: BacktestContext | None = None,
     strategy_params: StrategyParams | None = None,
+    rebalance_mode: str | None = None,
+    min_hold_days: int | None = None,
+    sell_mode: str | None = None,
 ) -> tuple[list[BenchmarkWindowResult], BenchmarkSummary, dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     top_n, sell_rank, rebalance_days, sp = _resolve_run_args(
         top_n, sell_rank, rebalance_days, strategy_params
@@ -207,7 +213,12 @@ def run_benchmark_compare(
         if verbose:
             print("预加载数据…")
         ctx = prepare_backtest_context(
-            start, end, prefetch_size=prefetch_size, rebalance_days=rebalance_days, verbose=verbose
+            start,
+            end,
+            prefetch_size=prefetch_size,
+            rebalance_days=rebalance_days,
+            rebalance_mode=rebalance_mode,
+            verbose=verbose,
         )
     elif verbose:
         print("复用已加载数据…")
@@ -226,6 +237,9 @@ def run_benchmark_compare(
         record_details=False,
         verbose=False,
         strategy_params=sp,
+        rebalance_mode=rebalance_mode,
+        min_hold_days=min_hold_days,
+        sell_mode=sell_mode,
     )
     if verbose:
         print("运行买入持有对照…")
@@ -242,6 +256,9 @@ def run_benchmark_compare(
         record_details=False,
         verbose=False,
         strategy_params=sp,
+        rebalance_mode=rebalance_mode,
+        min_hold_days=min_hold_days,
+        sell_mode=sell_mode,
     )
     if verbose:
         print(f"加载指数 {index_code}（全收益）…")
@@ -297,6 +314,9 @@ def run_benchmark_compare(
         "sell_rank": sell_rank,
         "initial_capital": initial_capital,
         "rebalance_days": rebalance_days,
+        "rebalance_mode": strat_meta.get("rebalance_mode"),
+        "min_hold_days": strat_meta.get("min_hold_days"),
+        "sell_mode": strat_meta.get("sell_mode"),
         "index_code": index_code,
         "index_tr_code": tr_code,
         "index_name": _index_name(index_code),
@@ -727,8 +747,10 @@ def format_benchmark_markdown(
         f"> 生成时间：{now}  ",
         f"> 区间：{meta['start']} ~ {meta['end']}  ",
         f"> 基准：**{idx_label}**（含分红再投资）  ",
-        f"> 策略：持仓 {meta['top_n']} 只，跌出前 {meta['sell_rank']} 卖（含分红个税）",
+        f"> 策略：持仓 {meta['top_n']} 只，{_sell_mode_label(meta)}（含分红个税）",
     ]
+    if meta.get("rebalance_mode"):
+        lines.append(f"> 调仓：**{_rebalance_mode_label(meta)}**")
     if meta.get("strategy_params_summary"):
         lines.append(f"> 参数：**{meta['strategy_params_summary']}**")
     lines.extend([
@@ -1029,6 +1051,58 @@ def save_mc_outputs(
     return paths
 
 
+def compare_conditional_rebuy(
+    *,
+    start: str,
+    end: str | None,
+    top_n: int,
+    sell_rank: int,
+    rebalance_days: int,
+    initial_capital: float,
+    prefetch_size: int,
+    ctx: BacktestContext | None = None,
+    strategy_params: StrategyParams | None = None,
+) -> dict:
+    """对比条件回补开关下的全段收益与最大回撤。"""
+    import dividend_lowvol_rotation.config as cfg
+
+    rows: list[dict] = []
+    orig = cfg.CONDITIONAL_REBUY_ENABLED
+    for enabled, label in [(True, "条件回补开"), (False, "条件回补关")]:
+        cfg.CONDITIONAL_REBUY_ENABLED = enabled
+        nav, _, _, _, meta, _ = run_backtest(
+            start=start,
+            end=end,
+            top_n=top_n,
+            sell_rank=sell_rank,
+            rebalance_days=rebalance_days,
+            initial_capital=initial_capital,
+            prefetch_size=prefetch_size,
+            ctx=ctx,
+            verbose=False,
+            strategy_params=strategy_params,
+        )
+        ret = None
+        dd = meta.get("max_drawdown_pct")
+        if not nav.empty:
+            ret = float(nav["nav"].iloc[-1] / initial_capital - 1) * 100
+        rows.append(
+            {
+                "mode": label,
+                "return_pct": ret,
+                "max_drawdown_pct": dd,
+                "trades": meta.get("trade_count"),
+            }
+        )
+    cfg.CONDITIONAL_REBUY_ENABLED = orig
+    on = rows[0]
+    off = rows[1]
+    edge = None
+    if on["return_pct"] is not None and off["return_pct"] is not None:
+        edge = on["return_pct"] - off["return_pct"]
+    return {"rows": rows, "return_edge_on_vs_off_pct": edge}
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_stdout_utf8()
     parser = argparse.ArgumentParser(description="红利低波 WFA + 蒙特卡洛检验")
@@ -1043,6 +1117,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top", type=int, default=TOP_N_BUY)
     parser.add_argument("--sell-rank", type=int, default=None)
     parser.add_argument("--rebalance-days", type=int, default=BACKTEST_REBALANCE_DAYS)
+    parser.add_argument(
+        "--rebalance-mode",
+        choices=["monthly", "index_annual", "quarterly_report", "fixed_days"],
+        default=BACKTEST_REBALANCE_MODE,
+        help="调仓日程（index_annual=H30269 每年12月调样）",
+    )
+    parser.add_argument(
+        "--sell-mode",
+        choices=["rank_buffer", "index_rules"],
+        default=SELL_MODE,
+        help="调出逻辑：排名缓冲带或指数硬门槛",
+    )
     parser.add_argument("--capital", type=float, default=BACKTEST_INITIAL_CAPITAL)
     parser.add_argument("--prefetch", type=int, default=BACKTEST_PREFETCH_SIZE)
     parser.add_argument("--fast", action="store_true", help="快速模式：prefetch=80，MC 100 次")
@@ -1057,6 +1143,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="自定义参数 JSON（optimize.json 格式）",
     )
+    parser.add_argument(
+        "--conditional-rebuy-ab",
+        action="store_true",
+        help="对比条件回补开关（默认开 vs 关）",
+    )
     parser.add_argument("-o", "--output-dir", default=None)
     args = parser.parse_args(argv)
 
@@ -1066,7 +1157,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.permutations == DEFAULT_MC_PERMUTATIONS:
             args.permutations = FAST_MC_PERMUTATIONS
 
-    if not args.wfa and not args.monte_carlo and not args.benchmark:
+    if not args.wfa and not args.monte_carlo and not args.benchmark and not args.conditional_rebuy_ab:
         args.wfa = True
         args.monte_carlo = True
 
@@ -1094,7 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
 
     shared_ctx = None
-    need_ctx = args.wfa or args.monte_carlo or args.benchmark
+    need_ctx = args.wfa or args.monte_carlo or args.benchmark or args.conditional_rebuy_ab
     if need_ctx:
         print("预加载数据…")
         shared_ctx = prepare_backtest_context(
@@ -1102,8 +1193,30 @@ def main(argv: list[str] | None = None) -> int:
             args.end,
             prefetch_size=args.prefetch,
             rebalance_days=rebalance_days,
+            rebalance_mode=args.rebalance_mode,
             verbose=True,
         )
+
+    if args.conditional_rebuy_ab:
+        print("条件回补 A/B 对比…")
+        ab = compare_conditional_rebuy(
+            start=start,
+            end=args.end,
+            top_n=top_n,
+            sell_rank=sell_rank,
+            rebalance_days=rebalance_days,
+            initial_capital=args.capital,
+            prefetch_size=args.prefetch,
+            ctx=shared_ctx,
+            strategy_params=strategy_params,
+        )
+        for row in ab["rows"]:
+            print(
+                f"  {row['mode']}: 收益 {row['return_pct']:.2f}% "
+                f"回撤 {row['max_drawdown_pct']}% 成交 {row['trades']}"
+            )
+        if ab["return_edge_on_vs_off_pct"] is not None:
+            print(f"  利差（开-关）: {ab['return_edge_on_vs_off_pct']:+.2f}%")
 
     if args.wfa:
         print(f"WFA {start} ~ {args.end or '今'}（{args.freq}）…")
@@ -1172,9 +1285,16 @@ def main(argv: list[str] | None = None) -> int:
             ctx=shared_ctx,
             verbose=True,
             strategy_params=strategy_params,
+            rebalance_mode=args.rebalance_mode,
+            sell_mode=args.sell_mode,
         )
+        stem = f"{output_stem}benchmark"
+        if args.rebalance_mode == "index_annual":
+            stem = f"{output_stem}benchmark_index_annual"
+        if args.sell_mode == "index_rules":
+            stem = f"{stem}_index_rules"
         b_paths = save_benchmark_outputs(
-            out_dir, b_windows, b_summary, b_meta, strat_nav, index_nav, stem=f"{output_stem}benchmark"
+            out_dir, b_windows, b_summary, b_meta, strat_nav, index_nav, stem=stem
         )
         print(format_benchmark_markdown(b_windows, b_summary, b_meta))
         print(f"已写入 {b_paths['md']} / {b_paths['html']}")

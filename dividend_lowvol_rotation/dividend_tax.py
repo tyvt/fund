@@ -49,10 +49,11 @@ def accrue_dividend_taxes(
     period_start: pd.Timestamp,
     period_end: pd.Timestamp,
 ) -> tuple[float, float, list[dict]]:
-    """统计区间内持仓分红个税（从前复权回测的现金中扣减税负）。
+    """统计区间内持仓现金分红与个税。
 
-    前复权价已体现分红再投资效应，此处仅扣除「相对免税」的额外税负。
-    返回 (总税额, 税前分红总额, 明细行)。
+    返回 (总税额, 税前分红总额, 明细行)。调用方按回测模式处理现金：
+    - 不复权 + 现金分红：cash += gross - tax（或 gross，若不扣税）
+    - 前复权（旧模式）：仅 cash -= tax，避免与前复权价双重计入分红
     """
     total_tax = 0.0
     total_gross = 0.0

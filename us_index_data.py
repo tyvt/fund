@@ -495,9 +495,12 @@ def build_daily_valuation_panel(key: str, sources=None):
         pe_payload, prices, us10y = sources
 
     daily = prices[["date", "close"]].sort_values("date").reset_index(drop=True)
+    daily["date"] = pd.to_datetime(daily["date"], errors="coerce").astype("datetime64[ns]")
+    us10y_sorted = us10y.sort_values("date").copy()
+    us10y_sorted["date"] = pd.to_datetime(us10y_sorted["date"], errors="coerce").astype("datetime64[ns]")
     daily = pd.merge_asof(
         daily,
-        us10y.sort_values("date"),
+        us10y_sorted,
         on="date",
         direction="backward",
     )
@@ -506,6 +509,9 @@ def build_daily_valuation_panel(key: str, sources=None):
     if not forward.empty:
         forward = forward.rename(columns={"value": "forward_pe", "date": "fwd_date"})
         forward = forward.sort_values("fwd_date")
+        forward["fwd_date"] = pd.to_datetime(forward["fwd_date"], errors="coerce").astype(
+            "datetime64[ns]"
+        )
         daily = pd.merge_asof(
             daily,
             forward[["fwd_date", "forward_pe"]],
@@ -518,6 +524,9 @@ def build_daily_valuation_panel(key: str, sources=None):
     if not trailing.empty:
         trailing = trailing.rename(columns={"value": "trailing_pe", "date": "trail_date"})
         trailing = trailing.sort_values("trail_date")
+        trailing["trail_date"] = pd.to_datetime(trailing["trail_date"], errors="coerce").astype(
+            "datetime64[ns]"
+        )
         daily = pd.merge_asof(
             daily,
             trailing[["trail_date", "trailing_pe"]],

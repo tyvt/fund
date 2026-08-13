@@ -48,6 +48,10 @@ OUTPUT_STEM = "optimize"
 DEFAULT_VALID_START = "2021-01-01"
 SCREEN_EDGE_THRESHOLD = 0.5  # 验证集利差变化 < 0.5% 视为无影响
 
+ATR_GRID: dict[str, list[Any]] = {
+    "stop_atr_multiplier": [2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5],
+}
+
 COARSE_GRID: dict[str, list[Any]] = {
     "top_n": [5, 10, 15],
     "rebalance_days": [15, 20, 30],
@@ -228,13 +232,15 @@ def evaluate_params(
 
     score = 0.0
     if valid_edge_index is not None:
-        score += 0.40 * valid_edge_index
+        score += 0.15 * valid_edge_index
     if valid_edge_hold is not None:
-        score += 0.30 * valid_edge_hold
+        score += 0.15 * valid_edge_hold
     if wfa_win is not None:
-        score += 0.20 * (wfa_win * 100)
+        score += 0.10 * (wfa_win * 100)
     if max_dd is not None:
-        score -= 0.10 * abs(min(max_dd, 0))
+        score -= 0.55 * abs(min(max_dd, 0))
+    if strat_meta.get("total_return_pct") is not None:
+        score += 0.05 * float(strat_meta["total_return_pct"])
 
     return TrialMetrics(
         score=score,
@@ -628,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="红利低波轮动参数优化")
     parser.add_argument(
         "--task",
-        choices=["screen", "grid", "bayesian", "all"],
+        choices=["screen", "grid", "atr_grid", "bayesian", "all"],
         default="all",
     )
     parser.add_argument("--years", type=int, default=10)
@@ -694,6 +700,22 @@ def main(argv: list[str] | None = None) -> int:
             best = max(grid_results, key=lambda r: r.metrics.score)
             best_grid_params = dict(best.params)
             print_top(grid_results, 5, args.valid_start)
+
+    atr_results: list[TrialResult] = []
+    if args.task in ("atr_grid", "all"):
+        n_atr = len(ATR_GRID["stop_atr_multiplier"])
+        print(f"\n=== ATR 止损乘数网格 {n_atr} 组 ===")
+        atr_store: list[TrialResult] = []
+        evaluator = _wrap_evaluate(
+            ctx, start, end, args.valid_start, args.capital, index_nav, args.prefetch, "atr_grid", atr_store
+        )
+        for i, mult in enumerate(ATR_GRID["stop_atr_multiplier"], 1):
+            result = evaluator(i, {"stop_atr_multiplier": mult})
+            atr_results.append(result)
+            if i % 3 == 0 or i == n_atr:
+                print(f"  ATR网格 {i}/{n_atr} 完成…")
+        if atr_results:
+            print_top(atr_results, 5, args.valid_start)
 
     if args.task in ("bayesian", "all"):
         base = best_grid_params or {"top_n": 10, "rebalance_days": 20, "sell_rank_multiplier": 2.0}

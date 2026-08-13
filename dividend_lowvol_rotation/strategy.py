@@ -12,17 +12,30 @@ from dividend_lowvol_rotation.config import (
     EX_DATE_COOLDOWN_ENABLED,
     FUNDAMENTAL_FILTER_ENABLED,
     INDUSTRY_CAP_ENABLED,
+    MARKET_VALUATION_ENABLED,
     MAX_INDUSTRY_WEIGHT,
     MIN_DIVIDEND_YIELD_PCT,
     MIN_PROFIT_YOY_PCT,
     MIN_ROE_PCT,
     OCF_QUALITY_FILTER_ENABLED,
+    RISK_FILTER_ENABLED,
     TOP_N_BUY,
     resolve_sell_rank,
 )
-from dividend_lowvol_rotation.dividend import build_dividend_panel
+from dividend_lowvol_rotation.dividend import build_dividend_panel, load_fhps_all_records
 from dividend_lowvol_rotation.dynamic_params import resolve_dynamic_params
-from dividend_lowvol_rotation.fundamentals import attach_ocf_quality
+from dividend_lowvol_rotation.enhanced_factors import attach_enhanced_factors
+from dividend_lowvol_rotation.fundamental_factors import (
+    attach_expected_dividend_yield,
+    attach_quality_momentum,
+)
+from dividend_lowvol_rotation.market_valuation import load_market_pe_history, valuation_regime
+from dividend_lowvol_rotation.risk_screening import (
+    attach_risk_from_records,
+    batch_load_risk_history,
+    merge_risk_history,
+    risk_pass_rate_by_industry,
+)
 from dividend_lowvol_rotation.industry import attach_industry, load_industry_table
 from dividend_lowvol_rotation.prices import batch_load_volatility
 from dividend_lowvol_rotation.quotes import fetch_stock_quotes
@@ -130,12 +143,63 @@ def build_market_panel(
     _mapping, ind_src = load_industry_table(refresh=False)
     meta["steps"].append(f"行业分类：{ind_src}")
 
-    if OCF_QUALITY_FILTER_ENABLED:
-        panel = attach_ocf_quality(panel, refresh=refresh)
+    fhps_records = load_fhps_all_records(refresh=False)
+    panel = attach_risk_from_records(panel, fhps_records)
+    risk_hist = batch_load_risk_history(panel["code"].tolist(), refresh=refresh)
+    if not risk_hist.empty:
+        panel = merge_risk_history(panel, risk_hist)
+        meta["steps"].append(f"排雷指标：{len(risk_hist['code'].unique())} 只")
+
+    as_of = pd.Timestamp.now()
+    panel = attach_expected_dividend_yield(panel, fhps_records, as_of)
+    if not risk_hist.empty:
+        panel = attach_quality_momentum(panel, risk_hist, as_of)
+    panel = attach_enhanced_factors(
+        panel,
+        records=fhps_records,
+        risk_hist=risk_hist if not risk_hist.empty else None,
+        as_of=as_of,
+    )
+
+    if RISK_FILTER_ENABLED and "industry" in panel.columns:
+        risk_ind = risk_pass_rate_by_industry(panel)
+        if not risk_ind.empty:
+            meta["risk_pass_by_industry"] = risk_ind.to_dict("records")
+            low_pass = risk_ind[risk_ind["pass_rate_pct"] < 50].head(5)
+            if not low_pass.empty:
+                low_text = "；".join(
+                    f"{r['industry']} {r['pass_rate_pct']:.0f}%"
+                    for _, r in low_pass.iterrows()
+                )
+                meta["steps"].append(f"排雷通过率偏低行业：{low_text}")
+
+    val_regime: dict = {}
+    if MARKET_VALUATION_ENABLED:
+        try:
+            pe_hist = load_market_pe_history()
+            val_regime = valuation_regime(pd.Timestamp.now(), pe_hist)
+            meta["market_valuation"] = val_regime
+            if val_regime.get("market_pe_percentile") is not None:
+                meta["steps"].append(
+                    f"全市场估值锚点：中证800 PE {val_regime.get('market_pe', 0):.2f}，"
+                    f"历史分位 {val_regime['market_pe_percentile']:.1f}%"
+                    + ("（收紧买入 PB）" if val_regime.get("valuation_tight") else "")
+                    + ("（暂停新买）" if val_regime.get("pause_new_buys") else "")
+                )
+        except Exception as exc:
+            meta["warnings"].append(f"全市场 PE 加载失败：{exc}")
 
     ranked, buy_pool, filter_stats = run_screening(
-        panel, top_n=top_n, sell_rank=sell_rank, dynamic=dynamic
+        panel,
+        top_n=top_n,
+        sell_rank=sell_rank,
+        dynamic=dynamic,
+        valuation_tight=val_regime.get("valuation_tight", False),
     )
+    if val_regime.get("pause_new_buys") and not buy_pool.empty:
+        buy_pool = buy_pool.iloc[0:0]
+        meta["steps"].append("全市场高估：暂停新增买入")
+
     meta["filters"] = filter_stats
 
     if EX_DATE_COOLDOWN_ENABLED:
@@ -151,7 +215,10 @@ def build_market_panel(
         meta["steps"].append(
             f"行业分散（单行业≤{MAX_INDUSTRY_WEIGHT * 100:.0f}%）：买入池 {len(buy_pool)} 只"
         )
-    meta["steps"].append(f"通过核心筛选：{filter_stats.get('passed_core_filters', 0)} 只")
+    meta["steps"].append(
+        f"候选池：通过全部筛选 **{filter_stats.get('pool_count', filter_stats.get('passed_core_filters', 0))}** 只"
+        f"（放宽级别 {filter_stats.get('relaxation_level', 'full')}）"
+    )
     meta["elapsed_sec"] = round((datetime.now() - t0).total_seconds(), 1)
     meta["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return ranked, buy_pool, meta

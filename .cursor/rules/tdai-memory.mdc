@@ -1,0 +1,76 @@
+---
+description: 全局 TencentDB Memory MCP 使用规范（跨项目记忆检索与保存）
+alwaysApply: true
+---
+
+# TencentDB Memory MCP 使用规范
+
+本机已接入 `tencentdb-memory` MCP（Gateway `http://127.0.0.1:8420`）。用于跨会话、跨项目记住项目决策与踩坑经验。
+
+## session_key 规则
+
+- `session_key` **必须**使用当前工作区根目录的**文件夹名**（不是完整路径）
+- 示例：工作区为 `d:\repository\投资推送` → `session_key = "投资推送"`
+- 不同项目绝不共用同一个 `session_key`
+
+## 会话开始时（必做）
+
+处理用户**第一个实质性任务**之前，先检索历史记忆（二选一，优先 recall）：
+
+1. `tdai_recall`：`query` = 用户首条任务摘要，`session_key` = 当前项目文件夹名
+2. 若 recall 无结果，再调 `tdai_conversation_search`：`query` = 任务关键词，`session_key` = 当前项目文件夹名，`limit` = 5
+
+将检索到的**决策、约束、配置约定**融入后续回答，避免重复犯错。
+
+## 会话进行中（按需）
+
+仅在以下情况调用记忆工具，**不要每轮都调**：
+
+| 时机 | 工具 | 说明 |
+|------|------|------|
+| 用户问「之前说过/做过什么」 | `tdai_conversation_search` | 搜历史对话 |
+| 需要结构化长期记忆 | `tdai_memory_search` | 搜 L1 记忆（可能为空） |
+| 达成重要结论 | `tdai_capture` | 见下方保存规范 |
+
+## 保存规范（tdai_capture）
+
+在以下时机用 `tdai_capture` 保存一轮对话（`session_key` = 项目文件夹名）：
+
+- 用户明确说「记住这个」
+- 确定了**架构决策、配置约定、踩坑结论、业务规则**
+- 会话结束前总结了关键结论
+
+**不要保存**：琐碎问答、纯代码展示、无信息量的寒暄。
+
+`user_content` / `assistant_content` 用**简洁摘要**（各 1–3 句），不要粘贴大段代码。
+
+## 会话结束时（建议）
+
+用户表示结束、切换话题、或完成一个完整任务后，调用：
+
+- `tdai_session_end`：`session_key` = 当前项目文件夹名
+
+## Token 节约
+
+- 每个会话：**开始时搜索 1 次**，**结束时 capture 1 次**（有重要结论时）
+- 禁止每轮同时调用 recall + search + capture
+- 搜索结果只提取与当前任务相关的要点，不要把全文复述给用户
+- **调用记忆 MCP 后**，须在回复末尾用一行复述 `token_stats`（注入/节省 tokens）；工具返回里的 `📊` footer 用户界面默认不可见，需由 Agent 转述
+
+## MCP 更新不生效时
+
+Cursor 的 Reload **不一定**会重启 Node 子进程。按顺序尝试：
+
+1. 运行 `D:\repository\tdai-memory-setup\restart-mcp.bat` 杀进程后 Reload
+2. **完全退出 Cursor**（所有窗口）再打开
+3. 确认 footer 末尾版本号，例如 `[mcp v0.4.2]`（`mcp.json` 已启用 `node --watch`，改 `index.mjs` 后应自动重启）
+
+## Gateway 不可用
+
+若 MCP 工具报错连接失败，提示用户运行：
+
+```bat
+D:\repository\tdai-memory-setup\start-gateway-background.bat
+```
+
+然后继续任务，不要反复重试记忆工具。

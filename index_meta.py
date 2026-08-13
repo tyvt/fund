@@ -17,6 +17,8 @@ from config import (
 INDEX_BASE_DATES: dict[str, str] = {
     "H30269": "20081231",
     "H20269": "20081231",
+    "000300": "20050408",
+    "000906": "20070115",
     "000852": "20141017",
     "000688": "20200723",
     "399006": "20100601",
@@ -49,6 +51,20 @@ def iter_tracked_csindex_perf_codes() -> list[str]:
     for item in CN_BROAD_INDICES:
         codes.append(item["code"])
     return list(dict.fromkeys(codes))
+
+
+# 策略回测用、不在 INDICES/CN_BROAD 内的中证 perf 指数
+EXTRA_CSINDEX_PERF_CODES = ("000300", "000906")
+
+
+def iter_extra_csindex_perf_codes() -> list[str]:
+    """策略模块额外依赖的中证 perf 指数（Beta 基准、全市场 PE 等）。"""
+    tracked = set(iter_tracked_csindex_perf_codes())
+    return [c for c in EXTRA_CSINDEX_PERF_CODES if c not in tracked]
+
+
+def iter_all_csindex_perf_codes() -> list[str]:
+    return list(dict.fromkeys([*iter_tracked_csindex_perf_codes(), *iter_extra_csindex_perf_codes()]))
 
 
 def iter_tracked_index_labels() -> list[tuple[str, str]]:

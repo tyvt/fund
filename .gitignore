@@ -17,6 +17,7 @@ logs/
 
 # 外部数据本地缓存（行情、估值、国债等）
 cache/
+data/
 
 # 回测输出（Markdown 报告）
 output/

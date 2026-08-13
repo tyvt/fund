@@ -11,6 +11,48 @@ from dividend_lowvol_rotation.config import (
 )
 
 
+def dynamic_slippage_rate(
+    *,
+    ann_vol_pct: float | None = None,
+    trade_amount_cny: float | None = None,
+) -> float:
+    from dividend_lowvol_rotation.config import (
+        SLIPPAGE_ADV_BASE_CNY,
+        SLIPPAGE_BASE_RATE,
+        SLIPPAGE_DYNAMIC_ENABLED,
+        SLIPPAGE_MAX_RATE,
+        SLIPPAGE_PARTICIPATION_MULT,
+        SLIPPAGE_RATE,
+    )
+
+    if not SLIPPAGE_DYNAMIC_ENABLED:
+        return SLIPPAGE_RATE
+    vol = ann_vol_pct if ann_vol_pct is not None and ann_vol_pct > 0 else 25.0
+    adv = SLIPPAGE_ADV_BASE_CNY * (22.0 / max(vol, 12.0))
+    amount = trade_amount_cny or 0.0
+    participation = amount / max(adv, 1.0)
+    rate = SLIPPAGE_BASE_RATE + participation * SLIPPAGE_PARTICIPATION_MULT
+    return min(SLIPPAGE_MAX_RATE, max(SLIPPAGE_BASE_RATE, rate))
+
+
+def apply_slippage(
+    price: float,
+    side: str,
+    *,
+    ann_vol_pct: float | None = None,
+    trade_amount_cny: float | None = None,
+    slippage_rate: float | None = None,
+) -> float:
+    rate = slippage_rate
+    if rate is None:
+        rate = dynamic_slippage_rate(ann_vol_pct=ann_vol_pct, trade_amount_cny=trade_amount_cny)
+    if rate <= 0 or price <= 0:
+        return price
+    if side == "buy":
+        return price * (1 + rate)
+    return price * (1 - rate)
+
+
 def single_side_commission(trade_amount_cny: float) -> float:
     if trade_amount_cny <= 0:
         return 0.0

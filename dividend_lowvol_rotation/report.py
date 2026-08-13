@@ -18,6 +18,7 @@ from dividend_lowvol_rotation.config import (
     INDUSTRY_CAP_ENABLED,
     MAX_ANNUALIZED_VOL_PCT,
     MAX_INDUSTRY_WEIGHT,
+    MAX_SINGLE_STOCK_WEIGHT,
     MIN_COMMISSION_CNY,
     MIN_DIVIDEND_YIELD_PCT,
     MIN_PROFIT_YOY_PCT,
@@ -143,9 +144,33 @@ def build_report(
                 lines.append(f"- 10Y 国债：**{dyn['bond_yield_pct']:.2f}%**")
             if dyn.get("market_vol_median_pct") is not None:
                 lines.append(f"- 波动中位：**{dyn['market_vol_median_pct']:.1f}%**")
+            for note in dyn.get("notes", []):
+                lines.append(f"- {note}")
             lines.append(
                 f"- 权重：股息 **{dyn.get('yield_weight', YIELD_RANK_WEIGHT):.2f}** / "
                 f"低波 **{dyn.get('vol_weight', VOL_RANK_WEIGHT):.2f}**"
+            )
+        lines.append("")
+    mkt_val = meta.get("market_valuation") or {}
+    if mkt_val.get("market_pe_percentile") is not None:
+        lines.extend(["### 全市场估值锚点", ""])
+        lines.append(
+            f"- 中证800 PE：**{mkt_val.get('market_pe', 0):.2f}**，"
+            f"历史分位 **{mkt_val['market_pe_percentile']:.1f}%**"
+        )
+        if mkt_val.get("valuation_tight"):
+            lines.append("- 状态：**收紧买入**（PB 偏好降至行业 30% 分位）")
+        if mkt_val.get("pause_new_buys"):
+            lines.append("- 状态：**暂停新增买入**")
+        lines.append("")
+    risk_ind = meta.get("risk_pass_by_industry") or []
+    if risk_ind:
+        lines.extend(["### 排雷通过率（按行业）", ""])
+        low = sorted(risk_ind, key=lambda r: r.get("pass_rate_pct", 100))[:8]
+        for row in low:
+            lines.append(
+                f"- {row['industry']}：{row['passed']}/{row['total']} "
+                f"（**{row['pass_rate_pct']:.0f}%**）"
             )
         lines.append("")
     lines.extend(
@@ -162,7 +187,10 @@ def build_report(
     else:
         lines.append("- 基本面过滤：关")
     if INDUSTRY_CAP_ENABLED:
-        lines.append(f"- 行业分散：单行业 ≤ {MAX_INDUSTRY_WEIGHT * 100:.0f}%（申万一级优先）")
+        lines.append(
+            f"- 行业分散：单行业 ≤ {MAX_INDUSTRY_WEIGHT * 100:.0f}%；"
+            f"单股 ≤ {MAX_SINGLE_STOCK_WEIGHT * 100:.0f}%"
+        )
     else:
         lines.append("- 行业分散：关")
     if OCF_QUALITY_FILTER_ENABLED:
