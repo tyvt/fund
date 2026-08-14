@@ -20,9 +20,9 @@ import pandas as pd
 
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
-sys.path.insert(0, str(PROJECT_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
 
 
@@ -626,7 +626,7 @@ def main(argv=None) -> int:
 
     if not args.refresh_bond:
 
-        print("提示: 若国债行数仍偏少，请运行 python validate_data_baostock.py --refresh-bond")
+        print("提示: 若国债行数仍偏少，请运行 python scripts/validate_data_baostock.py --refresh-bond")
 
     return 0
 

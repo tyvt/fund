@@ -18,9 +18,6 @@ python -m dividend_lowvol_rotation.backtest_validate --benchmark H30269 --years 
 
 # 排雷未来信息验证
 python scripts/verify_risk_lookahead.py
-
-# 优化前后 WFA 对比（2018/2024 极端年）
-python scripts/wfa_extreme_year_compare.py
 ```
 
 Windows：`run_dividend_lowvol.bat`、`run_dividend_lowvol_backtest.bat`。
@@ -142,7 +139,7 @@ Windows：`run_dividend_lowvol.bat`、`run_dividend_lowvol_backtest.bat`。
 
 ### 优化前后对比（硬剔除 vs 当前默认）
 
-同区间 `scripts/wfa_extreme_year_compare.py`：
+同区间回测结论（2016-08 ~ 2025-08，脚本已归档）：
 
 | 指标 | 硬剔除（旧） | 当前默认 |
 |------|-------------|----------|
@@ -156,12 +153,10 @@ Windows：`run_dividend_lowvol.bat`、`run_dividend_lowvol_backtest.bat`。
 
 修复前瞻 + 软性评分后，候选池更厚、换手更低，极端年表现更稳。恢复硬剔除：`DLV_SOFT_RISK_SCORING_ENABLED=false DLV_SOFT_ENHANCED_SCORING_ENABLED=false`。
 
-对比更早默认（约 +247% / -29.5%）：**波动率目标 20%** 将回撤由 -29.5% 压至约 **-21%**；进一步压至 -16% 需 `VOL_TARGET_PCT=16~18`，年化约 **6~9%**（见 `scripts/sweep_drawdown_params.py`）。
+对比更早默认（约 +247% / -29.5%）：**波动率目标 20%** 将回撤由 -29.5% 压至约 **-21%**；进一步压至 -16% 需 `VOL_TARGET_PCT=16~18`，年化约 **6~9%**。
 
 报告：`output/dividend_lowvol/backtest.md` / `backtest.html`  
 因子优化：`output/dividend_lowvol/optimize_enhanced_factors.md`  
-降回撤扫描：`python scripts/sweep_drawdown_params.py`  
-WFA 极端年对比：`python scripts/wfa_extreme_year_compare.py`  
 指数对比：`python -m dividend_lowvol_rotation.backtest_validate --benchmark H30269 --years 10 --end 2025-08-01`
 
 ### 滚动日历稳健性（固定 ~10 年窗口 × 12 组）
@@ -190,8 +185,6 @@ W01（2015-08 起点）年化 13.2%、maxDD -33%；W12（2016-07 起点）年化
 | `backtest_optimize.py` | 参数网格（历史实验，非当前默认） |
 | `scripts/optimize_enhanced_factors.py` | 增强因子阈值网格 + 贝叶斯优化 |
 | `scripts/verify_risk_lookahead.py` | 暴雷股是否在事件前被排雷标记 |
-| `scripts/wfa_extreme_year_compare.py` | 硬剔除 vs 软性评分，2018/2024 候选池与 WFA |
-| `scripts/sweep_drawdown_params.py` | 降回撤参数扫描 |
 | `scripts/rolling_calendar_backtest.py` | 12 组固定窗口滚动日历稳健性验证 |
 | `scripts/monthly_rolling_backtest.py` | 自 2015-01 起 **79 组** × **10 年**窗口（至 2021-07 起点） |
 

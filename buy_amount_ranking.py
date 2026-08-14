@@ -281,7 +281,8 @@ def compute_index_ranking(panels=None, *, force: bool = False):
 
 
 def _empty_ranking():
-    from config import BUY_AMOUNT_BASE_BY_CODE, _env_buy_amount_for_code
+    from config import BUY_AMOUNT_BASE_BY_CODE
+    from config.buy_amount import _env_buy_amount_for_code
 
     by_code = {
         code: _env_buy_amount_for_code(code, BUY_AMOUNT_BASE_BY_CODE.get(code, 0))

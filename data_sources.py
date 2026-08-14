@@ -364,7 +364,7 @@ DATA_SOURCES = [
         "provider": "Multpl.com",
         "frequency": "月频",
         "fields": "S&P 500 Trailing PE",
-        "used_by": ["data_crosscheck.compare_us_forward_pe_sources"],
+        "used_by": ["scripts.data_crosscheck.compare_us_forward_pe_sources"],
         "notes": "与 History of Market Trailing PE 交叉校验；非 Forward PE。",
     },
     {
@@ -374,7 +374,7 @@ DATA_SOURCES = [
         "provider": "Yardeni Research",
         "frequency": "日/周/月",
         "fields": "Forward P/E（图表）",
-        "used_by": ["data_crosscheck.compare_us_forward_pe_sources（人工对照）"],
+        "used_by": ["scripts.data_crosscheck.compare_us_forward_pe_sources（人工对照）"],
         "notes": "无公开 CSV 下载，仅作人工核对参考。",
     },
     {
@@ -384,7 +384,7 @@ DATA_SOURCES = [
         "provider": "Barron's / WSJ Market Data（Birinyi Associates）",
         "frequency": "周频",
         "fields": "S&P 500 / NASDAQ 100 Trailing & Forward PE",
-        "used_by": ["data_crosscheck.fetch_barrons_forward_pe_snapshot", "compare_us_forward_pe_sources"],
+        "used_by": ["scripts.data_crosscheck.fetch_barrons_forward_pe_snapshot", "compare_us_forward_pe_sources"],
         "notes": "Operating earnings 口径；国内 Python requests 常 SSL 失败，抓取走 curl。",
     },
     {

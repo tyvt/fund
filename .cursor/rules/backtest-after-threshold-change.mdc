@@ -10,16 +10,19 @@ alwaysApply: false
 
 ## 必做步骤
 
-1. 完成 `config.py` / 信号模块等代码修改
+1. 完成 `config/` 信号阈值或信号模块等代码修改
 2. 运行全量回测（买入 + 买卖波段，含 HTML）：
 
 ```bash
 # 推荐：一键脚本（默认基准 100 + 涨跌缩放）
 run_backtest_inception.bat
 
+# 或统一入口
+python backtest.py -m inception
+
 # 或分别执行
-python backtest_buy_signals.py
-python backtest_trade_signals.py
+python backtest.py -m buy
+python backtest.py -m trade
 ```
 
 3. 确认输出已更新：

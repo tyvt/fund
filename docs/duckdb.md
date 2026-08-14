@@ -212,7 +212,7 @@ python sync_stockdb_to_duckdb.py --qfq-only    # 仅前复权 close
 
 ```bash
 # 从 cache/ 一次性导入 CSV/JSON（含 dividend_lowvol）
-python import_cache_to_duckdb.py
+python sync_market_duckdb.py --import-only
 
 # 仅策略侧
 python sync_strategy_to_duckdb.py

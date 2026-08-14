@@ -99,55 +99,67 @@ python push.py --quiet
 
 定时任务通过 `run_push.bat` 调用，日志写入 `logs/push.log`。
 
-### 数据缓存预拉（`sync_data_cache.py`）
+### 数据同步（`sync_market_duckdb.py`）
 
-在开盘前预拉各指数历史数据到本地 `cache/`，可显著加快 `report.py` 首次运行速度。
+推荐统一入口：公网行情 → CSV 缓存 → StockDB → DuckDB。
+
+```bash
+python sync_market_duckdb.py
+python sync_market_duckdb.py --force      # 强制刷新公网缓存
+python sync_market_duckdb.py --import-only  # 仅将 cache/ 导入 DuckDB
+```
+
+仅更新公网 CSV 缓存（不写入 DuckDB）时仍可用：
 
 ```bash
 python sync_data_cache.py
-python sync_data_cache.py --force   # 忽略当日缓存，强制重拉
+python sync_data_cache.py --force
 ```
 
-注册 Windows 定时任务：右键「以管理员身份运行」`setup_sync_task.bat`，将在每天 09:30（上海时区）自动执行 `run_sync_cache.bat`，日志写入 `logs/sync_cache.log`。
+注册 Windows 定时任务：右键「以管理员身份运行」`setup_sync_task.bat`，将在每天 09:30（上海时区）自动执行 `run_sync_market_duckdb.bat`，日志写入 `logs/sync_market_duckdb.log`。
 
-### 回测（`backtest_buy_signals.py` / `backtest_trade_signals.py`）
+### 回测（`backtest.py`）
 
-两套回测**均按买入信号日触发**（非每日定投）。**默认不设买入冷却期**（`BUY_COOLDOWN_ENABLED=false`）：买入频次由各指数硬门槛自然决定，再通过**位置分配**与总投入控制仓位。分工如下：
+统一入口 `backtest.py --mode <模式>`；底层实现仍保留在 `backtest_*.py` 模块中。两套主回测**均按买入信号日触发**（非每日定投）。**默认不设买入冷却期**（`BUY_COOLDOWN_ENABLED=false`）：买入频次由各指数硬门槛自然决定，再通过**位置分配**与总投入控制仓位。
 
-| 脚本 | 输出 | 区间默认 | 含义 |
+| 模式 | 输出 | 区间默认 | 含义 |
 |------|------|----------|------|
-| `backtest_buy_signals.py` | `inception_present.md/html` | 各指数**基日**→最新 | 仅验证买入择时：信号日累加买入并持有，**不含止盈卖出** |
-| `backtest_trade_signals.py` | `trade_inception_present.md/html` | **2015-01-01**→最新 | **智能轮动**（默认）：共享资金池 + 轮动门控卖点；对比仅买入持有 |
-| `backtest_rotation.py` | `rotation_compare.md` | **2015-01-01**→最新 | 组合级对比：全持有 / 孤立卖出 / 池内卖出 / 智能轮动 |
-| `backtest_regime_compare.py` | `regime_compare.md` | **2015-01-01**→最新 | 牛熊状态开关对比（`MARKET_REGIME_ENABLED`） |
-| `backtest_wfa.py` | `wfa_rotation.md` | 滚动窗口 | 轮动策略样本外（WFA）稳健性检验 |
-| `backtest_optimize.py` | `optimize_*.md` | 可配置 | 阈值/仓位参数搜索（含 WFA 精修） |
+| `buy` | `inception_present.md/html` | 各指数**基日**→最新 | 仅验证买入择时：信号日累加买入并持有，**不含止盈卖出** |
+| `trade` | `trade_inception_present.md/html` | **2015-01-01**→最新 | **智能轮动**（默认）：共享资金池 + 轮动门控卖点；对比仅买入持有 |
+| `rotation` | `rotation_compare.md` | **2015-01-01**→最新 | 组合级对比：全持有 / 孤立卖出 / 池内卖出 / 智能轮动 |
+| `regime` | `regime_compare.md` | **2015-01-01**→最新 | 牛熊状态开关对比（`MARKET_REGIME_ENABLED`） |
+| `wfa` | `wfa_rotation.md` | 滚动窗口 | 轮动策略样本外（WFA）稳健性检验 |
+| `optimize` | `optimize_*.md` | 可配置 | 阈值/仓位参数搜索（含 WFA 精修） |
+| `inception` | 上述 buy + trade | — | 一键全量（等同 `run_backtest_inception.bat`） |
 
 对比两套报告时请对齐起始日，例如：
 
 ```bash
-python backtest_buy_signals.py --start 2015-01-01
-python backtest_trade_signals.py --start 2015-01-01
+python backtest.py -m buy --start 2015-01-01
+python backtest.py -m trade --start 2015-01-01
 ```
 
-对仅买入指数（红利/创业板/美股报告层），在**相同区间、相同金额模式**下，买入次数应与 `backtest_buy_signals.py` 一致。
+对仅买入指数（红利/创业板/美股报告层），在**相同区间、相同金额模式**下，买入次数应与 `buy` 模式一致。
 
 ```bash
 # 买入信号全量回测（默认：位置分配 + 年度预算 + 涨跌缩放）
-python backtest_buy_signals.py
+python backtest.py -m buy
 
 # 列出买入日期 / 统一金额覆盖 / 收益率排名（对比用）/ 禁用涨跌缩放
-python backtest_buy_signals.py --list-dates
-python backtest_buy_signals.py --amount 500
-python backtest_buy_signals.py --ranking
-python backtest_buy_signals.py --no-tier
+python backtest.py -m buy --list-dates
+python backtest.py -m buy --amount 500
+python backtest.py -m buy --ranking
+python backtest.py -m buy --no-tier
 
 # 买卖波段回测（默认智能轮动）
-python backtest_trade_signals.py
+python backtest.py -m trade
 
 # 组合级轮动对比 / 牛熊开关对比
-python backtest_rotation.py
-python backtest_regime_compare.py
+python backtest.py -m rotation
+python backtest.py -m regime
+
+# 一键全量（买入 + 买卖波段）
+python backtest.py -m inception
 ```
 
 **指标/阈值调整后**：须跑自基日全量回测并重新生成 HTML，执行 `run_backtest_inception.bat`（或分别跑两个回测脚本）。输出 `inception_present.html` 与 `trade_inception_present.html`。
@@ -269,13 +281,10 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 |------|------|
 | `report.py` | **本地报告入口**。按模块拉取数据、评估信号、打印报告，不推送。 |
 | `push.py` | **微信推送入口**。调用 `report.generate_reports()` 生成报告，经 Server酱 推送。 |
-| `sync_data_cache.py` | 开盘前预拉各指数历史数据到 `cache/`。 |
-| `backtest_buy_signals.py` | 买入信号历史回测，统计买入天数与定投收益。 |
-| `backtest_trade_signals.py` | 智能轮动回测，对比轮动策略与仅买入持有。 |
-| `backtest_rotation.py` | 组合级轮动对比（全持有 / 孤立卖 / 池内卖 / 智能轮动）。 |
-| `backtest_regime_compare.py` | 牛熊状态开关对轮动收益的影响对比。 |
-| `backtest_wfa.py` | 轮动策略滚动样本外（WFA）检验。 |
-| `backtest_optimize.py` | 阈值与仓位参数搜索优化。 |
+| `sync_market_duckdb.py` | **推荐**：统一同步公网缓存、策略数据、StockDB 到 DuckDB。 |
+| `sync_data_cache.py` | 仅预拉/增量更新公网 CSV 缓存（不写入 DuckDB）。 |
+| `backtest.py` | **统一回测入口**（`-m buy/trade/rotation/regime/wfa/optimize/inception`）。 |
+| `backtest_buy_signals.py` 等 | 各模式实现模块（由 `backtest.py` 调用，也可直接运行）。 |
 
 ### 批处理
 
@@ -283,10 +292,23 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 |------|------|
 | `run_report.bat` | 本地运行 `report.py`。 |
 | `run_push.bat` | 定时任务执行脚本：调用 `push.py`，输出追加到 `logs/push.log`。 |
-| `run_sync_cache.bat` | 调用 `sync_data_cache.py`，日志写入 `logs/sync_cache.log`。 |
+| `run_sync_market_duckdb.bat` | 调用 `sync_market_duckdb.py`，日志写入 `logs/sync_market_duckdb.log`。 |
 | `run_backtest_inception.bat` | 一键自基日买入 + 买卖波段回测（组合仓位）。 |
 | `setup_task.bat` | 一键注册 Windows 计划任务（工作日 14:00 推送），并清理旧版单指数任务。 |
-| `setup_sync_task.bat` | 注册每天 09:30 缓存预拉任务。 |
+| `setup_sync_task.bat` | 注册每天 09:30 数据同步任务（`sync_market_duckdb.py`）。 |
+
+### 研究 / 验证脚本（`scripts/`）
+
+非日常入口，用于回测研究、因子消融、数据校验等：
+
+| 文件 | 作用 |
+|------|------|
+| `scripts/monte_carlo_permutation.py` | 蒙特卡洛置换检验（判断回测是否显著优于运气） |
+| `scripts/validate_data_baostock.py` | 数据源交叉验证（baostock / 国债 / ETF / 美股 PE） |
+| `scripts/verify_duckdb.py` | DuckDB 数据完整性检查 |
+| `scripts/monthly_rolling_backtest.py` | 红利低波策略滚动窗口回测 |
+| `scripts/factor_ablation.py` | 因子消融实验 |
+| `scripts/archive_output.bat` | 将 `output/` 回测结果归档到 `output/_archive/日期/` |
 
 ### 策略模块
 
@@ -340,6 +362,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | `logs/` | **仅运行时日志**（如 `push.log`、`sync_cache.log`，由定时任务追加写入）。 |
 | `cache/` | 外部数据本地缓存：A 股（`cache/cn/`）、创业板（`cache/cyb/`）、美股（`cache/us/`），及 `position_allocation.json`（当日买入额度分配），按日刷新。 |
 | `output/backtest/` | 回测输出（`inception_present.md/html`、`trade_inception_present.md/html`）。 |
+| `output/_archive/` | 历史回测输出归档（可安全删除后重跑回测再生）。 |
 
 ---
 
@@ -443,22 +466,26 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 ```
 投资推送/
-├── report.py / push.py / sync_data_cache.py
+├── report.py / push.py / sync_market_duckdb.py / sync_data_cache.py
 ├── core.py / dividend_data.py
 ├── cn_broad_data.py / cn_broad_signal.py
 ├── cyb_data.py / cyb_signal.py
 ├── us_index_data.py / us_index_signal.py
-├── config.py / index_meta.py / data_sources.py / data_cache.py
+├── config/                # 配置包（indices / dividend / buy_amount / …）
+├── backtest.py            # 统一回测入口
+├── backtest_buy_signals.py / backtest_trade_signals.py / …
 ├── market_data.py / realtime_quote.py / live_snapshot.py
 ├── signal_format.py / drop_to_buy.py / price_position.py / sell_trailing.py
 ├── buy_amount_config.py / buy_amount_budget.py / buy_amount_change.py
 ├── buy_amount_allocation.py / buy_amount_ranking.py
 ├── rotation_sell.py / market_regime.py
-├── backtest_buy_signals.py / backtest_trade_signals.py / backtest_rotation.py
+├── index_meta.py / data_sources.py / data_cache.py
 ├── backtest_regime_compare.py / backtest_wfa.py / backtest_optimize.py
 ├── backtest_html.py / backtest_metrics.py
 ├── notify.py
-├── run_report.bat / run_push.bat / run_sync_cache.bat
+├── scripts/               # 研究/验证脚本（非日常入口）
+├── dividend_lowvol_rotation/  # 红利低波轮动策略子模块
+├── run_report.bat / run_push.bat / run_sync_market_duckdb.bat
 ├── run_backtest_inception.bat / setup_task.bat / setup_sync_task.bat
 ├── push.example.env
 ├── .gitignore

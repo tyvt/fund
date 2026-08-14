@@ -14,12 +14,11 @@
 
 用法
 ----
-    python monte_carlo_permutation.py
-    python monte_carlo_permutation.py --mode trade
-    python monte_carlo_permutation.py --mode rotation
-    python monte_carlo_permutation.py --mode all
-    python backtest_wfa.py
-    python monte_carlo_permutation.py --mode trade --index 000852 --permutations 500
+    python scripts/monte_carlo_permutation.py
+    python scripts/monte_carlo_permutation.py --mode trade
+    python scripts/monte_carlo_permutation.py --mode rotation
+    python scripts/monte_carlo_permutation.py --mode all
+    python scripts/monte_carlo_permutation.py --mode trade --index 000852 --permutations 500
 """
 
 from __future__ import annotations
@@ -29,9 +28,12 @@ import json
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest_buy_signals import (
     BacktestRange,
@@ -853,7 +855,7 @@ def format_markdown(
             "（各指数独立，与旧版 `trade_inception_present.md` 一致）。"
         )
         title = "# 蒙特卡洛置换检验（波段买卖）"
-        reproduce_cmd = "python monte_carlo_permutation.py --mode trade"
+        reproduce_cmd = "python scripts/monte_carlo_permutation.py --mode trade"
     elif mode == "rotation":
         strategy_note = (
             "打乱各指数买入日后，**完整重跑**智能轮动组合模拟"
@@ -861,13 +863,13 @@ def format_markdown(
             "买入次数与每次金额序列不变，仅改变择时。"
         )
         title = "# 蒙特卡洛置换检验（智能轮动组合）"
-        reproduce_cmd = "python monte_carlo_permutation.py --mode rotation"
+        reproduce_cmd = "python scripts/monte_carlo_permutation.py --mode rotation"
     else:
         strategy_note = (
             "本检验仅验证**买入择时**（与 `inception_present.md` 一致，不含卖出逻辑）。"
         )
         title = "# 蒙特卡洛置换检验（仅买入持有）"
-        reproduce_cmd = "python monte_carlo_permutation.py --mode buy"
+        reproduce_cmd = "python scripts/monte_carlo_permutation.py --mode buy"
 
     lines = [
         title,
