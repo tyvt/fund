@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -52,11 +53,27 @@ def ensure_duckdb_cache_ready(*, verbose: bool = False) -> bool:
         return False
 
 
-def _conn():
+@contextmanager
+def _read_connection():
+    from duckdb_store import get_connection
+
+    conn = get_connection(read_only=True)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _write_connection():
     ensure_schema()
     from duckdb_store import get_connection
 
-    return get_connection()
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _parse_index_perf_key(key: str) -> str | None:
@@ -136,86 +153,86 @@ def sync_dataframe_to_duckdb(
     if not _ENABLED or frame is None or frame.empty:
         return
     try:
-        conn = _conn()
-        if subdir == "cn":
-            if key == "bond_yield_history":
-                upsert_wide_frame(
-                    conn,
-                    frame,
-                    domain="cn_bond_yield",
-                    entity_key="cn",
-                    fields={"bond_yield": "bond_yield"},
-                    source="eastmoney",
-                )
-                return
-            code = _parse_index_perf_key(key)
-            if code:
-                upsert_wide_frame(
-                    conn,
-                    frame,
-                    domain="cn_index_perf",
-                    entity_key=code,
-                    fields=_CN_PERF_FIELDS,
-                    source="csindex_api",
-                )
-                return
-            code = _parse_indicator_key(key)
-            if code:
-                upsert_cn_index_indicator(conn, frame, code)
-                return
+        with _write_connection() as conn:
+            if subdir == "cn":
+                if key == "bond_yield_history":
+                    upsert_wide_frame(
+                        conn,
+                        frame,
+                        domain="cn_bond_yield",
+                        entity_key="cn",
+                        fields={"bond_yield": "bond_yield"},
+                        source="eastmoney",
+                    )
+                    return
+                code = _parse_index_perf_key(key)
+                if code:
+                    upsert_wide_frame(
+                        conn,
+                        frame,
+                        domain="cn_index_perf",
+                        entity_key=code,
+                        fields=_CN_PERF_FIELDS,
+                        source="csindex_api",
+                    )
+                    return
+                code = _parse_indicator_key(key)
+                if code:
+                    upsert_cn_index_indicator(conn, frame, code)
+                    return
 
-        if subdir == "cyb" and key in _CYB_MAPPINGS:
-            domain, entity, fields = _CYB_MAPPINGS[key]
-            upsert_wide_frame(
-                conn,
-                frame,
-                domain=domain,
-                entity_key=entity,
-                fields=fields,
-                source="akshare",
-            )
-            return
-
-        if us or subdir == "us":
-            name = key if key.endswith(".csv") else f"{key}.csv"
-            if name in _US_PRICE_FILES:
-                index_key, source = _US_PRICE_FILES[name]
+            if subdir == "cyb" and key in _CYB_MAPPINGS:
+                domain, entity, fields = _CYB_MAPPINGS[key]
                 upsert_wide_frame(
                     conn,
                     frame,
-                    domain="us_index_daily",
-                    entity_key=index_key,
-                    fields={"close": "close"},
-                    source=source,
-                )
-                return
-            if name == "us10y_akshare.csv":
-                upsert_wide_frame(
-                    conn,
-                    frame,
-                    domain="us10y",
-                    entity_key="us",
-                    fields={"us10y": "us10y"},
+                    domain=domain,
+                    entity_key=entity,
+                    fields=fields,
                     source="akshare",
                 )
                 return
-            if name in _FRED_FILES:
-                series = _FRED_FILES[name]
-                value_col = "value" if "value" in frame.columns else [
-                    c for c in frame.columns if c not in ("date", "observation_date")
-                ][0]
-                date_col = "date" if "date" in frame.columns else "observation_date"
-                tmp = frame.rename(columns={date_col: "date", value_col: "value"})
-                if series == "DGS10":
-                    tmp["value"] = pd.to_numeric(tmp["value"], errors="coerce") / 100
-                upsert_wide_frame(
-                    conn,
-                    tmp,
-                    domain="fred",
-                    entity_key=series,
-                    fields={"value": "value"},
-                    source="fred",
-                )
+
+            if us or subdir == "us":
+                name = key if key.endswith(".csv") else f"{key}.csv"
+                if name in _US_PRICE_FILES:
+                    index_key, source = _US_PRICE_FILES[name]
+                    upsert_wide_frame(
+                        conn,
+                        frame,
+                        domain="us_index_daily",
+                        entity_key=index_key,
+                        fields={"close": "close"},
+                        source=source,
+                    )
+                    return
+                if name == "us10y_akshare.csv":
+                    upsert_wide_frame(
+                        conn,
+                        frame,
+                        domain="us10y",
+                        entity_key="us",
+                        fields={"us10y": "us10y"},
+                        source="akshare",
+                    )
+                    return
+                if name in _FRED_FILES:
+                    series = _FRED_FILES[name]
+                    value_col = "value" if "value" in frame.columns else [
+                        c for c in frame.columns if c not in ("date", "observation_date")
+                    ][0]
+                    date_col = "date" if "date" in frame.columns else "observation_date"
+                    tmp = frame.rename(columns={date_col: "date", value_col: "value"})
+                    if series == "DGS10":
+                        tmp["value"] = pd.to_numeric(tmp["value"], errors="coerce") / 100
+                    upsert_wide_frame(
+                        conn,
+                        tmp,
+                        domain="fred",
+                        entity_key=series,
+                        fields={"value": "value"},
+                        source="fred",
+                    )
     except Exception as exc:
         print(f"  DuckDB 写入跳过 ({key}): {exc}")
 
@@ -229,66 +246,66 @@ def load_dataframe_from_duckdb(
     if not _ENABLED or not MARKET_DUCKDB_PATH.exists():
         return None
     try:
-        conn = _conn()
-        if subdir == "cn":
-            if key == "bond_yield_history":
-                return load_wide_frame(
-                    conn,
-                    domain="cn_bond_yield",
-                    entity_key="cn",
-                    fields=["bond_yield"],
-                )
-            code = _parse_index_perf_key(key)
-            if code:
-                return load_wide_frame(
-                    conn,
-                    domain="cn_index_perf",
-                    entity_key=code,
-                    fields=list(_CN_PERF_FIELDS.values()),
-                )
-            code = _parse_indicator_key(key)
-            if code:
-                return load_cn_index_indicator(conn, code)
+        with _read_connection() as conn:
+            if subdir == "cn":
+                if key == "bond_yield_history":
+                    return load_wide_frame(
+                        conn,
+                        domain="cn_bond_yield",
+                        entity_key="cn",
+                        fields=["bond_yield"],
+                    )
+                code = _parse_index_perf_key(key)
+                if code:
+                    return load_wide_frame(
+                        conn,
+                        domain="cn_index_perf",
+                        entity_key=code,
+                        fields=list(_CN_PERF_FIELDS.values()),
+                    )
+                code = _parse_indicator_key(key)
+                if code:
+                    return load_cn_index_indicator(conn, code)
 
-        if subdir == "cyb" and key in _CYB_MAPPINGS:
-            domain, entity, fields = _CYB_MAPPINGS[key]
-            return load_wide_frame(
-                conn,
-                domain=domain,
-                entity_key=entity,
-                fields=list(fields.values()),
-            )
+            if subdir == "cyb" and key in _CYB_MAPPINGS:
+                domain, entity, fields = _CYB_MAPPINGS[key]
+                return load_wide_frame(
+                    conn,
+                    domain=domain,
+                    entity_key=entity,
+                    fields=list(fields.values()),
+                )
 
-        if us or subdir == "us":
-            name = key if key.endswith(".csv") else f"{key}.csv"
-            if name in _US_PRICE_FILES:
-                index_key, _ = _US_PRICE_FILES[name]
-                return load_wide_frame(
-                    conn,
-                    domain="us_index_daily",
-                    entity_key=index_key,
-                    fields=["close"],
-                )
-            if name == "us10y_akshare.csv":
-                return load_wide_frame(
-                    conn,
-                    domain="us10y",
-                    entity_key="us",
-                    fields=["us10y"],
-                )
-            if name in _FRED_FILES:
-                series = _FRED_FILES[name]
-                df = load_wide_frame(
-                    conn,
-                    domain="fred",
-                    entity_key=series,
-                    fields=["value"],
-                )
-                if df is None:
-                    return None
-                if series == "DGS10":
-                    return df.rename(columns={"value": "us10y"})
-                return df.rename(columns={"value": series.lower()})
+            if us or subdir == "us":
+                name = key if key.endswith(".csv") else f"{key}.csv"
+                if name in _US_PRICE_FILES:
+                    index_key, _ = _US_PRICE_FILES[name]
+                    return load_wide_frame(
+                        conn,
+                        domain="us_index_daily",
+                        entity_key=index_key,
+                        fields=["close"],
+                    )
+                if name == "us10y_akshare.csv":
+                    return load_wide_frame(
+                        conn,
+                        domain="us10y",
+                        entity_key="us",
+                        fields=["us10y"],
+                    )
+                if name in _FRED_FILES:
+                    series = _FRED_FILES[name]
+                    df = load_wide_frame(
+                        conn,
+                        domain="fred",
+                        entity_key=series,
+                        fields=["value"],
+                    )
+                    if df is None:
+                        return None
+                    if series == "DGS10":
+                        return df.rename(columns={"value": "us10y"})
+                    return df.rename(columns={"value": series.lower()})
     except Exception as exc:
         print(f"  DuckDB 读取回退 CSV ({key}): {exc}")
     return None
@@ -298,32 +315,32 @@ def sync_json_to_duckdb(key: str, payload, *, subdir: str = "", us: bool = False
     if not _ENABLED or payload is None:
         return
     try:
-        conn = _conn()
-        snapshot_key = f"{'us' if us else subdir or 'root'}:{key}"
-        upsert_kv_snapshot(conn, snapshot_key, payload)
+        with _write_connection() as conn:
+            snapshot_key = f"{'us' if us else subdir or 'root'}:{key}"
+            upsert_kv_snapshot(conn, snapshot_key, payload)
 
-        if us and key.endswith("_forward_pe.json"):
-            index_key = "ndx" if key.startswith("ndx") else "spx"
-            for pe_kind, field_name in (
-                ("trailing", "trailing"),
-                ("forward", "forward"),
-                ("forwardOwn", "forward_own"),
-            ):
-                series = payload.get(pe_kind) or []
-                if not series:
-                    continue
-                df = pd.DataFrame(series)
-                if df.empty or "value" not in df.columns:
-                    continue
-                df = df.rename(columns={"value": field_name})
-                upsert_wide_frame(
-                    conn,
-                    df,
-                    domain="us_index_pe",
-                    entity_key=index_key,
-                    fields={field_name: field_name},
-                    source="historyofmarket",
-                )
+            if us and key.endswith("_forward_pe.json"):
+                index_key = "ndx" if key.startswith("ndx") else "spx"
+                for pe_kind, field_name in (
+                    ("trailing", "trailing"),
+                    ("forward", "forward"),
+                    ("forwardOwn", "forward_own"),
+                ):
+                    series = payload.get(pe_kind) or []
+                    if not series:
+                        continue
+                    df = pd.DataFrame(series)
+                    if df.empty or "value" not in df.columns:
+                        continue
+                    df = df.rename(columns={"value": field_name})
+                    upsert_wide_frame(
+                        conn,
+                        df,
+                        domain="us_index_pe",
+                        entity_key=index_key,
+                        fields={field_name: field_name},
+                        source="historyofmarket",
+                    )
     except Exception as exc:
         print(f"  DuckDB JSON 写入跳过 ({key}): {exc}")
 
@@ -332,9 +349,9 @@ def load_json_from_duckdb(key: str, *, subdir: str = "", us: bool = False):
     if not _ENABLED or not MARKET_DUCKDB_PATH.exists():
         return None
     try:
-        conn = _conn()
-        snapshot_key = f"{'us' if us else subdir or 'root'}:{key}"
-        return load_kv_snapshot(conn, snapshot_key)
+        with _read_connection() as conn:
+            snapshot_key = f"{'us' if us else subdir or 'root'}:{key}"
+            return load_kv_snapshot(conn, snapshot_key)
     except Exception:
         return None
 

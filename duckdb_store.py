@@ -399,7 +399,7 @@ def load_wide_frame(
     long_df["field_name"] = long_df["series_id"].map(field_by_sid)
     wide = long_df.pivot(index="trade_date", columns="field_name", values="value")
     wide = wide.reset_index().rename(columns={"trade_date": date_col})
-    wide[date_col] = pd.to_datetime(wide[date_col])
+    wide[date_col] = pd.to_datetime(wide[date_col], errors="coerce").astype("datetime64[ns]")
     return wide.sort_values(date_col).reset_index(drop=True)
 
 

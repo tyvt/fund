@@ -77,7 +77,9 @@ def load_dataframe(path: Path, parse_dates: list[str] | None = None) -> pd.DataF
             if parse_dates:
                 for col in parse_dates:
                     if col in cached.columns:
-                        cached[col] = pd.to_datetime(cached[col])
+                        cached[col] = pd.to_datetime(
+                            cached[col], errors="coerce"
+                        ).astype("datetime64[ns]")
             return cached
     except Exception:
         pass
