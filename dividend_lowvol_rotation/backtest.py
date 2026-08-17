@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -40,7 +45,6 @@ from dividend_lowvol_rotation.config import (
     GRACE_VOL_ADAPTIVE_ENABLED,
     GRACE_VOL_HIGH_THRESHOLD_PCT,
     INDEX_DIVIDEND_WEIGHTING,
-    INDEX_RETENTION_LIQUIDITY_ENABLED,
     INDEX_STYLE_RANKING,
     LOT_SIZE,
     MARKET_REGIME_ENABLED,
@@ -91,7 +95,6 @@ from dividend_lowvol_rotation.index_portfolio import (
     build_index_target_codes,
     target_weights_for_portfolio,
 )
-from dividend_lowvol_rotation.universe_liquidity import get_liquidity_snapshot
 from dividend_lowvol_rotation.industry import attach_industry
 from dividend_lowvol_rotation.prices import (
     metrics_as_of,
@@ -111,10 +114,7 @@ from dividend_lowvol_rotation.risk_screening import (
     merge_risk_history,
 )
 from dividend_lowvol_rotation.enhanced_factors import attach_enhanced_factors
-from dividend_lowvol_rotation.fundamental_factors import (
-    attach_expected_dividend_yield,
-    attach_quality_momentum,
-)
+from dividend_lowvol_rotation.fundamental_factors import attach_quality_momentum
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct, run_screening
 from dividend_lowvol_rotation.market_valuation import load_market_pe_history, valuation_regime
 from dividend_lowvol_rotation.strategy_params import StrategyParams
@@ -237,6 +237,8 @@ class KlineStore:
         self.kline_fq = BACKTEST_KLINE_FQ if kline_fq is None else kline_fq
         self._klines: dict[str, pd.DataFrame] = {}
         self._metrics: dict[str, pd.DataFrame] = {}
+        self._total_mv: dict[str, pd.DataFrame] = {}
+        self._market_fields: dict[str, pd.DataFrame] = {}
 
     def _store_kline(self, code: str, kline: pd.DataFrame) -> None:
         if kline is None or kline.empty:
@@ -333,6 +335,25 @@ class KlineStore:
             self._store_kline(code, kline)
             loaded += 1
 
+        from dividend_lowvol_rotation.market_cap import batch_load_market_fields, market_fields_needed
+
+        if market_fields_needed() and loaded:
+            loaded_codes = [
+                normalize_stock_code(c)
+                for c in unique
+                if normalize_stock_code(c) in self._klines or c in self._klines
+            ]
+            field_dict = batch_load_market_fields(
+                loaded_codes, self.start, self.end, fields=("total_mv", "amount")
+            )
+            for code, fdf in field_dict.items():
+                if fdf is None or fdf.empty:
+                    continue
+                nc = normalize_stock_code(code)
+                self._market_fields[nc] = fdf
+                if "total_mv" in fdf.columns:
+                    self._total_mv[nc] = fdf[["date", "total_mv"]].copy()
+
         if verbose:
             print(f"  预加载完成，共 {loaded} 只")
 
@@ -347,14 +368,44 @@ class KlineStore:
     def kline_df(self, code: str) -> pd.DataFrame | None:
         return self._klines.get(normalize_stock_code(code))
 
+    def total_mv_at(self, code: str, as_of: pd.Timestamp) -> float | None:
+        from dividend_lowvol_rotation.market_cap import total_mv_at_series
+
+        nc = normalize_stock_code(code)
+        mv_df = self._total_mv.get(nc)
+        if mv_df is None:
+            mv_df = self._total_mv.get(code)
+        if mv_df is None:
+            fdf = self._market_fields.get(nc) or self._market_fields.get(code)
+            return total_mv_at_series(fdf, as_of)
+        return total_mv_at_series(mv_df, as_of)
+
+    def avg_amount_at(self, code: str, as_of: pd.Timestamp) -> float | None:
+        from dividend_lowvol_rotation.market_cap import avg_amount_at_series
+
+        nc = normalize_stock_code(code)
+        fdf = self._market_fields.get(nc)
+        if fdf is None:
+            fdf = self._market_fields.get(code)
+        return avg_amount_at_series(fdf, as_of, lookback_days=20)
+
     def metrics_at(self, code: str, as_of: pd.Timestamp) -> dict:
         metrics_df = self._metrics.get(code)
         if metrics_df is not None and not metrics_df.empty:
-            return metrics_from_precomputed(metrics_df, as_of)
-        kline = self._klines.get(code)
-        if kline is None or kline.empty:
-            return {"price": None, "ann_vol_pct": None, "low_n": None, "high_n": None}
-        return metrics_as_of(kline, as_of)
+            out = metrics_from_precomputed(metrics_df, as_of)
+        else:
+            kline = self._klines.get(code)
+            if kline is None or kline.empty:
+                out = {"price": None, "ann_vol_pct": None, "low_n": None, "high_n": None}
+            else:
+                out = metrics_as_of(kline, as_of)
+        mv = self.total_mv_at(code, as_of)
+        if mv is not None:
+            out["total_mv"] = mv
+        amt = self.avg_amount_at(code, as_of)
+        if amt is not None:
+            out["avg_amount"] = amt
+        return out
 
 
 @dataclass
@@ -372,7 +423,6 @@ class BacktestContext:
     market_pe_hist: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
     _panel_cache: dict[tuple[str, int, str], pd.DataFrame] = field(default_factory=dict)
     _dividend_cache: dict[str, pd.DataFrame] = field(default_factory=dict)
-    _liquidity_cache: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     def _panel_cache_key(self, as_of: pd.Timestamp, prefetch_size: int) -> tuple[str, int, str]:
         from dividend_lowvol_rotation.config import panel_factor_cache_key
@@ -585,7 +635,6 @@ def _build_panel_from_store(
     panel = attach_risk_from_records(panel, records, as_of, div_index=div_index)
     if risk_hist is not None and not risk_hist.empty:
         panel = merge_risk_history(panel, risk_hist, as_of)
-    panel = attach_expected_dividend_yield(panel, records, as_of)
     if risk_hist is not None and not risk_hist.empty:
         panel = attach_quality_momentum(panel, risk_hist, as_of)
     panel = attach_enhanced_factors(
@@ -1160,7 +1209,6 @@ def run_backtest(
             if strategy_params and strategy_params.stop_atr_multiplier is not None:
                 atr_mult = float(strategy_params.stop_atr_multiplier)
             retention_panel = panel
-            liquidity_snap = pd.DataFrame()
             if sell_mode == "index_rules" and lots:
                 retention_panel = enrich_panel_with_holdings(
                     panel,
@@ -1171,14 +1219,6 @@ def run_backtest(
                     risk_hist=ctx.risk_hist,
                     div_index=ctx.dividend_year_index,
                 )
-                if INDEX_RETENTION_LIQUIDITY_ENABLED:
-                    if verbose and rb_date == reb_dates[0]:
-                        print("加载全市场流动性截面（市值/成交额前90%）…")
-                    liquidity_snap = get_liquidity_snapshot(
-                        rb_date,
-                        cache=ctx._liquidity_cache,
-                        verbose=verbose and rb_date == reb_dates[0],
-                    )
             for code, lot in list(lots.items()):
                 rank = rank_map.get(code)
                 metrics = store.metrics_at(code, rb_date)
@@ -1194,9 +1234,7 @@ def run_backtest(
                 do_sell = False
                 index_reason = ""
                 if sell_mode == "index_rules":
-                    do_sell, index_reason = should_sell_index_rules(
-                        code, retention_panel, liquidity_snap=liquidity_snap
-                    )
+                    do_sell, index_reason = should_sell_index_rules(code, retention_panel)
                 else:
                     emergency_sell = False
                     stop_loss = False

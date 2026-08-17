@@ -31,12 +31,9 @@ class StrategyParams:
     max_industry_weight: float | None = None
     market_vol_median_mult: float | None = None
     min_yield_spread_over_bond_pct: float | None = None
-    dynamic_threshold_enabled: bool | None = None
     dynamic_vol_enabled: bool | None = None
     dynamic_weight_enabled: bool | None = None
-    fundamental_filter_enabled: bool | None = None
     industry_cap_enabled: bool | None = None
-    ex_date_cooldown_days: int | None = None
     stop_atr_multiplier: float | None = None
 
     def resolved_top_n(self, default: int = TOP_N_BUY) -> int:

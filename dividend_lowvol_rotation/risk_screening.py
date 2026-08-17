@@ -22,15 +22,12 @@ from dividend_lowvol_rotation.config import (
     MAX_ROE_VOLATILITY_RATIO,
     MIN_DIVIDEND_YEARS,
     MIN_INTEREST_COVERAGE,
-    MIN_OCF_TO_PROFIT,
     MIN_PAYOUT_RATIO_PCT,
-    OCF_QUALITY_FILTER_ENABLED,
     RISK_FILTER_ENABLED,
     RISK_LOOKBACK_YEARS,
     RISK_PENALTY_DEBT,
     RISK_PENALTY_DIVIDEND_YEARS,
     RISK_PENALTY_INTEREST,
-    RISK_PENALTY_OCF,
     RISK_PENALTY_PAYOUT,
     RISK_PENALTY_ROE_VOL,
     ROE_VOL_INDUSTRY_NEUTRAL,
@@ -233,12 +230,6 @@ def fetch_risk_history(code: str, refresh: bool = False) -> pd.DataFrame:
         ocf_ann = _annual_year_end_values(
             _row_values_by_dates(fa, "经营活动净现金/归属母公司的净利润")
         )
-        try:
-            from dividend_lowvol_rotation.enhanced_factors import cache_quarterly_profits_from_fa
-
-            cache_quarterly_profits_from_fa(code, fa)
-        except Exception:
-            pass
 
     icov = _fetch_interest_coverage_akshare(code, fa)
     icov_ann: dict[int, float] = {}
@@ -443,10 +434,18 @@ def _industry_col(df: pd.DataFrame) -> pd.Series:
     return pd.Series("未分类", index=df.index)
 
 
+def _min_dividend_years_for(as_of: pd.Timestamp | None) -> int:
+    """年报分红落地前（1–4 月），近 5 年计数常缺最后 1 年。"""
+    if as_of is not None and as_of.month <= 4:
+        return max(MIN_DIVIDEND_YEARS - 1, 3)
+    return MIN_DIVIDEND_YEARS
+
+
 def risk_score_penalties(
     df: pd.DataFrame,
     *,
     skip: dict[str, bool] | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> tuple[pd.Series, dict[str, int]]:
     """排雷因子评分扣减（越大越差）；用于软性筛选替代硬性剔除。"""
     stats: dict[str, int] = {}
@@ -456,12 +455,7 @@ def risk_score_penalties(
         return penalty, stats
 
     industry = _industry_col(df)
-
-    if OCF_QUALITY_FILTER_ENABLED and not skip.get("ocf") and "ocf_to_profit" in df.columns:
-        bad = df["ocf_to_profit"].notna() & (df["ocf_to_profit"] < MIN_OCF_TO_PROFIT)
-        stats["ocf_penalized"] = int(bad.sum())
-        gap = (MIN_OCF_TO_PROFIT - df["ocf_to_profit"]).clip(lower=0)
-        penalty = penalty + bad.astype(float) * (RISK_PENALTY_OCF + gap * 2.0)
+    min_div_years = _min_dividend_years_for(as_of)
 
     if not skip.get("roe_vol") and "roe_volatility_ratio" in df.columns:
         if ROE_VOL_INDUSTRY_NEUTRAL:
@@ -475,7 +469,7 @@ def risk_score_penalties(
         penalty = penalty + bad.astype(float) * (RISK_PENALTY_ROE_VOL + excess.fillna(0) * 5.0)
 
     if not skip.get("dividend_years") and "dividend_years_5y" in df.columns:
-        short = (MIN_DIVIDEND_YEARS - df["dividend_years_5y"]).clip(lower=0)
+        short = (min_div_years - df["dividend_years_5y"]).clip(lower=0)
         bad = short > 0
         stats["dividend_years_penalized"] = int(bad.sum())
         penalty = penalty + short * RISK_PENALTY_DIVIDEND_YEARS
@@ -514,14 +508,16 @@ def risk_filter_mask(
     strategy_params=None,
     skip: dict[str, bool] | None = None,
     hard: bool = False,
+    as_of: pd.Timestamp | None = None,
 ) -> tuple[pd.Series, dict[str, int]]:
+    del strategy_params
     stats: dict[str, int] = {}
     skip = skip or {}
     if not RISK_FILTER_ENABLED or df.empty:
         return pd.Series(True, index=df.index), stats
 
     if SOFT_RISK_SCORING_ENABLED and not hard:
-        penalties, pen_stats = risk_score_penalties(df, skip=skip)
+        penalties, pen_stats = risk_score_penalties(df, skip=skip, as_of=as_of)
         stats.update(pen_stats)
         stats["risk_soft_mode"] = 1
         stats["risk_penalized"] = int((penalties > 0).sum())
@@ -529,11 +525,7 @@ def risk_filter_mask(
 
     ok = pd.Series(True, index=df.index)
     industry = _industry_col(df)
-
-    if OCF_QUALITY_FILTER_ENABLED and not skip.get("ocf") and "ocf_to_profit" in df.columns:
-        bad = df["ocf_to_profit"].notna() & (df["ocf_to_profit"] < MIN_OCF_TO_PROFIT)
-        stats["ocf_excluded"] = int(bad.sum())
-        ok &= ~bad
+    min_div_years = _min_dividend_years_for(as_of)
 
     if not skip.get("roe_vol") and "roe_volatility_ratio" in df.columns:
         if ROE_VOL_INDUSTRY_NEUTRAL:
@@ -549,7 +541,7 @@ def risk_filter_mask(
         ok &= ~bad
 
     if not skip.get("dividend_years") and "dividend_years_5y" in df.columns:
-        bad = df["dividend_years_5y"] < MIN_DIVIDEND_YEARS
+        bad = df["dividend_years_5y"] < min_div_years
         stats["dividend_years_excluded"] = int(bad.sum())
         ok &= ~bad
 

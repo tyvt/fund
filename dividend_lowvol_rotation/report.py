@@ -10,20 +10,13 @@ from pathlib import Path
 from dividend_lowvol_rotation.config import (
     COMMISSION_RATE,
     DIVIDEND_YIELD_MODE,
-    DYNAMIC_THRESHOLD_ENABLED,
     DYNAMIC_WEIGHT_ENABLED,
-    EX_DATE_COOLDOWN_DAYS,
-    EX_DATE_COOLDOWN_ENABLED,
-    FUNDAMENTAL_FILTER_ENABLED,
     INDUSTRY_CAP_ENABLED,
     MAX_ANNUALIZED_VOL_PCT,
     MAX_INDUSTRY_WEIGHT,
     MAX_SINGLE_STOCK_WEIGHT,
     MIN_COMMISSION_CNY,
     MIN_DIVIDEND_YIELD_PCT,
-    MIN_PROFIT_YOY_PCT,
-    MIN_ROE_PCT,
-    OCF_QUALITY_FILTER_ENABLED,
     PORTFOLIO_CAPITAL_CNY,
     SELL_RANK_MULTIPLIER,
     TOP_N_BUY,
@@ -135,7 +128,7 @@ def build_report(
         "",
     ]
     dyn = meta.get("dynamic") or {}
-    if dyn or DYNAMIC_THRESHOLD_ENABLED:
+    if dyn:
         lines.extend(["### 动态参数（当日）", ""])
         if dyn:
             lines.append(f"- 股息率门槛：**{dyn.get('min_yield_pct', MIN_DIVIDEND_YIELD_PCT):.2f}%**")
@@ -173,19 +166,7 @@ def build_report(
                 f"（**{row['pass_rate_pct']:.0f}%**）"
             )
         lines.append("")
-    lines.extend(
-        [
-        "### 风控过滤",
-        "",
-    ])
-    if EX_DATE_COOLDOWN_ENABLED:
-        lines.append(f"- 除权冷却：除权后 {EX_DATE_COOLDOWN_DAYS} 日内剔除")
-    else:
-        lines.append("- 除权冷却：关")
-    if FUNDAMENTAL_FILTER_ENABLED:
-        lines.append(f"- 基本面：ROE ≥ {MIN_ROE_PCT:g}%，净利润同比 ≥ {MIN_PROFIT_YOY_PCT:g}%")
-    else:
-        lines.append("- 基本面过滤：关")
+    lines.extend(["### 风控过滤", "", "- 排雷：硬过滤（行业中性 ROE 波动 / 分红年数 / 支付率 / 负债率 / 利息保障）"])
     if INDUSTRY_CAP_ENABLED:
         lines.append(
             f"- 行业分散：单行业 ≤ {MAX_INDUSTRY_WEIGHT * 100:.0f}%；"
@@ -193,8 +174,6 @@ def build_report(
         )
     else:
         lines.append("- 行业分散：关")
-    if OCF_QUALITY_FILTER_ENABLED:
-        lines.append("- 现金流质量：开（经营现金流/净利润）")
     lines.append("")
 
     cost_note = format_cost_note(capital_cny, top_n)

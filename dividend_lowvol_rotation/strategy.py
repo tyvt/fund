@@ -8,16 +8,13 @@ import pandas as pd
 
 from dividend_lowvol_rotation.config import (
     DIVIDEND_YIELD_MODE,
-    EX_DATE_COOLDOWN_DAYS,
-    EX_DATE_COOLDOWN_ENABLED,
-    FUNDAMENTAL_FILTER_ENABLED,
     INDUSTRY_CAP_ENABLED,
     MARKET_VALUATION_ENABLED,
     MAX_INDUSTRY_WEIGHT,
     MIN_DIVIDEND_YIELD_PCT,
-    MIN_PROFIT_YOY_PCT,
-    MIN_ROE_PCT,
-    OCF_QUALITY_FILTER_ENABLED,
+    MV_TIER_CAP_ENABLED,
+    MV_TIER_LARGE_CNY,
+    MV_TIER_SMALL_MAX_WEIGHT,
     RISK_FILTER_ENABLED,
     TOP_N_BUY,
     resolve_sell_rank,
@@ -25,10 +22,7 @@ from dividend_lowvol_rotation.config import (
 from dividend_lowvol_rotation.dividend import build_dividend_panel, load_fhps_all_records
 from dividend_lowvol_rotation.dynamic_params import resolve_dynamic_params
 from dividend_lowvol_rotation.enhanced_factors import attach_enhanced_factors
-from dividend_lowvol_rotation.fundamental_factors import (
-    attach_expected_dividend_yield,
-    attach_quality_momentum,
-)
+from dividend_lowvol_rotation.fundamental_factors import attach_quality_momentum
 from dividend_lowvol_rotation.market_valuation import load_market_pe_history, valuation_regime
 from dividend_lowvol_rotation.risk_screening import (
     attach_risk_from_records,
@@ -37,6 +31,7 @@ from dividend_lowvol_rotation.risk_screening import (
     risk_pass_rate_by_industry,
 )
 from dividend_lowvol_rotation.industry import attach_industry, load_industry_table
+from dividend_lowvol_rotation.market_cap import attach_market_fields, market_fields_needed
 from dividend_lowvol_rotation.prices import batch_load_volatility
 from dividend_lowvol_rotation.quotes import fetch_stock_quotes
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct, run_screening
@@ -126,6 +121,9 @@ def build_market_panel(
     meta["steps"].append(f"Baostock {len(vol_df)} 只完成波动率")
     panel = panel.merge(vol_df, on="code", how="inner")
 
+    if market_fields_needed():
+        panel = attach_market_fields(panel, as_of=pd.Timestamp.now())
+
     dynamic = resolve_dynamic_params(panel)
     meta["dynamic"] = {
         "min_yield_pct": dynamic.min_dividend_yield_pct,
@@ -151,7 +149,6 @@ def build_market_panel(
         meta["steps"].append(f"排雷指标：{len(risk_hist['code'].unique())} 只")
 
     as_of = pd.Timestamp.now()
-    panel = attach_expected_dividend_yield(panel, fhps_records, as_of)
     if not risk_hist.empty:
         panel = attach_quality_momentum(panel, risk_hist, as_of)
     panel = attach_enhanced_factors(
@@ -183,7 +180,6 @@ def build_market_panel(
                 meta["steps"].append(
                     f"全市场估值锚点：中证800 PE {val_regime.get('market_pe', 0):.2f}，"
                     f"历史分位 {val_regime['market_pe_percentile']:.1f}%"
-                    + ("（收紧买入 PB）" if val_regime.get("valuation_tight") else "")
                     + ("（暂停新买）" if val_regime.get("pause_new_buys") else "")
                 )
         except Exception as exc:
@@ -194,7 +190,6 @@ def build_market_panel(
         top_n=top_n,
         sell_rank=sell_rank,
         dynamic=dynamic,
-        valuation_tight=val_regime.get("valuation_tight", False),
     )
     if val_regime.get("pause_new_buys") and not buy_pool.empty:
         buy_pool = buy_pool.iloc[0:0]
@@ -202,14 +197,11 @@ def build_market_panel(
 
     meta["filters"] = filter_stats
 
-    if EX_DATE_COOLDOWN_ENABLED:
+    if MV_TIER_CAP_ENABLED:
+        max_small = int(round(TOP_N_BUY * MV_TIER_SMALL_MAX_WEIGHT))
         meta["steps"].append(
-            f"除权冷却（>{EX_DATE_COOLDOWN_DAYS} 天）：剔除 {filter_stats.get('ex_date_cooldown_excluded', 0)} 只"
-        )
-    if FUNDAMENTAL_FILTER_ENABLED:
-        meta["steps"].append(
-            f"基本面（ROE≥{MIN_ROE_PCT:g}%、净利同比≥{MIN_PROFIT_YOY_PCT:g}%）："
-            f"剔除 {filter_stats.get('fundamental_excluded', 0)} 只"
+            f"市值分层：大盘 ≥{MV_TIER_LARGE_CNY / 1e8:.0f}亿，"
+            f"中小盘持仓 ≤{MV_TIER_SMALL_MAX_WEIGHT:.0%}（约 {max_small} 只）"
         )
     if INDUSTRY_CAP_ENABLED:
         meta["steps"].append(
@@ -217,7 +209,6 @@ def build_market_panel(
         )
     meta["steps"].append(
         f"候选池：通过全部筛选 **{filter_stats.get('pool_count', filter_stats.get('passed_core_filters', 0))}** 只"
-        f"（放宽级别 {filter_stats.get('relaxation_level', 'full')}）"
     )
     meta["elapsed_sec"] = round((datetime.now() - t0).total_seconds(), 1)
     meta["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M")

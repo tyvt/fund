@@ -1,35 +1,74 @@
-# 数据源说明
+# 红利低波轮动 — 数据源说明
 
-本模块**不接入** EasyXT / QMT / Tushare，全部使用免费公开接口。下表对比 EasyXT 原文与本地实现。
+本模块**不接入** EasyXT / QMT / Tushare，全部使用免费公开接口 + 本地 StockDB/DuckDB。
 
-## 已接入（免费）
+**项目级完整清单**（含中证、美股、创业板等）：[`../DATA_SOURCES.md`](../DATA_SOURCES.md)  
+**结构化注册表**：[`../data_sources.py`](../data_sources.py)（`python ../data_sources.py` 可打印）
 
-| 数据 | 提供方 | 接口 | 用途 |
-|------|--------|------|------|
-| 分红方案（除权除息日、每股派息） | 东方财富 | `akshare.stock_fhps_em` | 动态股息率分子 |
-| 分红明细（备用） | 巨潮资讯 | `akshare.stock_dividend_cninfo` | 单股校验 / 兜底 |
-| A 股日 K 线 | Baostock | `query_history_k_data_plus` | 60 日对数收益、年化波动率 |
-| 实时股价 | 腾讯财经 | `https://qt.gtimg.cn/q=` | 动态股息率分母、买入区间 |
+---
 
-本地缓存目录：`cache/dividend_lowvol/`（按日刷新行情与 K 线）。
+## 生产主路径
+
+| 数据 | 提供方 | 接口 / 地址 | 用途 | 缓存 |
+|------|--------|-------------|------|------|
+| 分红方案 | 东方财富 | `ak.stock_fhps_em(date=报告期)` | TTM 分红、动态股息率分子 | `cache/dividend_lowvol/fhps_*.csv` |
+| A 股日 K（前复权 close） | DuckDB ← StockDB | `tcp://127.0.0.1:7899` | 波动率、动量、回测成交价 | `data/market.duckdb` |
+| 实时股价 | 腾讯财经 | `https://qt.gtimg.cn/q=` | 动态股息率分母、买入区间 | 当日内存 |
+| 10Y 国债收益率 | 东方财富 | `market_data.get_gov_bond_yield` | 动态股息率门槛 | `cache/cn/` |
+| 申万一级行业 | 申万（akshare） | `index_realtime_sw` + `index_component_sw` | 行业分散 | `stock_industry_sw_l1.csv` |
+| 财务摘要 / 排雷 | 东方财富 | `ak.stock_financial_abstract` | ROE、负债率、现金流质量 | `risk_hist_*.csv` |
+| 利润表（回退） | 东方财富 | `ak.stock_profit_sheet_by_report_em` | 利息保障倍数 | 同上 |
+| 流动性截面 | StockDB / DuckDB | 日均市值、成交额 | 对标 H30269 前 90% 保留 | `liquidity_*.csv` |
+
+**K 线读取优先级**：DuckDB → CSV 缓存 → StockDB 直查（见 `prices.py`）。
+
+---
+
+## 降级 / 备用
+
+| 数据 | 接口 | 触发条件 |
+|------|------|----------|
+| 证监会行业 | `bs.query_stock_industry()` | `INDUSTRY_SOURCE=csrc` 或申万拉取失败 |
+| StockDB 直查 | `StockDBClient.get_data` | DuckDB 缺数据且 CSV 未覆盖 |
+
+**文档提及但未接入代码**（可作未来兜底）：
+
+- `ak.stock_dividend_cninfo`（巨潮分红明细）
+- `ak.stock_history_dividend_detail`（个股分红历史校验）
+
+---
 
 ## 未接入（需额外环境或付费）
 
-| EasyXT 数据源 | 原因 | 影响 |
-|---------------|------|------|
-| **Tushare `dividend_data`** | 需积分 / Token | 已用东方财富 fhps + 巨潮 cninfo 替代 |
-| **EasyXT 内置本地 DB** | 专有数据层 | 使用 `cache/dividend_lowvol/` |
-| **QMT `xtdata`** | 需 QMT 在线 | 已用 Baostock + 腾讯替代 |
-| **东财全市场 spot/hist** | 接口不稳定 | 腾讯行情 + Baostock K 线 |
+| EasyXT 原文 | 原因 | 本地替代 |
+|-------------|------|----------|
+| Tushare `dividend_data` | 需积分 / Token | 东方财富 fhps |
+| EasyXT 内置本地 DB | 专有数据层 | DuckDB + `cache/dividend_lowvol/` |
+| QMT `xtdata` | 需 QMT 在线 | StockDB + 腾讯行情 |
+| 东财全市场 spot/hist | 接口不稳定 | 腾讯行情 + DuckDB K 线 |
 
-## 已扩展数据源
+---
 
-| 数据 | 接口 | 用途 |
+## 交叉验证（非生产）
+
+| 数据 | 接口 | 脚本 |
 |------|------|------|
-| 申万一级行业 | `akshare.index_realtime_sw` + `index_component_sw` | 行业分散（周缓存） |
-| 10Y 国债收益率 | 东方财富（`market_data.get_gov_bond_yield`） | 动态股息率门槛 |
-| 分红历史批次 | `akshare.stock_fhps_em`（多年报告期） | TTM 分红、回测 |
-| 个股分红明细 | `akshare.stock_history_dividend_detail` | TTM 校验（备用） |
+| Baostock 日 K | `bs.query_history_k_data_plus` | `scripts/validate_data_baostock.py` |
+| ETF 跟踪 | `ak.fund_etf_hist_sina` | `scripts/data_crosscheck.py` |
+
+---
+
+## 同步与定时任务
+
+```bash
+# 公网指标 + CSV → DuckDB（早盘）
+python sync_market_duckdb.py
+
+# 仅 StockDB → DuckDB（收盘后，建议 17:30）
+python sync_stockdb_to_duckdb.py
+```
+
+---
 
 ## 回测局限
 

@@ -332,7 +332,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | `config.py` | 全局配置：指数列表、买卖阈值、环境变量读取、`push.env` 加载。 |
 | `index_meta.py` | 各指数基日与缓存/回测拉取范围。 |
 | `data_cache.py` | 历史数据本地缓存（A 股 / 美股分目录，按日刷新）。 |
-| `data_sources.py` | 数据源 URL 注册表与接口说明（中证、东财、FRED、新浪等）。 |
+| `data_sources.py` | 数据源 URL 注册表与接口说明（中证、东财、FRED、新浪等）。**完整清单见 [`DATA_SOURCES.md`](DATA_SOURCES.md)**。 |
 | `market_data.py` | 公共行情工具：国债收益率、中证历史行情、分位计算、UTF-8 输出。 |
 | `realtime_quote.py` / `live_snapshot.py` | 盘中行情与实盘快照（叠加到报告）。 |
 | `signal_format.py` | 统一信号文案：买入/观望/卖出标记、判定条件块、模块标题格式。 |
@@ -501,7 +501,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 - 调试时**仅运行** `python report.py` 查看输出，避免频繁触发微信推送。
 - 修改阈值优先改 `config.py` 默认值，或通过 `push.env` 覆盖。
-- 数据源变更查阅 `data_sources.py`。
+- 数据源变更查阅 [`DATA_SOURCES.md`](DATA_SOURCES.md)（完整清单）与 [`data_sources.py`](data_sources.py)（URL 注册表）。
 
 ---
 

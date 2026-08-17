@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-PROJECT_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = PROJECT_DIR / "push.env"
+_CONFIG_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = _CONFIG_DIR.parent
+CONFIG_FILE = _CONFIG_DIR / "push.env"
 LOGS_DIR = PROJECT_DIR / "logs"
 DATA_DIR = PROJECT_DIR / "data"
 DATA_CACHE_DIR = PROJECT_DIR / "cache"

@@ -86,3 +86,17 @@ def beta_balance_final_ok(low_beta_count: int, high_beta_count: int, top_n: int)
     if high_beta_count / top_n > BETA_MAX_HIGH_FRAC + 1e-9:
         return False
     return True
+
+
+def small_cap_weight_ok(
+    small_cap_count: int,
+    is_small: bool,
+    slot_target: int,
+    max_small_weight: float,
+) -> bool:
+    """方案一：中小盘（< 大盘门槛）持仓只数占比上限。"""
+    if not is_small:
+        return True
+    if slot_target <= 0:
+        return True
+    return (small_cap_count + 1) / slot_target <= max_small_weight + 1e-9

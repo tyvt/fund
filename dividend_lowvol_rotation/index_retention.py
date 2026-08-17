@@ -5,31 +5,17 @@ from __future__ import annotations
 
 import pandas as pd
 
-from dividend_lowvol_rotation.config import (
-    INDEX_RETENTION_LIQUIDITY_ENABLED,
-    INDEX_RETENTION_MIN_DIVIDEND_YIELD_PCT,
-    RISK_FILTER_ENABLED,
-)
+from dividend_lowvol_rotation.config import INDEX_RETENTION_MIN_DIVIDEND_YIELD_PCT, RISK_FILTER_ENABLED
 from dividend_lowvol_rotation.dividend import build_dividend_panel
 from dividend_lowvol_rotation.risk_screening import risk_filter_mask
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct
-from dividend_lowvol_rotation.universe_liquidity import liquidity_retention_fail_reason
 
 
 def index_retention_fail_reason(
     row: pd.Series | dict | None,
     *,
     min_yield_pct: float = INDEX_RETENTION_MIN_DIVIDEND_YIELD_PCT,
-    liquidity_snap: pd.DataFrame | None = None,
-    check_liquidity: bool = INDEX_RETENTION_LIQUIDITY_ENABLED,
 ) -> str | None:
-    """返回调出原因；None 表示保留。
-
-    对标 H30269 定期调整时对原样本的硬门槛：
-    - 过去一年税后现金股息率 > 0.5%（以当前股息率代理）
-    - 排雷因子仍通过
-    - 过去一年日均市值 / 成交额处于全 A 股前 90%（stockdb 截面）
-    """
     if row is None:
         return "无行情数据"
 
@@ -50,32 +36,18 @@ def index_retention_fail_reason(
         if not risk_ok.iloc[0]:
             return "排雷不达标"
 
-    if check_liquidity and liquidity_snap is not None and not liquidity_snap.empty:
-        code = str(data.get("code", ""))
-        liq_reason = liquidity_retention_fail_reason(code, liquidity_snap)
-        if liq_reason:
-            return liq_reason
-
     return None
 
 
 def should_sell_index_rules(
     code: str,
     panel: pd.DataFrame,
-    *,
-    liquidity_snap: pd.DataFrame | None = None,
-    check_liquidity: bool = INDEX_RETENTION_LIQUIDITY_ENABLED,
 ) -> tuple[bool, str]:
-    """是否应调出：仅当指数保留规则不通过。"""
     if panel.empty:
         return True, "指数规则:候选池为空"
     sub = panel[panel["code"].astype(str) == str(code)]
     row = sub.iloc[0] if not sub.empty else None
-    reason = index_retention_fail_reason(
-        row,
-        liquidity_snap=liquidity_snap,
-        check_liquidity=check_liquidity,
-    )
+    reason = index_retention_fail_reason(row)
     if reason:
         return True, f"指数规则:{reason}"
     return False, ""
@@ -91,7 +63,6 @@ def enrich_panel_with_holdings(
     risk_hist: pd.DataFrame | None = None,
     div_index=None,
 ) -> pd.DataFrame:
-    """把当前持仓并入 panel，避免持仓股不在 prefetch 时无法评估保留规则。"""
     if not lots:
         return panel
 

@@ -9,7 +9,6 @@ import pandas as pd
 
 from dividend_lowvol_rotation.config import (
     BOND_YIELD_REF_PCT,
-    DYNAMIC_THRESHOLD_ENABLED,
     DYNAMIC_VOL_ENABLED,
     DYNAMIC_WEIGHT_ENABLED,
     INDEX_ANNUAL_REBALANCE_TIMING,
@@ -20,7 +19,6 @@ from dividend_lowvol_rotation.config import (
     MIN_DIVIDEND_YIELD_FLOOR_PCT,
     MIN_DIVIDEND_YIELD_PCT,
     MIN_VOL_FLOOR_PCT,
-    MIN_YIELD_SPREAD_OVER_BOND_PCT,
     VOL_RANK_WEIGHT,
     VOL_WEIGHT_BASE,
     VOL_WEIGHT_MARKET_SENS,
@@ -107,29 +105,13 @@ def resolve_dynamic_params(
     bond_date = as_of.date().isoformat() if as_of is not None else _fetch_bond_yield_pct()[1]
 
     min_yield = sp.min_dividend_yield_pct if sp.min_dividend_yield_pct is not None else MIN_DIVIDEND_YIELD_PCT
-    dyn_threshold = (
-        DYNAMIC_THRESHOLD_ENABLED if sp.dynamic_threshold_enabled is None else sp.dynamic_threshold_enabled
-    )
-    spread = (
-        sp.min_yield_spread_over_bond_pct
-        if sp.min_yield_spread_over_bond_pct is not None
-        else MIN_YIELD_SPREAD_OVER_BOND_PCT
-    )
-    # 1 月调仓在除权后，现货股息率偏低；勿用「国债+利差」抬高门槛
-    if INDEX_ANNUAL_REBALANCE_TIMING == "january" and dyn_threshold:
+    if INDEX_ANNUAL_REBALANCE_TIMING == "january":
         min_yield = (
             MIN_DIVIDEND_YIELD_FLOOR_PCT
             if sp.min_dividend_yield_pct is None
             else max(min_yield, MIN_DIVIDEND_YIELD_FLOOR_PCT)
         )
         notes.append(f"1月调仓股息率底线 {min_yield:.2f}%")
-    elif dyn_threshold and bond_pct is not None:
-        dyn_yield = max(MIN_DIVIDEND_YIELD_FLOOR_PCT, bond_pct + spread)
-        min_yield = dyn_yield if sp.min_dividend_yield_pct is None else max(min_yield, dyn_yield)
-        notes.append(
-            f"动态股息率门槛 {dyn_yield:.2f}%（国债 {bond_pct:.2f}%"
-            f"{f'，{bond_date}' if bond_date else ''} + 利差 {spread:.2f}%）"
-        )
     else:
         notes.append(f"股息率门槛 {min_yield:.2f}%")
 

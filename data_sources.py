@@ -46,6 +46,9 @@ FRED_CSV_BASE_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FRED_NASDAQ100_SERIES = "NASDAQ100"
 """纳斯达克 100 价格指数日频序列（1986 年起）"""
 
+FRED_SP500_SERIES = "SP500"
+"""标普 500 价格指数日频序列"""
+
 FRED_US10Y_SERIES = "DGS10"
 """美国 10 年期国债收益率日频序列（1962 年起，百分比数值）"""
 
@@ -57,6 +60,11 @@ HISTORY_OF_MARKET_NDX_FORWARD_PE_URL = (
     "https://historyofmarket.com/api/ndx/forward-pe.json"
 )
 """纳斯达克 100 市值加权 TTM PE（日频）+ Bloomberg 一致预期 Forward PE（月频，2001 年起）"""
+
+HISTORY_OF_MARKET_SPX_FORWARD_PE_URL = (
+    "https://historyofmarket.com/api/sp500/forward-pe.json"
+)
+"""标普 500 市值加权 TTM PE（日频）+ Bloomberg 一致预期 Forward PE（月频）"""
 
 NASDAQ_ETF_SUMMARY_URL = (
     "https://api.nasdaq.com/api/quote/{symbol}/summary?assetclass=etf"
@@ -104,12 +112,15 @@ LEGULEGU_INDEX_PB_API = "https://legulegu.com/api/stockdata/index-basic-pb"
 LEGULEGU_DIVIDEND_API = "https://legulegu.com/api/stockdata/guxilv"
 """A 股板块股息率（日频）。经 akshare stock_a_gxl_lg 调用"""
 
+LEGULEGU_CYB_PE_PAGE = "https://legulegu.com/stockdata/cybPE"
+"""深交所创业板平均滚动 PE 页面（marketId=4；经 akshare stock_market_pe_lg 调用）"""
+
 
 # ---------------------------------------------------------------------------
 # 腾讯财经（预留）
 # ---------------------------------------------------------------------------
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
-"""腾讯证券实时行情接口前缀（当前项目内未直接调用，预留）"""
+"""腾讯证券实时行情接口前缀。完整地址：{URL}{sh|sz}{code} 或批量逗号分隔"""
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +128,13 @@ TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 # ---------------------------------------------------------------------------
 SERVERCHAN_API_URL = "https://sctapi.ftqq.com"
 """Server 酱消息推送 API 根路径。完整地址：{BASE}/{SendKey}.send"""
+
+# ---------------------------------------------------------------------------
+# 本地 StockDB（收盘后行情服务，非公网 HTTP）
+# ---------------------------------------------------------------------------
+STOCKDB_DEFAULT_HOST = "127.0.0.1"
+STOCKDB_DEFAULT_PORT = 7899
+"""本地 StockDB TCP 服务（SDK：D:\\repository\\stockdb\\pybao）。由 sync_stockdb_to_duckdb 写入 DuckDB。"""
 
 
 # ---------------------------------------------------------------------------
@@ -233,15 +251,48 @@ DATA_SOURCES = [
         "notes": "Forward PE 为 12 个月一致预期；TTM PE 自 2025 年中起日频积累。",
     },
     {
+        "id": "hom_spx_forward_pe",
+        "name": "标普 500 TTM / Forward PE",
+        "url": HISTORY_OF_MARKET_SPX_FORWARD_PE_URL,
+        "provider": "History of Market（TTM 成分加权 + Bloomberg BEst Forward PE）",
+        "frequency": "TTM 日频 / Forward 月频",
+        "fields": "trailing_pe、forward_pe、历史序列",
+        "used_by": ["us_index_data.fetch_pe_payload（spx）", "us_index_signal"],
+        "env_override": "SPX_FORWARD_PE_URL",
+        "notes": "与 NDX 同源；Forward PE 为 12 个月一致预期。",
+    },
+    {
+        "id": "fred_sp500",
+        "name": "标普 500 价格指数",
+        "url": fred_csv_url(FRED_SP500_SERIES),
+        "provider": "美联储圣路易斯分行 FRED",
+        "frequency": "日频",
+        "fields": "SP500 收盘价",
+        "used_by": ["us_index_data.fetch_price_history（spx）", "美股宽基回测"],
+        "env_override": "FRED_CSV_BASE_URL",
+        "notes": "与 akshare 新浪 .INX 拼接；价格指数不含分红再投资。",
+    },
+    {
         "id": "nasdaq_qqq_summary",
         "name": "QQQ ETF 摘要",
         "url": NASDAQ_ETF_SUMMARY_URL.format(symbol="QQQ"),
         "provider": "Nasdaq.com API",
         "frequency": "日频",
         "fields": "股息率（Yield）",
-        "used_by": ["us_index_data.fetch_dividend_yield_proxy"],
+        "used_by": ["us_index_data.fetch_dividend_yield_proxy（ndx）"],
         "env_override": "NDX_DIVIDEND_PROXY_SYMBOL",
         "notes": "以 QQQ 股息率近似 NDX；成长指数分红参考价值有限，仅作辅助展示。",
+    },
+    {
+        "id": "nasdaq_spy_summary",
+        "name": "SPY ETF 摘要",
+        "url": NASDAQ_ETF_SUMMARY_URL.format(symbol="SPY"),
+        "provider": "Nasdaq.com API",
+        "frequency": "日频",
+        "fields": "股息率（Yield）",
+        "used_by": ["us_index_data.fetch_dividend_yield_proxy（spx）"],
+        "env_override": "SPX_DIVIDEND_PROXY_SYMBOL",
+        "notes": "以 SPY 股息率近似 SPX；仅作辅助展示。",
     },
     {
         "id": "fred_nasdaq100",
@@ -336,15 +387,122 @@ DATA_SOURCES = [
         "notes": "经 akshare 封装，需乐咕 CSRF Cookie。",
     },
     {
+        "id": "legulegu_cyb_pe_page",
+        "name": "深交所创业板 PE 页面",
+        "url": LEGULEGU_CYB_PE_PAGE,
+        "provider": "乐咕乐股（聚合深交所创业板 marketId=4）",
+        "frequency": "月度",
+        "fields": "创业板平均滚动 PE、指数点位",
+        "used_by": ["cyb_data.fetch_cyb_pe_szse_official"],
+        "akshare": "ak.stock_market_pe_lg(symbol='创业板')",
+        "notes": "API 入口见 legulegu_pe；页面为人工对照参考。",
+    },
+    {
         "id": "tencent_quote",
         "name": "腾讯证券实时行情",
         "url": TENCENT_QUOTE_URL,
         "provider": "腾讯财经",
         "frequency": "实时",
-        "fields": "最新价等",
-        "used_by": ["预留"],
+        "fields": "最新价、昨收、行情时间",
+        "used_by": [
+            "realtime_quote.fetch_live_quotes（指数）",
+            "dividend_lowvol_rotation.quotes.fetch_stock_quotes（个股）",
+            "live_snapshot",
+        ],
         "env_override": "TENCENT_QUOTE_URL",
-        "notes": "已在 config 登记，当前业务脚本未调用。",
+        "notes": "免费、无需 API Key；指数代码见 realtime_quote.TENCENT_SYMBOL_BY_INDEX。",
+    },
+    {
+        "id": "stockdb",
+        "name": "本地 StockDB 行情服务",
+        "url": f"tcp://{STOCKDB_DEFAULT_HOST}:{STOCKDB_DEFAULT_PORT}",
+        "provider": "本地 StockDB（pybao SDK）",
+        "frequency": "日频（收盘后同步）",
+        "fields": "A 股日 K、交易日历、股票列表、市值/成交额",
+        "used_by": [
+            "sync_stockdb_to_duckdb.sync_all",
+            "dividend_lowvol_rotation.prices（DuckDB 缺失时回退）",
+            "dividend_lowvol_rotation.market_cap",
+        ],
+        "env_override": "STOCKDB_HOST / STOCKDB_PORT / STOCKDB_SDK_PATH",
+        "notes": "非公网 HTTP；需本机运行 StockDB 服务。同步脚本：python sync_stockdb_to_duckdb.py。",
+    },
+    {
+        "id": "akshare_em_fhps",
+        "name": "A 股分红方案（东方财富）",
+        "url": "akshare: ak.stock_fhps_em(date=报告期)",
+        "provider": "东方财富（经 akshare）",
+        "frequency": "按报告期批次",
+        "fields": "除权除息日、每股派息、方案进度、EPS 等",
+        "used_by": ["dividend_lowvol_rotation.dividend.load_fhps_all_records"],
+        "akshare": "ak.stock_fhps_em(date='YYYYMMDD')",
+        "notes": "红利低波策略分红分子与 TTM 累计；缓存 cache/dividend_lowvol/fhps_*.csv。",
+    },
+    {
+        "id": "akshare_em_financial_abstract",
+        "name": "A 股财务摘要（东方财富）",
+        "url": "akshare: ak.stock_financial_abstract(symbol=代码)",
+        "provider": "东方财富（经 akshare）",
+        "frequency": "季/年报",
+        "fields": "ROE、资产负债率、净利润、经营现金流/净利润等",
+        "used_by": [
+            "dividend_lowvol_rotation.risk_screening.fetch_risk_history",
+        ],
+        "akshare": "ak.stock_financial_abstract(symbol='600000')",
+        "notes": "排雷与质量因子；逐股拉取，有 FINANCIAL_FETCH_SLEEP_SEC 限速。",
+    },
+    {
+        "id": "akshare_em_profit_sheet",
+        "name": "A 股利润表（东方财富）",
+        "url": "akshare: ak.stock_profit_sheet_by_report_em(symbol=代码)",
+        "provider": "东方财富（经 akshare）",
+        "frequency": "季/年报",
+        "fields": "营业利润、财务费用（利息保障倍数回退）",
+        "used_by": ["dividend_lowvol_rotation.risk_screening._fetch_interest_coverage_akshare"],
+        "akshare": "ak.stock_profit_sheet_by_report_em(symbol='600000')",
+        "notes": "财务摘要无利息保障倍数时回退计算。",
+    },
+    {
+        "id": "akshare_sw_industry",
+        "name": "申万一级行业成分",
+        "url": "akshare: ak.index_realtime_sw + ak.index_component_sw",
+        "provider": "申万宏源（经 akshare）",
+        "frequency": "周缓存",
+        "fields": "申万一级行业名称、成分股",
+        "used_by": ["dividend_lowvol_rotation.industry._fetch_sw_industry_table"],
+        "akshare": "ak.index_realtime_sw(); ak.index_component_sw(symbol=sw_code)",
+        "notes": "行业分散约束；映射为当前时点成分，非历史调仓。",
+    },
+    {
+        "id": "baostock_industry",
+        "name": "证监会行业分类",
+        "url": "baostock: bs.query_stock_industry()",
+        "provider": "Baostock（证券宝）",
+        "frequency": "周缓存",
+        "fields": "证监会行业名称",
+        "used_by": ["dividend_lowvol_rotation.industry._load_csrc_industry_table（降级）"],
+        "notes": "bs.query_stock_industry()；INDUSTRY_SOURCE=csrc 时使用；申万不可用时降级。",
+    },
+    {
+        "id": "baostock_kline",
+        "name": "Baostock 日 K 线",
+        "url": "baostock: bs.query_history_k_data_plus()",
+        "provider": "Baostock（证券宝）",
+        "frequency": "日频",
+        "fields": "开高低收、成交量",
+        "used_by": ["scripts/validate_data_baostock.py（交叉验证）"],
+        "notes": "bs.query_history_k_data_plus(...)；业务回测 K 线优先 DuckDB/StockDB。",
+    },
+    {
+        "id": "akshare_etf_sina",
+        "name": "ETF 日 K（新浪）",
+        "url": "akshare: ak.fund_etf_hist_sina(symbol=代码)",
+        "provider": "新浪财经（经 akshare）",
+        "frequency": "日频",
+        "fields": "ETF 收盘价",
+        "used_by": ["scripts/data_crosscheck.py（指数 ETF 跟踪校验）"],
+        "akshare": "ak.fund_etf_hist_sina(symbol='sh510880')",
+        "notes": "用于 H30269 等策略指数无直接 K 线时的 ETF 代理抽检。",
     },
     {
         "id": "sina_us_bond",
@@ -415,5 +573,11 @@ def print_data_sources():
         print(f"  用途: {', '.join(item['used_by'])}")
         if item.get("akshare"):
             print(f"  akshare: {item['akshare']}")
+        if item.get("env_override"):
+            print(f"  环境变量: {item['env_override']}")
         if item.get("notes"):
             print(f"  说明: {item['notes']}")
+
+
+if __name__ == "__main__":
+    print_data_sources()
