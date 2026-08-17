@@ -207,6 +207,13 @@ def _rebalance_mode_label(meta: dict) -> str:
             else "12月第二个周五次日"
         )
         return f"指数年度调仓({timing}){suffix}"
+    if mode == "entry_anniversary":
+        hold = meta.get("min_hold_days")
+        suffix = f"，最短持有 {hold} 天" if hold else ""
+        anchor = meta.get("entry_anchor") or meta.get("start")
+        if anchor:
+            return f"建仓周年调仓(建仓日 {anchor}){suffix}"
+        return f"建仓周年调仓{suffix}"
     if mode == "monthly":
         return "每月首个交易日"
     if mode == "quarterly_report":

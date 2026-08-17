@@ -11,7 +11,6 @@ from dividend_lowvol_rotation.config import (
     BOND_YIELD_REF_PCT,
     DYNAMIC_VOL_ENABLED,
     DYNAMIC_WEIGHT_ENABLED,
-    INDEX_ANNUAL_REBALANCE_TIMING,
     MARKET_VOL_MEDIAN_MULT,
     MARKET_VOL_REF_PCT,
     MAX_ANNUALIZED_VOL_PCT,
@@ -25,6 +24,7 @@ from dividend_lowvol_rotation.config import (
     YIELD_RANK_WEIGHT,
     YIELD_WEIGHT_BASE,
     YIELD_WEIGHT_BOND_SENS,
+    uses_january_screening_params,
 )
 from dividend_lowvol_rotation.strategy_params import StrategyParams
 
@@ -98,6 +98,7 @@ def resolve_dynamic_params(
     *,
     as_of: pd.Timestamp | None = None,
     strategy_params: StrategyParams | None = None,
+    rebalance_mode: str | None = None,
 ) -> DynamicParams:
     sp = strategy_params or StrategyParams()
     notes: list[str] = []
@@ -105,7 +106,7 @@ def resolve_dynamic_params(
     bond_date = as_of.date().isoformat() if as_of is not None else _fetch_bond_yield_pct()[1]
 
     min_yield = sp.min_dividend_yield_pct if sp.min_dividend_yield_pct is not None else MIN_DIVIDEND_YIELD_PCT
-    if INDEX_ANNUAL_REBALANCE_TIMING == "january":
+    if uses_january_screening_params(rebalance_mode):
         min_yield = (
             MIN_DIVIDEND_YIELD_FLOOR_PCT
             if sp.min_dividend_yield_pct is None
@@ -122,7 +123,7 @@ def resolve_dynamic_params(
     vol_mult = sp.market_vol_median_mult if sp.market_vol_median_mult is not None else MARKET_VOL_MEDIAN_MULT
     dyn_vol = DYNAMIC_VOL_ENABLED if sp.dynamic_vol_enabled is None else sp.dynamic_vol_enabled
     # 1 月调仓候选池波动偏高，勿用 40% 顶板压死池子
-    if INDEX_ANNUAL_REBALANCE_TIMING == "january":
+    if uses_january_screening_params(rebalance_mode):
         max_vol = (
             MAX_ANNUALIZED_VOL_PCT
             if sp.max_annualized_vol_pct is None

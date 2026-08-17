@@ -10,6 +10,7 @@ from dividend_lowvol_rotation.config import (
     BACKTEST_PREFETCH_SIZE,
     DIVIDEND_YIELD_MODE,
     INDUSTRY_CAP_ENABLED,
+    LIVE_REBALANCE_MODE,
     MARKET_VALUATION_ENABLED,
     MAX_INDUSTRY_WEIGHT,
     MV_TIER_CAP_ENABLED,
@@ -44,6 +45,7 @@ from dividend_lowvol_rotation.industry import attach_industry, load_industry_tab
 from dividend_lowvol_rotation.market_cap import attach_market_fields, market_fields_needed
 from dividend_lowvol_rotation.prices import batch_load_volatility
 from dividend_lowvol_rotation.quotes import fetch_stock_quotes
+from dividend_lowvol_rotation.rebalance_schedule import next_anniversary_calendar_date
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct, run_screening
 from dividend_lowvol_rotation.symbols import is_excluded_name, normalize_stock_code
 
@@ -61,12 +63,15 @@ def build_market_panel(
     sell_rank: int | None = None,
     prefetch_size: int | None = None,
     holdings: list[str] | None = None,
+    entry_date: pd.Timestamp | str | None = None,
+    rebalance_mode: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """构建与回测一致的候选面板与目标组合。"""
     top_n = top_n if top_n is not None else TOP_N_BUY
     sell_rank = resolve_sell_rank(top_n, sell_rank)
     prefetch_size = prefetch_size if prefetch_size is not None else BACKTEST_PREFETCH_SIZE
     holdings_norm = [normalize_stock_code(c) for c in (holdings or []) if c]
+    rebalance_mode = (rebalance_mode or LIVE_REBALANCE_MODE).lower()
 
     meta: dict = {
         "steps": [],
@@ -77,9 +82,15 @@ def build_market_panel(
         "prefetch_size": prefetch_size,
         "dynamic": {},
         "sell_mode": SELL_MODE,
+        "rebalance_mode": rebalance_mode,
     }
     t0 = datetime.now()
     as_of = pd.Timestamp.now()
+    entry = pd.Timestamp(entry_date or as_of).normalize()
+    meta["entry_date"] = entry.strftime("%Y-%m-%d")
+    if rebalance_mode == "entry_anniversary":
+        nxt = next_anniversary_calendar_date(entry, after=as_of.normalize())
+        meta["next_rebalance_date"] = nxt.strftime("%Y-%m-%d")
 
     dividends = build_dividend_panel(refresh=refresh, as_of=as_of)
     mode_note = DIVIDEND_YIELD_MODE
@@ -151,7 +162,7 @@ def build_market_panel(
     if market_fields_needed():
         panel = attach_market_fields(panel, as_of=as_of)
 
-    dynamic = resolve_dynamic_params(panel, as_of=as_of)
+    dynamic = resolve_dynamic_params(panel, as_of=as_of, rebalance_mode=rebalance_mode)
     meta["dynamic"] = {
         "min_yield_pct": dynamic.min_dividend_yield_pct,
         "max_vol_pct": dynamic.max_annualized_vol_pct,
@@ -239,6 +250,7 @@ def build_market_panel(
         sell_rank=sell_rank,
         dynamic=dynamic,
         as_of=as_of,
+        rebalance_mode=rebalance_mode,
     )
     if val_regime.get("pause_new_buys"):
         buy_pool = buy_pool.iloc[0:0]

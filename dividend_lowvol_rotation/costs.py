@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dividend_lowvol_rotation.config import (
+    BACKTEST_INITIAL_CAPITAL,
     COMMISSION_RATE,
     ESTIMATE_TURNOVER_FRACTION,
     LOT_SIZE,
@@ -122,8 +123,81 @@ def estimate_rebalance_cost(
     }
 
 
+def resolve_report_capital(capital_cny: float | None = None) -> float:
+    """报告用资金：CLI > 环境变量 > 回测默认初始资金。"""
+    if capital_cny is not None and capital_cny > 0:
+        return float(capital_cny)
+    if PORTFOLIO_CAPITAL_CNY > 0:
+        return float(PORTFOLIO_CAPITAL_CNY)
+    return float(BACKTEST_INITIAL_CAPITAL)
+
+
+def plan_portfolio_allocation(
+    portfolio_df,
+    capital_cny: float,
+    *,
+    lot_size: int = LOT_SIZE,
+) -> tuple[object, dict]:
+    """按目标权重估算整手买入计划（含单边佣金）。"""
+    empty_summary = {
+        "capital_cny": capital_cny,
+        "total_invested_cny": 0.0,
+        "total_commission_cny": 0.0,
+        "cash_remaining_cny": capital_cny,
+        "utilization_pct": 0.0,
+    }
+    if portfolio_df is None or getattr(portfolio_df, "empty", True) or capital_cny <= 0:
+        return portfolio_df, empty_summary
+
+    out = portfolio_df.copy()
+    shares_list: list[int] = []
+    amount_list: list[float] = []
+    fee_list: list[float] = []
+    total_cost_list: list[float] = []
+    total_invested = 0.0
+    total_fee = 0.0
+
+    n = len(out)
+    for _, row in out.iterrows():
+        weight_pct = row.get("target_weight_pct")
+        if weight_pct is None or (isinstance(weight_pct, float) and weight_pct != weight_pct):
+            weight = 1.0 / n if n else 0.0
+        else:
+            weight = float(weight_pct) / 100.0
+        price = float(row.get("price") or 0)
+        if price <= 0 or weight <= 0:
+            shares_list.append(0)
+            amount_list.append(0.0)
+            fee_list.append(0.0)
+            total_cost_list.append(0.0)
+            continue
+        budget = capital_cny * weight
+        shares = max_buy_shares(budget, price, lot_size)
+        gross, fee, total = buy_order_cost(shares, price) if shares > 0 else (0.0, 0.0, 0.0)
+        shares_list.append(shares)
+        amount_list.append(gross)
+        fee_list.append(fee)
+        total_cost_list.append(total)
+        total_invested += total
+
+    out["buy_shares"] = shares_list
+    out["buy_amount_cny"] = amount_list
+    out["buy_commission_cny"] = fee_list
+    out["buy_total_cost_cny"] = total_cost_list
+    total_fee = sum(fee_list)
+    cash_remaining = max(0.0, capital_cny - total_invested)
+    summary = {
+        "capital_cny": capital_cny,
+        "total_invested_cny": total_invested,
+        "total_commission_cny": total_fee,
+        "cash_remaining_cny": cash_remaining,
+        "utilization_pct": total_invested / capital_cny * 100 if capital_cny > 0 else 0.0,
+    }
+    return out, summary
+
+
 def format_cost_note(capital_cny: float | None, position_count: int) -> str | None:
-    cap = capital_cny if capital_cny and capital_cny > 0 else PORTFOLIO_CAPITAL_CNY
+    cap = resolve_report_capital(capital_cny)
     if cap <= 0:
         return None
     est = estimate_rebalance_cost(cap, position_count)

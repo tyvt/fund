@@ -12,18 +12,22 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from dividend_lowvol_rotation.config import (
+    BACKTEST_INITIAL_CAPITAL,
     BACKTEST_PREFETCH_SIZE,
     COMMISSION_RATE,
     DIVIDEND_YIELD_MODE,
     DYNAMIC_WEIGHT_ENABLED,
-    INDEX_ANNUAL_REBALANCE_TIMING,
     INDEX_STYLE_RANKING,
+    LIVE_REBALANCE_MODE,
     INDUSTRY_CAP_ENABLED,
+    LOT_SIZE,
     MAX_ANNUALIZED_VOL_PCT,
     MAX_INDUSTRY_WEIGHT,
     MAX_SINGLE_STOCK_WEIGHT,
     MIN_COMMISSION_CNY,
     MIN_DIVIDEND_YIELD_PCT,
+    RECENT_DIVIDEND_HARD_FILTER_ENABLED,
+    RECENT_DIVIDEND_MAX_YEARS,
     PORTFOLIO_CAPITAL_CNY,
     SELL_MODE,
     SELL_RANK_MULTIPLIER,
@@ -34,7 +38,11 @@ from dividend_lowvol_rotation.config import (
     YIELD_RANK_WEIGHT,
     resolve_sell_rank,
 )
-from dividend_lowvol_rotation.costs import format_cost_note
+from dividend_lowvol_rotation.costs import (
+    format_cost_note,
+    plan_portfolio_allocation,
+    resolve_report_capital,
+)
 from dividend_lowvol_rotation.index_portfolio import classify_index_portfolio
 from dividend_lowvol_rotation.scoring import classify_holdings
 from dividend_lowvol_rotation.strategy import build_market_panel
@@ -60,6 +68,32 @@ def _fmt_range(low, high):
     return f"{_fmt_price(low)} ~ {_fmt_price(high)}"
 
 
+def _fmt_money(v):
+    if v is None or (isinstance(v, float) and v != v):
+        return "—"
+    return f"{float(v):,.0f}"
+
+
+def _fmt_shares(v):
+    if v is None or (isinstance(v, float) and v != v):
+        return "—"
+    return f"{int(v):,}"
+
+
+def _fmt_rebalance_schedule(meta: dict) -> str:
+    mode = str(meta.get("rebalance_mode") or LIVE_REBALANCE_MODE).lower()
+    if mode == "entry_anniversary":
+        entry = meta.get("entry_date", "—")
+        nxt = meta.get("next_rebalance_date", "—")
+        return f"**建仓周年**（建仓日 {entry}，下次调仓 {nxt} 后首个交易日）"
+    if mode == "index_annual":
+        from dividend_lowvol_rotation.config import INDEX_ANNUAL_REBALANCE_TIMING
+
+        timing = "1 月中旬" if INDEX_ANNUAL_REBALANCE_TIMING == "january" else "12 月指数调样"
+        return f"**{timing}** 年度调样"
+    return f"**{mode}**"
+
+
 def format_stock_table(
     df,
     title: str,
@@ -67,6 +101,7 @@ def format_stock_table(
     *,
     show_industry: bool = True,
     show_weight: bool = False,
+    show_allocation: bool = False,
 ) -> list[str]:
     lines = [f"### {title}", ""]
     if df is None or df.empty:
@@ -75,18 +110,29 @@ def format_stock_table(
         return lines
     show = df.head(limit) if limit else df
     weight_col = show_weight and "target_weight_pct" in show.columns
+    alloc_col = show_allocation and "buy_shares" in show.columns
     if show_industry and "industry" in show.columns:
         header = "| 序号 | 代码 | 名称 | 行业 | 现价 | 股息率 | 波动 | ROE | 得分 |"
         if weight_col:
             header += " 目标权重 |"
+        if alloc_col:
+            header += " 买入股数 | 预估金额 |"
         header += " 挂单价区间 |"
         sep = "|------|------|------|------|------|--------|------|-----|------|"
         if weight_col:
             sep += "----------|"
+        if alloc_col:
+            sep += "----------|----------|"
         sep += "------------|"
     else:
-        header = "| 排名 | 代码 | 名称 | 现价 | 股息率 | 波动 | 得分 | 挂单价区间 |"
-        sep = "|------|------|------|------|--------|------|------|------------|"
+        header = "| 排名 | 代码 | 名称 | 现价 | 股息率 | 波动 | 得分 |"
+        if alloc_col:
+            header += " 买入股数 | 预估金额 |"
+        header += " 挂单价区间 |"
+        sep = "|------|------|------|------|--------|------|------|"
+        if alloc_col:
+            sep += "----------|----------|"
+        sep += "------------|"
     lines.append(header)
     lines.append(sep)
     for i, (_, r) in enumerate(show.iterrows(), start=1):
@@ -97,10 +143,19 @@ def format_stock_table(
             if weight_col and r.get("target_weight_pct") is not None
             else (" — |" if weight_col else "")
         )
+        alloc_cell = ""
+        if alloc_col:
+            shares = int(r.get("buy_shares") or 0)
+            amount = r.get("buy_amount_cny")
+            alloc_cell = (
+                f" {_fmt_shares(shares)} | {_fmt_money(amount)} |"
+                if shares > 0
+                else " — | — |"
+            )
         if show_industry and "industry" in show.columns:
             ind = str(r.get("industry", ""))[:10]
             lines.append(
-                "| {seq} | {code} | {name} | {ind} | {price} | {dy} | {vol} | {roe} | {score:.1f} |{weight}{brange} |".format(
+                "| {seq} | {code} | {name} | {ind} | {price} | {dy} | {vol} | {roe} | {score:.1f} |{weight}{alloc}{brange} |".format(
                     seq=rank,
                     code=r["code"],
                     name=str(r["name"])[:8],
@@ -111,12 +166,13 @@ def format_stock_table(
                     roe=roe,
                     score=float(r.get("composite_score") or rank),
                     weight=weight_cell,
-                    brange=_fmt_range(r.get("buy_low"), r.get("buy_high")),
+                    alloc=alloc_cell,
+                    brange=f" {_fmt_range(r.get('buy_low'), r.get('buy_high'))}",
                 )
             )
         else:
             lines.append(
-                "| {rank} | {code} | {name} | {price} | {dy} | {vol} | {score:.1f} | {brange} |".format(
+                "| {rank} | {code} | {name} | {price} | {dy} | {vol} | {score:.1f} |{alloc}{brange} |".format(
                     rank=rank,
                     code=r["code"],
                     name=str(r["name"])[:8],
@@ -124,7 +180,8 @@ def format_stock_table(
                     dy=_fmt_pct(r["dividend_yield_pct"]),
                     vol=_fmt_pct(r["ann_vol_pct"]),
                     score=float(r.get("composite_score") or rank),
-                    brange=_fmt_range(r.get("buy_low"), r.get("buy_high")),
+                    alloc=alloc_cell,
+                    brange=f" {_fmt_range(r.get('buy_low'), r.get('buy_high'))}",
                 )
             )
     lines.append("")
@@ -145,20 +202,34 @@ def build_report(
     effective_top_n = int(meta.get("effective_top_n") or top_n)
     prefetch_size = int(meta.get("prefetch_size") or BACKTEST_PREFETCH_SIZE)
     sell_mode = str(meta.get("sell_mode") or SELL_MODE).lower()
+    effective_capital = resolve_report_capital(capital_cny)
 
     lines = [
-        "## A 股红利低波轮动（与回测一致 · 仅评估）",
+        "# A 股红利低波轮动评估报告",
+        "",
+        "## A 股红利低波轮动（实盘评估 · 与回测同逻辑）",
         "",
         f"**生成时间**：{meta.get('as_of', '—')}  ",
         f"**耗时**：{meta.get('elapsed_sec', '—')} 秒",
         "",
+        "### 资金与建仓",
+        "",
+        f"- **初始资金**：**{_fmt_money(effective_capital)}** 元"
+        + (
+            f"（`--capital` / 环境变量 `DLV_PORTFOLIO_CAPITAL_CNY`；未设则默认回测初始 {BACKTEST_INITIAL_CAPITAL:,.0f} 元）"
+            if capital_cny is None and PORTFOLIO_CAPITAL_CNY <= 0
+            else ""
+        ),
+        f"- **最小交易单位**：{LOT_SIZE} 股/手；买入股数按目标权重向下取整手，含单边佣金",
+        "",
         "### 策略参数",
         "",
         f"- 候选预筛：与回测相同，Top **{prefetch_size}**（`fhps_yield_pct` 排序）",
-        f"- 股息率模式：**{DIVIDEND_YIELD_MODE}**（latest/ttm/auto）",
+        f"- 股息率模式：**{DIVIDEND_YIELD_MODE}**（latest/ttm/auto；auto 无 TTM 不回退旧分红）",
+        f"- 近 **{RECENT_DIVIDEND_MAX_YEARS}** 年分红硬过滤：**{'开' if RECENT_DIVIDEND_HARD_FILTER_ENABLED else '关'}**",
         f"- 年化波动：{VOL_LOOKBACK_DAYS} 日；静态上限 {MAX_ANNUALIZED_VOL_PCT:.0f}%",
         f"- 排序：**{'股息率→低波（指数式）' if INDEX_STYLE_RANKING else f'加权 {YIELD_RANK_WEIGHT:g}+{VOL_RANK_WEIGHT:g}'}**",
-        f"- 调仓：**{INDEX_ANNUAL_REBALANCE_TIMING}** 年度调样；调出模式 **{sell_mode}**",
+        f"- 调仓：{_fmt_rebalance_schedule(meta)}；调出模式 **{sell_mode}**",
         f"- 目标持仓 **{effective_top_n}** 只"
         + (f"（配置 {top_n}，仓位缩放 {meta.get('position_scale', 1) * 100:.0f}%）" if effective_top_n != top_n else ""),
         "",
@@ -228,7 +299,7 @@ def build_report(
         lines.append("- 行业分散：关")
     lines.append("")
 
-    cost_note = format_cost_note(capital_cny, top_n)
+    cost_note = format_cost_note(effective_capital, top_n)
     if cost_note:
         lines.append("### 交易成本估算")
         lines.append("")
@@ -260,19 +331,35 @@ def build_report(
         if target_portfolio is not None and not target_portfolio.empty
         else ranked.head(effective_top_n)
     )
+    show_df, alloc_summary = plan_portfolio_allocation(show_df, effective_capital)
+    lines.extend(
+        [
+            "### 建仓汇总",
+            "",
+            f"- **预估总投入**：{_fmt_money(alloc_summary.get('total_invested_cny'))} 元"
+            f"（含佣金 {_fmt_money(alloc_summary.get('total_commission_cny'))} 元）",
+            f"- **剩余现金**：{_fmt_money(alloc_summary.get('cash_remaining_cny'))} 元"
+            f"（资金利用率 {_fmt_pct(alloc_summary.get('utilization_pct'))}）",
+            "",
+        ]
+    )
     lines.extend(
         format_stock_table(
             show_df,
             f"目标组合（{len(meta.get('target_codes') or [])} 只，股息率加权）",
             limit=effective_top_n,
             show_weight=True,
+            show_allocation=True,
         )
     )
 
     lines.append("### 买入价区间说明")
     lines.append("")
     lines.append(
-        "区间 = [近60日低点, min(现价×99%, 股息率门槛价, 近60日低点+3%)]；仅供条件单参考。"
+        "区间 = [现价×(1−下沿%), min(现价×(1+上沿%), 股息率门槛价)]；默认下沿 1%、上沿 0%。"
+    )
+    lines.append(
+        "回测在调仓日按收盘价+滑点成交；今日建仓即视为首次调仓，次年建仓周年再调仓。"
     )
     lines.append("")
 
@@ -347,9 +434,30 @@ def main(argv: list[str] | None = None) -> int:
         "--capital",
         type=float,
         default=None,
-        help=f"资金量（元），用于佣金估算；也可用环境变量 DLV_PORTFOLIO_CAPITAL_CNY（当前 {PORTFOLIO_CAPITAL_CNY:g}）",
+        help=(
+            f"初始资金（元），用于建仓股数与佣金估算；"
+            f"也可用环境变量 DLV_PORTFOLIO_CAPITAL_CNY（当前 {PORTFOLIO_CAPITAL_CNY:g}）；"
+            f"均未设时默认 {BACKTEST_INITIAL_CAPITAL:,.0f} 元"
+        ),
     )
-    parser.add_argument("-o", "--output", type=str, help="另存 Markdown")
+    parser.add_argument(
+        "--entry-date",
+        type=str,
+        default=None,
+        help="建仓日 YYYY-MM-DD（默认今天）；用于建仓周年调仓日程",
+    )
+    parser.add_argument(
+        "--rebalance-mode",
+        choices=["entry_anniversary", "index_annual", "monthly", "quarterly_report", "fixed_days"],
+        default=LIVE_REBALANCE_MODE,
+        help=f"调仓日程（默认 {LIVE_REBALANCE_MODE}）",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        help="另存 Markdown 文件（如 output/dividend_lowvol/report.md）",
+    )
     args = parser.parse_args(argv)
 
     holdings: list[str] | None = None
@@ -361,8 +469,10 @@ def main(argv: list[str] | None = None) -> int:
         holdings = parse_holdings_text(path.read_text(encoding="utf-8"))
 
     sell_rank = resolve_sell_rank(args.top, args.sell_rank)
+    effective_capital = resolve_report_capital(args.capital)
     print(
-        f"正在拉取数据（预筛 Top {args.prefetch}，目标 {args.top} 只）…"
+        f"正在拉取数据（预筛 Top {args.prefetch}，目标 {args.top} 只，"
+        f"初始资金 {effective_capital:,.0f} 元）…"
     )
     ranked, target_portfolio, meta = build_market_panel(
         refresh=args.refresh,
@@ -370,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
         sell_rank=sell_rank,
         prefetch_size=args.prefetch,
         holdings=holdings,
+        entry_date=args.entry_date,
+        rebalance_mode=args.rebalance_mode,
     )
     report = build_report(
         ranked,
@@ -378,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         holdings=holdings,
         top_n=args.top,
         sell_rank=sell_rank,
-        capital_cny=args.capital,
+        capital_cny=effective_capital,
     )
     print(report)
 

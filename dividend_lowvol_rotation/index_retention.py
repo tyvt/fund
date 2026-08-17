@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from dividend_lowvol_rotation.config import INDEX_RETENTION_MIN_DIVIDEND_YIELD_PCT, RISK_FILTER_ENABLED
+from dividend_lowvol_rotation.config import (
+    INDEX_RETENTION_MIN_DIVIDEND_YIELD_PCT,
+    RECENT_DIVIDEND_MAX_YEARS,
+    RISK_FILTER_ENABLED,
+)
 from dividend_lowvol_rotation.dividend import build_dividend_panel
-from dividend_lowvol_rotation.risk_screening import risk_filter_mask
+from dividend_lowvol_rotation.risk_screening import recent_dividend_mask, risk_filter_mask
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct
 
 
@@ -15,6 +19,7 @@ def index_retention_fail_reason(
     row: pd.Series | dict | None,
     *,
     min_yield_pct: float = INDEX_RETENTION_MIN_DIVIDEND_YIELD_PCT,
+    as_of: pd.Timestamp | None = None,
 ) -> str | None:
     if row is None:
         return "无行情数据"
@@ -29,6 +34,9 @@ def index_retention_fail_reason(
         yld = dynamic_dividend_yield_pct(float(data["cash_per_share"]), float(price))
     if yld is None or float(yld) < min_yield_pct:
         return f"股息率<{min_yield_pct:.1f}%"
+
+    if not recent_dividend_mask(pd.DataFrame([data]), as_of=as_of).iloc[0]:
+        return f"近{RECENT_DIVIDEND_MAX_YEARS}年无分红"
 
     if RISK_FILTER_ENABLED:
         one = pd.DataFrame([data])

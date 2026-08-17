@@ -490,8 +490,12 @@ def prepare_backtest_context(
     mode = rebalance_mode or BACKTEST_REBALANCE_MODE
     records = load_fhps_all_records(refresh=False, backtest_start=start)
     calendar = _trading_calendar(start, end)
+    entry_anchor = pd.Timestamp(calendar[0]) if calendar else pd.Timestamp(start)
     reb_dates = reb_dates or resolve_rebalance_dates(
-        calendar, mode=mode, rebalance_days=rebalance_days
+        calendar,
+        mode=mode,
+        rebalance_days=rebalance_days,
+        entry_anchor=entry_anchor,
     )
     kline_start = (
         pd.Timestamp(start) - timedelta(days=max(PRICE_HISTORY_BUFFER_DAYS, 400))
@@ -1043,8 +1047,12 @@ def run_backtest(
         calendar = [d for d in ctx.calendar if start_ts <= d <= end_ts]
         if not calendar:
             calendar = _trading_calendar(start, end)
+    entry_anchor = pd.Timestamp(calendar[0]) if calendar else start_ts
     reb_dates = reb_dates_override or resolve_rebalance_dates(
-        calendar, mode=mode, rebalance_days=rebalance_days
+        calendar,
+        mode=mode,
+        rebalance_days=rebalance_days,
+        entry_anchor=entry_anchor,
     )
 
     lots: dict[str, PositionLot] = {}
@@ -1149,7 +1157,9 @@ def run_backtest(
         for _, r in panel.iterrows():
             name_cache[str(r["code"])] = str(r.get("name", ""))
 
-        dynamic = resolve_dynamic_params(panel, as_of=rb_date, strategy_params=strategy_params)
+        dynamic = resolve_dynamic_params(
+            panel, as_of=rb_date, strategy_params=strategy_params, rebalance_mode=mode
+        )
         if dynamic.market_vol_median_pct is not None:
             pool_vol_history.append(dynamic.market_vol_median_pct)
 
@@ -1176,6 +1186,7 @@ def run_backtest(
             strategy_params=strategy_params,
             valuation_tight=val_regime.get("valuation_tight", False),
             bear_vol_threshold_pct=bear_vol_thresh,
+            rebalance_mode=mode,
         )
         if ranked.empty:
             continue
@@ -1773,6 +1784,7 @@ def run_backtest(
     meta = {
         "start": start,
         "end": end,
+        "entry_anchor": entry_anchor.date().isoformat() if mode == "entry_anniversary" else None,
         "rebalance_days": rebalance_days,
         "rebalance_mode": mode,
         "min_hold_days": min_hold_days,
@@ -1834,9 +1846,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rebalance-days", type=int, default=BACKTEST_REBALANCE_DAYS)
     parser.add_argument(
         "--rebalance-mode",
-        choices=["monthly", "index_annual", "quarterly_report", "fixed_days"],
+        choices=["monthly", "index_annual", "entry_anniversary", "quarterly_report", "fixed_days"],
         default=BACKTEST_REBALANCE_MODE,
-        help="调仓日程：每月/指数年度(H30269)/季报/固定 N 日",
+        help="调仓日程：每月/指数年度/建仓周年/季报/固定 N 日",
     )
     parser.add_argument(
         "--sell-mode",
@@ -1862,6 +1874,8 @@ def main(argv: list[str] | None = None) -> int:
             if INDEX_ANNUAL_REBALANCE_TIMING == "january"
             else "指数年度调仓(12月第二个周五次日)"
         )
+    elif args.rebalance_mode == "entry_anniversary":
+        mode = "建仓周年调仓（回测起点为建仓日）"
     elif args.rebalance_mode == "quarterly_report":
         mode = "季报截止后首个交易日"
     else:

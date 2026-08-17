@@ -1,4 +1,4 @@
-"""红利低波轮动策略参数（参考 EasyXT 五层筛选，无交易接入）。"""
+"""红利低波轮动策略参数。"""
 
 from __future__ import annotations
 
@@ -47,6 +47,9 @@ MIN_DIVIDEND_YIELD_FLOOR_PCT = _env_float("DLV_MIN_DIVIDEND_YIELD_FLOOR_PCT", 3.
 DIVIDEND_YIELD_MODE = _env_str("DLV_DIVIDEND_YIELD_MODE", "auto").lower()
 TTM_LOOKBACK_DAYS = _env_int("DLV_TTM_LOOKBACK_DAYS", 365)
 LATEST_DIVIDEND_STALE_DAYS = _env_int("DLV_LATEST_DIVIDEND_STALE_DAYS", 365)
+# 硬过滤：分子对应除息日距今不得超过 N 年（报告与回测共用，不可放宽）
+RECENT_DIVIDEND_MAX_YEARS = _env_int("DLV_RECENT_DIVIDEND_MAX_YEARS", 3)
+RECENT_DIVIDEND_HARD_FILTER_ENABLED = _env_bool("DLV_RECENT_DIVIDEND_HARD_FILTER_ENABLED", True)
 
 DYNAMIC_VOL_ENABLED = _env_bool("DLV_DYNAMIC_VOL_ENABLED", True)
 MARKET_VOL_MEDIAN_MULT = _env_float("DLV_MARKET_VOL_MEDIAN_MULT", 1.68)
@@ -271,9 +274,9 @@ DEFENSIVE_INDUSTRY_KEYWORDS = tuple(
 INDUSTRY_SOURCE = _env_str("DLV_INDUSTRY_SOURCE", "sw_fallback").lower()
 INDUSTRY_CACHE_MAX_AGE_DAYS = _env_int("DLV_INDUSTRY_CACHE_MAX_AGE_DAYS", 7)
 
-# --- 买入价区间 ---
-BUY_RANGE_ABOVE_LOW_PCT = _env_float("DLV_BUY_RANGE_ABOVE_LOW_PCT", 0.03)
+# --- 买入价区间（以现价为中心，供限价单参考）---
 BUY_RANGE_BELOW_CURRENT_PCT = _env_float("DLV_BUY_RANGE_BELOW_CURRENT_PCT", 0.01)
+BUY_RANGE_ABOVE_CURRENT_PCT = _env_float("DLV_BUY_RANGE_ABOVE_CURRENT_PCT", 0.0)
 
 # --- 交易成本 ---
 COMMISSION_RATE = _env_float("DLV_COMMISSION_RATE", 0.0000854)
@@ -289,7 +292,17 @@ ESTIMATE_TURNOVER_FRACTION = _env_float("DLV_ESTIMATE_TURNOVER_FRACTION", 0.5)
 BACKTEST_START = _env_str("DLV_BACKTEST_START", "2018-01-01")
 BACKTEST_REBALANCE_MODE = _env_str(
     "DLV_BACKTEST_REBALANCE_MODE", "index_annual"
-).lower()  # index_annual | monthly | quarterly_report | fixed_days
+).lower()  # index_annual | entry_anniversary | monthly | quarterly_report | fixed_days
+# 实盘报告默认：任意日建仓，次年建仓周年调仓
+LIVE_REBALANCE_MODE = _env_str("DLV_LIVE_REBALANCE_MODE", "entry_anniversary").lower()
+
+
+def uses_january_screening_params(rebalance_mode: str | None = None) -> bool:
+    """仅指数固定 1 月调仓窗口使用放宽的股息率/波动筛选参数。"""
+    mode = (rebalance_mode or LIVE_REBALANCE_MODE or BACKTEST_REBALANCE_MODE).lower()
+    return mode == "index_annual" and INDEX_ANNUAL_REBALANCE_TIMING == "january"
+
+
 BACKTEST_REBALANCE_DAYS = _env_int("DLV_BACKTEST_REBALANCE_DAYS", 30)
 BACKTEST_MIN_HOLD_DAYS = _env_int("DLV_BACKTEST_MIN_HOLD_DAYS", 0)
 

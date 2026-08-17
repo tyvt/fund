@@ -1119,9 +1119,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rebalance-days", type=int, default=BACKTEST_REBALANCE_DAYS)
     parser.add_argument(
         "--rebalance-mode",
-        choices=["monthly", "index_annual", "quarterly_report", "fixed_days"],
+        choices=["monthly", "index_annual", "entry_anniversary", "quarterly_report", "fixed_days"],
         default=BACKTEST_REBALANCE_MODE,
-        help="调仓日程（index_annual=H30269 每年12月调样）",
+        help="调仓日程（entry_anniversary=建仓周年）",
     )
     parser.add_argument(
         "--sell-mode",

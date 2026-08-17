@@ -27,6 +27,75 @@ def first_trading_day_after(
     return None
 
 
+def first_trading_day_on_or_after(
+    calendar: list[pd.Timestamp],
+    day: pd.Timestamp,
+) -> pd.Timestamp | None:
+    """不早于 day（含当日）的首个交易日。"""
+    for d in calendar:
+        if d >= day:
+            return d
+    return None
+
+
+def _calendar_anniversary(anchor: pd.Timestamp, year: int) -> pd.Timestamp:
+    """anchor 在指定年份的日历周年日（2/29 锚点落在非闰年取 2/28）。"""
+    anchor = pd.Timestamp(anchor).normalize()
+    try:
+        return pd.Timestamp(year=year, month=anchor.month, day=anchor.day)
+    except ValueError:
+        return pd.Timestamp(year=year, month=anchor.month, day=1) + pd.offsets.MonthEnd(0)
+
+
+def next_anniversary_calendar_date(
+    anchor: pd.Timestamp,
+    *,
+    after: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    """下一个严格晚于 after 的建仓周年日历日（未对齐交易日）。"""
+    anchor = pd.Timestamp(anchor).normalize()
+    ref = pd.Timestamp(after or pd.Timestamp.today()).normalize()
+    year = ref.year
+    candidate = _calendar_anniversary(anchor, year)
+    if candidate <= ref:
+        candidate = _calendar_anniversary(anchor, year + 1)
+    return candidate
+
+
+def entry_anniversary_rebalance_dates(
+    calendar: list[pd.Timestamp],
+    *,
+    anchor: pd.Timestamp | None = None,
+) -> list[pd.Timestamp]:
+    """建仓周年调仓：建仓日（或回测起点）首次调仓，此后每年同月同日后首个交易日。"""
+    if not calendar:
+        return []
+    cal = sorted(calendar)
+    start, end = cal[0], cal[-1]
+    anchor = pd.Timestamp(anchor or start).normalize()
+
+    first_ann = first_trading_day_on_or_after(cal, anchor)
+    if first_ann is None:
+        return [start, end] if start != end else [start]
+    first = first_ann if first_ann >= start else start
+
+    out: list[pd.Timestamp] = [first]
+    year = anchor.year + 1
+    while year <= end.year + 1:
+        cal_day = _calendar_anniversary(anchor, year)
+        td = first_trading_day_on_or_after(cal, cal_day)
+        if td is None or td > end:
+            break
+        if td > out[-1]:
+            out.append(td)
+        year += 1
+
+    out = sorted(set(out))
+    if out[-1] != end:
+        out.append(end)
+    return out
+
+
 def quarterly_report_rebalance_dates(calendar: list[pd.Timestamp]) -> list[pd.Timestamp]:
     """季报截止后首个交易日调仓；含回测起点建仓与期末净值。"""
     if not calendar:
@@ -161,6 +230,7 @@ def resolve_rebalance_dates(
     *,
     mode: str = "monthly",
     rebalance_days: int = 30,
+    entry_anchor: pd.Timestamp | None = None,
 ) -> list[pd.Timestamp]:
     if mode == "monthly":
         return monthly_rebalance_dates(calendar)
@@ -168,4 +238,6 @@ def resolve_rebalance_dates(
         return index_annual_rebalance_dates(calendar)
     if mode == "quarterly_report":
         return quarterly_report_rebalance_dates(calendar)
+    if mode == "entry_anniversary":
+        return entry_anniversary_rebalance_dates(calendar, anchor=entry_anchor)
     return fixed_step_rebalance_dates(calendar, rebalance_days)

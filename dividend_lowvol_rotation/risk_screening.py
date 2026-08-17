@@ -13,6 +13,8 @@ import pandas as pd
 
 from data_cache import is_fresh_today, save_dataframe
 from dividend_lowvol_rotation.config import (
+    RECENT_DIVIDEND_HARD_FILTER_ENABLED,
+    RECENT_DIVIDEND_MAX_YEARS,
     CACHE_DIR,
     DEBT_RATIO_INDUSTRY_MARGIN_PCT,
     DEBT_RATIO_INDUSTRY_NEUTRAL,
@@ -48,6 +50,23 @@ def _read_risk_csv(path: Path) -> pd.DataFrame | None:
         return pd.read_csv(path)
     except Exception:
         return None
+
+
+def _drop_all_na_columns(df: pd.DataFrame) -> pd.DataFrame:
+    keep = [c for c in df.columns if not df[c].isna().all()]
+    return df[keep] if keep else df.iloc[:, 0:0]
+
+
+def _concat_risk_hist_frames(frames: list[pd.DataFrame | None]) -> pd.DataFrame:
+    """合并排雷历史表，对齐列并去掉全空列，避免 pandas concat FutureWarning。"""
+    parts = [_drop_all_na_columns(df) for df in frames if df is not None and not df.empty]
+    if not parts:
+        return pd.DataFrame()
+    if len(parts) == 1:
+        return parts[0].reset_index(drop=True)
+    all_cols = sorted(set().union(*(df.columns for df in parts)))
+    aligned = [df.reindex(columns=all_cols) for df in parts]
+    return pd.concat(aligned, ignore_index=True, sort=False)
 
 
 def _parse_cn_amount(val) -> float | None:
@@ -304,10 +323,10 @@ def batch_load_risk_history(codes: list[str], refresh: bool = False) -> pd.DataF
             time.sleep(FINANCIAL_FETCH_SLEEP_SEC)
 
     if new_frames:
-        new_df = pd.concat(new_frames, ignore_index=True, sort=False)
+        new_df = _concat_risk_hist_frames(new_frames)
         new_df["code"] = new_df["code"].map(normalize_stock_code)
         if merged is not None and not merged.empty:
-            merged = pd.concat([merged, new_df], ignore_index=True, sort=False)
+            merged = _concat_risk_hist_frames([merged, new_df])
         else:
             merged = new_df
         merged = merged.drop_duplicates(subset=["code", "report_year"], keep="last")
@@ -324,7 +343,7 @@ def batch_load_risk_history(codes: list[str], refresh: bool = False) -> pd.DataF
                 frames.append(cached)
         if not frames:
             return pd.DataFrame()
-        merged = pd.concat(frames, ignore_index=True, sort=False)
+        merged = _concat_risk_hist_frames(frames)
         merged["code"] = merged["code"].map(normalize_stock_code)
 
     merged = _enrich_hist_roe_vol_as_of(merged)
@@ -439,6 +458,22 @@ def _min_dividend_years_for(as_of: pd.Timestamp | None) -> int:
     if as_of is not None and as_of.month <= 4:
         return max(MIN_DIVIDEND_YEARS - 1, 3)
     return MIN_DIVIDEND_YEARS
+
+
+def recent_dividend_mask(
+    df: pd.DataFrame,
+    as_of: pd.Timestamp | None = None,
+) -> pd.Series:
+    """硬过滤：除息日距今不超过 RECENT_DIVIDEND_MAX_YEARS 年。"""
+    if not RECENT_DIVIDEND_HARD_FILTER_ENABLED or df.empty:
+        return pd.Series(True, index=df.index)
+    if "ex_date" not in df.columns:
+        return pd.Series(True, index=df.index)
+    today = as_of or pd.Timestamp(date.today())
+    max_days = RECENT_DIVIDEND_MAX_YEARS * 365
+    ex = pd.to_datetime(df["ex_date"], errors="coerce")
+    days = (today - ex).dt.days
+    return ex.notna() & (days <= max_days)
 
 
 def risk_score_penalties(

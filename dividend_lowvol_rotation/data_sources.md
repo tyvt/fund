@@ -1,6 +1,6 @@
 # 红利低波轮动 — 数据源说明
 
-本模块**不接入** EasyXT / QMT / Tushare，全部使用免费公开接口 + 本地 StockDB/DuckDB。
+全部使用免费公开接口 + 本地 StockDB/DuckDB。
 
 **项目级完整清单**（含中证、美股、创业板等）：[`../DATA_SOURCES.md`](../DATA_SOURCES.md)  
 **结构化注册表**：[`../data_sources.py`](../data_sources.py)（`python ../data_sources.py` 可打印）
@@ -35,19 +35,6 @@
 
 - `ak.stock_dividend_cninfo`（巨潮分红明细）
 - `ak.stock_history_dividend_detail`（个股分红历史校验）
-
----
-
-## 未接入（需额外环境或付费）
-
-| EasyXT 原文 | 原因 | 本地替代 |
-|-------------|------|----------|
-| Tushare `dividend_data` | 需积分 / Token | 东方财富 fhps |
-| EasyXT 内置本地 DB | 专有数据层 | DuckDB + `cache/dividend_lowvol/` |
-| QMT `xtdata` | 需 QMT 在线 | StockDB + 腾讯行情 |
-| 东财全市场 spot/hist | 接口不稳定 | 腾讯行情 + DuckDB K 线 |
-
----
 
 ## 交叉验证（非生产）
 

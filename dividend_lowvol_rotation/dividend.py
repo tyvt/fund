@@ -165,24 +165,21 @@ def build_dividend_panel(
     if mode == "latest":
         out = latest
     elif mode == "ttm":
-        ttm = _ttm_per_stock(records, today)
-        out = ttm if not ttm.empty else latest
+        out = _ttm_per_stock(records, today)
     else:
-        # auto：最新派息距今过久则用 TTM
+        # auto：最新派息过久则用 TTM；无 TTM 则剔除（不回退多年前的 latest）
         ttm = _ttm_per_stock(records, today)
         stale_days = (today - pd.to_datetime(latest["ex_date"])).dt.days
         use_ttm = stale_days > LATEST_DIVIDEND_STALE_DAYS
+        latest_fresh = latest[~use_ttm].copy()
+        parts: list[pd.DataFrame] = [latest_fresh]
         if not ttm.empty:
-            ttm_codes = set(ttm["code"])
-            latest_stale = latest[use_ttm & latest["code"].isin(ttm_codes)].copy()
-            latest_fresh = latest[~use_ttm | ~latest["code"].isin(ttm_codes)].copy()
-            parts = [latest_fresh]
-            if not latest_stale.empty:
-                parts.append(ttm[ttm["code"].isin(latest_stale["code"])])
-            out = pd.concat(parts, ignore_index=True)
-            out.loc[out["code"].isin(latest_stale["code"]), "dividend_mode"] = "ttm_auto"
-        else:
-            out = latest
+            stale_codes = set(latest.loc[use_ttm, "code"])
+            ttm_stale = ttm[ttm["code"].isin(stale_codes)].copy()
+            if not ttm_stale.empty:
+                ttm_stale["dividend_mode"] = "ttm_auto"
+                parts.append(ttm_stale)
+        out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
     out["code"] = out["code"].map(normalize_stock_code)
     return out.reset_index(drop=True)

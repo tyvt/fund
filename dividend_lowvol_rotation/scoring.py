@@ -12,13 +12,13 @@ from dividend_lowvol_rotation.config import (
     ABS_MIN_ROE_PCT,
     BEAR_MAX_VOL_CEILING_PCT,
     BEAR_VOL_THRESHOLD_PCT,
-    BUY_RANGE_ABOVE_LOW_PCT,
+    BUY_RANGE_ABOVE_CURRENT_PCT,
     BUY_RANGE_BELOW_CURRENT_PCT,
     CANDIDATE_POOL_MIN_RATIO,
     CANDIDATE_POOL_TARGET_RATIO,
     FILTER_RELAXATION_ENABLED,
     INDEX_STYLE_RANKING,
-    INDEX_ANNUAL_REBALANCE_TIMING,
+    uses_january_screening_params,
     INDUSTRY_CAP_ENABLED,
     MAX_ANNUALIZED_VOL_PCT,
     MAX_VOL_CEILING_PCT,
@@ -51,7 +51,11 @@ from dividend_lowvol_rotation.industry_caps import (
     top3_weight_ok,
 )
 from dividend_lowvol_rotation.market_cap import is_small_cap
-from dividend_lowvol_rotation.risk_screening import risk_filter_mask, risk_score_penalties
+from dividend_lowvol_rotation.risk_screening import (
+    recent_dividend_mask,
+    risk_filter_mask,
+    risk_score_penalties,
+)
 from dividend_lowvol_rotation.strategy_params import StrategyParams
 
 
@@ -216,6 +220,10 @@ def _apply_core_filters(
     stats["abs_quality_excluded"] = int((~abs_mask).sum())
     work = work[abs_mask]
 
+    recent_mask = recent_dividend_mask(work, as_of=as_of)
+    stats["recent_dividend_excluded"] = int((~recent_mask).sum())
+    work = work[recent_mask]
+
     mom_mask = momentum_filter_mask(work)
     stats["momentum_excluded"] = int((~mom_mask).sum())
     work = work[mom_mask]
@@ -264,6 +272,7 @@ def run_screening(
     strategy_params: StrategyParams | None = None,
     valuation_tight: bool = False,
     bear_vol_threshold_pct: float | None = None,
+    rebalance_mode: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     del valuation_tight
     sp = strategy_params or StrategyParams()
@@ -289,7 +298,7 @@ def run_screening(
     if "profit_yoy_pct" not in work.columns:
         work["profit_yoy_pct"] = None
     if (
-        INDEX_ANNUAL_REBALANCE_TIMING != "january"
+        not uses_january_screening_params(rebalance_mode)
         and dynamic
         and dynamic.market_vol_median_pct is not None
     ):
@@ -406,32 +415,19 @@ def run_screening(
         lambda x: yield_threshold_price(float(x), min_yield)
     )
     price = ranked["price"].values
-    low_n = ranked["low_n"].values if "low_n" in ranked.columns else None
     ycp = ranked["yield_cap_price"].values
 
     below_pct = BUY_RANGE_BELOW_CURRENT_PCT
-    above_pct = BUY_RANGE_ABOVE_LOW_PCT
+    above_pct = BUY_RANGE_ABOVE_CURRENT_PCT
 
-    low_default = price * (1 - below_pct)
-    low_arr = np.where(
-        (low_n is None) | pd.isna(low_n) | (low_n <= 0),
-        low_default,
-        low_n.astype(float),
-    )
-
-    high_arr = price * (1 - below_pct)
-    if low_n is not None:
-        mask_ln = (~pd.isna(low_n)) & (low_n > 0)
-        high_arr[mask_ln] = np.minimum(
-            high_arr[mask_ln],
-            low_n[mask_ln].astype(float) * (1 + above_pct),
-        )
+    low_arr = price * (1 - below_pct)
+    high_arr = price * (1 + above_pct)
     mask_ycp = (~pd.isna(ycp)) & (ycp > 0)
     high_arr[mask_ycp] = np.minimum(high_arr[mask_ycp], ycp[mask_ycp].astype(float))
+    high_arr = np.maximum(high_arr, low_arr)
 
-    swap = high_arr < low_arr
-    final_low = np.where(swap, high_arr, low_arr)
-    final_high = np.where(swap, low_arr, high_arr)
+    final_low = low_arr
+    final_high = high_arr
 
     ranked["buy_low"] = np.round(final_low, 3)
     ranked["buy_high"] = np.round(final_high, 3)
