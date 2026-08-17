@@ -84,7 +84,7 @@ from dividend_lowvol_rotation.risk_regime import (
 )
 from dividend_lowvol_rotation.backtest_report import format_backtest_report, save_backtest_outputs
 from dividend_lowvol_rotation.costs import apply_slippage, max_buy_shares, single_side_commission
-from dividend_lowvol_rotation.dividend import build_dividend_panel, load_fhps_all_records
+from dividend_lowvol_rotation.dividend import build_dividend_panel, sort_dividend_prefetch, load_fhps_all_records
 from dividend_lowvol_rotation.dividend_tax import accrue_dividend_taxes, build_dividend_index
 from dividend_lowvol_rotation.dynamic_params import DynamicParams, resolve_dynamic_params
 from dividend_lowvol_rotation.index_retention import (
@@ -114,7 +114,6 @@ from dividend_lowvol_rotation.risk_screening import (
     merge_risk_history,
 )
 from dividend_lowvol_rotation.enhanced_factors import attach_enhanced_factors
-from dividend_lowvol_rotation.fundamental_factors import attach_quality_momentum
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct, run_screening
 from dividend_lowvol_rotation.market_valuation import load_market_pe_history, valuation_regime
 from dividend_lowvol_rotation.strategy_params import StrategyParams
@@ -376,7 +375,9 @@ class KlineStore:
         if mv_df is None:
             mv_df = self._total_mv.get(code)
         if mv_df is None:
-            fdf = self._market_fields.get(nc) or self._market_fields.get(code)
+            fdf = self._market_fields.get(nc)
+            if fdf is None:
+                fdf = self._market_fields.get(code)
             return total_mv_at_series(fdf, as_of)
         return total_mv_at_series(mv_df, as_of)
 
@@ -571,10 +572,7 @@ def _collect_candidate_codes(
         if div.empty:
             continue
         div = div[~div["name"].map(is_excluded_name)]
-        if "fhps_yield_pct" in div.columns:
-            div = div.sort_values(["fhps_yield_pct", "cash_per_share"], ascending=[False, False])
-        else:
-            div = div.sort_values("cash_per_share", ascending=False)
+        div = sort_dividend_prefetch(div)
         for code in div["code"].head(prefetch_size):
             c = str(code)
             if c not in seen:
@@ -598,10 +596,7 @@ def _build_panel_from_store(
     if div.empty:
         return pd.DataFrame()
     div = div[~div["name"].map(is_excluded_name)]
-    if "fhps_yield_pct" in div.columns:
-        div = div.sort_values(["fhps_yield_pct", "cash_per_share"], ascending=[False, False])
-    else:
-        div = div.sort_values("cash_per_share", ascending=False)
+    div = sort_dividend_prefetch(div)
     codes = div["code"].head(prefetch_size).tolist()
 
     div_dedup = div.drop_duplicates(subset=["code"], keep="first").set_index("code")
@@ -635,8 +630,6 @@ def _build_panel_from_store(
     panel = attach_risk_from_records(panel, records, as_of, div_index=div_index)
     if risk_hist is not None and not risk_hist.empty:
         panel = merge_risk_history(panel, risk_hist, as_of)
-    if risk_hist is not None and not risk_hist.empty:
-        panel = attach_quality_momentum(panel, risk_hist, as_of)
     panel = attach_enhanced_factors(
         panel,
         records=records,

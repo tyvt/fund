@@ -7,23 +7,33 @@ from datetime import datetime
 import pandas as pd
 
 from dividend_lowvol_rotation.config import (
+    BACKTEST_PREFETCH_SIZE,
     DIVIDEND_YIELD_MODE,
     INDUSTRY_CAP_ENABLED,
     MARKET_VALUATION_ENABLED,
     MAX_INDUSTRY_WEIGHT,
-    MIN_DIVIDEND_YIELD_PCT,
     MV_TIER_CAP_ENABLED,
     MV_TIER_LARGE_CNY,
     MV_TIER_SMALL_MAX_WEIGHT,
     RISK_FILTER_ENABLED,
+    SELL_MODE,
     TOP_N_BUY,
+    VOL_TARGET_ENABLED,
     resolve_sell_rank,
 )
-from dividend_lowvol_rotation.dividend import build_dividend_panel, load_fhps_all_records
+from dividend_lowvol_rotation.dividend import (
+    build_dividend_panel,
+    load_fhps_all_records,
+    prefetch_dividend_universe,
+)
 from dividend_lowvol_rotation.dynamic_params import resolve_dynamic_params
 from dividend_lowvol_rotation.enhanced_factors import attach_enhanced_factors
-from dividend_lowvol_rotation.fundamental_factors import attach_quality_momentum
+from dividend_lowvol_rotation.index_portfolio import (
+    build_index_target_codes,
+    target_portfolio_table,
+)
 from dividend_lowvol_rotation.market_valuation import load_market_pe_history, valuation_regime
+from dividend_lowvol_rotation.risk_regime import resolve_position_scale
 from dividend_lowvol_rotation.risk_screening import (
     attach_risk_from_records,
     batch_load_risk_history,
@@ -35,7 +45,7 @@ from dividend_lowvol_rotation.market_cap import attach_market_fields, market_fie
 from dividend_lowvol_rotation.prices import batch_load_volatility
 from dividend_lowvol_rotation.quotes import fetch_stock_quotes
 from dividend_lowvol_rotation.scoring import dynamic_dividend_yield_pct, run_screening
-from dividend_lowvol_rotation.symbols import is_excluded_name
+from dividend_lowvol_rotation.symbols import is_excluded_name, normalize_stock_code
 
 
 def build_candidate_universe(dividends: pd.DataFrame) -> pd.DataFrame:
@@ -49,9 +59,14 @@ def build_market_panel(
     *,
     top_n: int | None = None,
     sell_rank: int | None = None,
+    prefetch_size: int | None = None,
+    holdings: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """构建与回测一致的候选面板与目标组合。"""
     top_n = top_n if top_n is not None else TOP_N_BUY
     sell_rank = resolve_sell_rank(top_n, sell_rank)
+    prefetch_size = prefetch_size if prefetch_size is not None else BACKTEST_PREFETCH_SIZE
+    holdings_norm = [normalize_stock_code(c) for c in (holdings or []) if c]
 
     meta: dict = {
         "steps": [],
@@ -59,11 +74,14 @@ def build_market_panel(
         "filters": {},
         "top_n": top_n,
         "sell_rank": sell_rank,
+        "prefetch_size": prefetch_size,
         "dynamic": {},
+        "sell_mode": SELL_MODE,
     }
     t0 = datetime.now()
+    as_of = pd.Timestamp.now()
 
-    dividends = build_dividend_panel(refresh=refresh)
+    dividends = build_dividend_panel(refresh=refresh, as_of=as_of)
     mode_note = DIVIDEND_YIELD_MODE
     if "dividend_mode" in dividends.columns:
         modes = dividends["dividend_mode"].value_counts().to_dict()
@@ -74,13 +92,22 @@ def build_market_panel(
         return pd.DataFrame(), pd.DataFrame(), meta
 
     universe = build_candidate_universe(dividends)
-    codes = universe["code"].tolist()
-    meta["steps"].append(f"初筛股票池：{len(codes)} 只")
+    meta["steps"].append(f"初筛股票池：{len(universe)} 只")
+
+    prefetch = prefetch_dividend_universe(
+        universe, prefetch_size, extra_codes=holdings_norm or None
+    )
+    codes = prefetch["code"].tolist()
+    meta["steps"].append(
+        f"回测一致预筛 Top {prefetch_size}"
+        + (f" + 持仓 {len(holdings_norm)} 只" if holdings_norm else "")
+        + f"：{len(codes)} 只"
+    )
 
     quotes = fetch_stock_quotes(codes)
     meta["steps"].append(f"腾讯实时行情：{len(quotes)}/{len(codes)} 只")
 
-    quote_map = {row["code"]: row for _, row in universe.iterrows()}
+    quote_map = {row["code"]: row for _, row in prefetch.iterrows()}
     quote_rows = []
     for code in codes:
         q = quotes.get(code)
@@ -101,7 +128,7 @@ def build_market_panel(
         meta["warnings"].append("未获取到有效实时行情")
         return pd.DataFrame(), pd.DataFrame(), meta
 
-    panel = universe.merge(quote_df, on="code", how="inner", suffixes=("_div", ""))
+    panel = prefetch.merge(quote_df, on="code", how="inner", suffixes=("_div", ""))
     if "name_div" in panel.columns:
         panel["name"] = panel["name"].where(
             panel["name"].astype(str).str.len() > 0, panel["name_div"]
@@ -112,19 +139,19 @@ def build_market_panel(
         lambda r: dynamic_dividend_yield_pct(r["cash_per_share"], r["price"]),
         axis=1,
     )
-    pre_yield = MIN_DIVIDEND_YIELD_PCT * 0.8
-    pre_filter = panel[panel["dividend_yield_pct"] >= pre_yield]
-    vol_codes = pre_filter["code"].tolist()
-    meta["steps"].append(f"股息率预筛（≥{pre_yield:.1f}%）：{len(vol_codes)} 只，拉取 K 线…")
+    panel = panel.dropna(subset=["price", "cash_per_share", "dividend_yield_pct"])
 
-    vol_df = batch_load_volatility(vol_codes, refresh=refresh)
+    vol_df = batch_load_volatility(panel["code"].tolist(), refresh=refresh)
     meta["steps"].append(f"Baostock {len(vol_df)} 只完成波动率")
     panel = panel.merge(vol_df, on="code", how="inner")
+    if panel.empty:
+        meta["warnings"].append("预筛池无有效 K 线/波动率数据")
+        return pd.DataFrame(), pd.DataFrame(), meta
 
     if market_fields_needed():
-        panel = attach_market_fields(panel, as_of=pd.Timestamp.now())
+        panel = attach_market_fields(panel, as_of=as_of)
 
-    dynamic = resolve_dynamic_params(panel)
+    dynamic = resolve_dynamic_params(panel, as_of=as_of)
     meta["dynamic"] = {
         "min_yield_pct": dynamic.min_dividend_yield_pct,
         "max_vol_pct": dynamic.max_annualized_vol_pct,
@@ -142,15 +169,12 @@ def build_market_panel(
     meta["steps"].append(f"行业分类：{ind_src}")
 
     fhps_records = load_fhps_all_records(refresh=False)
-    panel = attach_risk_from_records(panel, fhps_records)
+    panel = attach_risk_from_records(panel, fhps_records, as_of)
     risk_hist = batch_load_risk_history(panel["code"].tolist(), refresh=refresh)
     if not risk_hist.empty:
-        panel = merge_risk_history(panel, risk_hist)
+        panel = merge_risk_history(panel, risk_hist, as_of)
         meta["steps"].append(f"排雷指标：{len(risk_hist['code'].unique())} 只")
 
-    as_of = pd.Timestamp.now()
-    if not risk_hist.empty:
-        panel = attach_quality_momentum(panel, risk_hist, as_of)
     panel = attach_enhanced_factors(
         panel,
         records=fhps_records,
@@ -174,7 +198,7 @@ def build_market_panel(
     if MARKET_VALUATION_ENABLED:
         try:
             pe_hist = load_market_pe_history()
-            val_regime = valuation_regime(pd.Timestamp.now(), pe_hist)
+            val_regime = valuation_regime(as_of, pe_hist)
             meta["market_valuation"] = val_regime
             if val_regime.get("market_pe_percentile") is not None:
                 meta["steps"].append(
@@ -185,20 +209,53 @@ def build_market_panel(
         except Exception as exc:
             meta["warnings"].append(f"全市场 PE 加载失败：{exc}")
 
+    portfolio_vol = None
+    if holdings_norm and VOL_TARGET_ENABLED:
+        held = panel[panel["code"].astype(str).isin(set(holdings_norm))]
+        if not held.empty and "ann_vol_pct" in held.columns:
+            vols = pd.to_numeric(held["ann_vol_pct"], errors="coerce").dropna()
+            if not vols.empty:
+                portfolio_vol = float(vols.mean())
+
+    position_scale, scale_notes = resolve_position_scale(
+        market_vol_median_pct=dynamic.market_vol_median_pct,
+        panel=panel,
+        portfolio_vol_pct=portfolio_vol,
+    )
+    effective_top_n = max(3, int(round(top_n * position_scale)))
+    meta["position_scale"] = position_scale
+    meta["effective_top_n"] = effective_top_n
+    if scale_notes:
+        for note in scale_notes:
+            meta["steps"].append(note)
+    if effective_top_n != top_n:
+        meta["steps"].append(
+            f"波动率目标降仓：目标持仓 {top_n} → {effective_top_n} 只"
+        )
+
     ranked, buy_pool, filter_stats = run_screening(
         panel,
-        top_n=top_n,
+        top_n=effective_top_n,
         sell_rank=sell_rank,
         dynamic=dynamic,
+        as_of=as_of,
     )
-    if val_regime.get("pause_new_buys") and not buy_pool.empty:
+    if val_regime.get("pause_new_buys"):
         buy_pool = buy_pool.iloc[0:0]
         meta["steps"].append("全市场高估：暂停新增买入")
 
+    target_codes = build_index_target_codes(
+        holdings_norm,
+        buy_pool,
+        effective_top_n,
+        ranked=ranked,
+    )
+    target_df = target_portfolio_table(target_codes, ranked, panel=panel)
+    meta["target_codes"] = target_codes
     meta["filters"] = filter_stats
 
     if MV_TIER_CAP_ENABLED:
-        max_small = int(round(TOP_N_BUY * MV_TIER_SMALL_MAX_WEIGHT))
+        max_small = int(round(effective_top_n * MV_TIER_SMALL_MAX_WEIGHT))
         meta["steps"].append(
             f"市值分层：大盘 ≥{MV_TIER_LARGE_CNY / 1e8:.0f}亿，"
             f"中小盘持仓 ≤{MV_TIER_SMALL_MAX_WEIGHT:.0%}（约 {max_small} 只）"
@@ -210,6 +267,7 @@ def build_market_panel(
     meta["steps"].append(
         f"候选池：通过全部筛选 **{filter_stats.get('pool_count', filter_stats.get('passed_core_filters', 0))}** 只"
     )
+    meta["steps"].append(f"目标组合：{len(target_codes)} 只（与回测 index 调样逻辑一致）")
     meta["elapsed_sec"] = round((datetime.now() - t0).total_seconds(), 1)
-    meta["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return ranked, buy_pool, meta
+    meta["as_of"] = as_of.strftime("%Y-%m-%d %H:%M")
+    return ranked, target_df, meta

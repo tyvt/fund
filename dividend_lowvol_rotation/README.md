@@ -71,7 +71,7 @@ Windows：`run_dividend_lowvol.bat`、`run_dividend_lowvol_backtest.bat`。
 
 | 工具 | 用途 |
 |------|------|
-| `report.py` | 实盘建议买入、买入价区间、PE 分位、排雷行业通过率 |
+| `report.py` | 实盘目标组合（与回测相同 Top 150 预筛 + index 调样逻辑）、买入价区间、PE 分位 |
 | `backtest.py` | 长周期回测 → `backtest.md/html` |
 | `backtest_validate.py` | WFA、蒙特卡洛、`--benchmark H30269` 指数对比 |
 | `scripts/verify_risk_lookahead.py` | 暴雷股是否在事件前被排雷标记 |

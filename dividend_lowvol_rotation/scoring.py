@@ -32,7 +32,6 @@ from dividend_lowvol_rotation.config import (
     MV_TIER_SMALL_MAX_WEIGHT,
     MOMENTUM_HARD_FILTER_ENABLED,
     MOMENTUM_SCORE_WEIGHT,
-    QUALITY_MOMENTUM_WEIGHT,
     SELL_RANK_BUFFER,
     SOFT_RISK_SCORING_ENABLED,
     TOP_N_BUY,
@@ -74,7 +73,6 @@ def rank_score_panel(
     yield_weight: float = YIELD_RANK_WEIGHT,
     vol_weight: float = VOL_RANK_WEIGHT,
     momentum_weight: float = MOMENTUM_SCORE_WEIGHT,
-    quality_weight: float = QUALITY_MOMENTUM_WEIGHT,
     yield_col: str = "dividend_yield_pct",
 ) -> pd.DataFrame:
     out = df.copy()
@@ -96,10 +94,6 @@ def rank_score_panel(
         + out["vol_rank"] * vol_weight
         + out["momentum_rank"] * momentum_weight
     )
-    if quality_weight > 0 and "quality_mom_roe_pct" in out.columns:
-        q = pd.to_numeric(out["quality_mom_roe_pct"], errors="coerce")
-        out["quality_rank"] = q.rank(ascending=False, method="min")
-        composite = composite + out["quality_rank"] * quality_weight
     out["composite_score"] = composite
     out = out.sort_values(["composite_score", "yield_rank", "vol_rank", "code"])
     out["rank"] = range(1, len(out) + 1)
@@ -178,25 +172,6 @@ def select_with_industry_cap(
     out = candidates.iloc[selected_idx].copy().reset_index(drop=True)
     out["portfolio_rank"] = range(1, len(out) + 1)
     return out
-
-
-def suggest_buy_range(
-    price: float,
-    low_n: float | None,
-    yield_cap_price: float | None,
-) -> tuple[float | None, float | None]:
-    if price is None or price <= 0:
-        return None, None
-    low = price * (1 - BUY_RANGE_BELOW_CURRENT_PCT) if low_n is None or low_n <= 0 else low_n
-    high_candidates = [price * (1 - BUY_RANGE_BELOW_CURRENT_PCT)]
-    if yield_cap_price is not None and yield_cap_price > 0:
-        high_candidates.append(yield_cap_price)
-    if low_n is not None and low_n > 0:
-        high_candidates.append(low_n * (1 + BUY_RANGE_ABOVE_LOW_PCT))
-    high = min(high_candidates)
-    if high < low:
-        low, high = high, low
-    return round(low, 3), round(high, 3)
 
 
 def momentum_filter_mask(df: pd.DataFrame) -> pd.Series:
@@ -426,7 +401,6 @@ def run_screening(
             work,
             yield_weight=yield_w,
             vol_weight=vol_w,
-            quality_weight=QUALITY_MOMENTUM_WEIGHT,
         )
     ranked["yield_cap_price"] = ranked["cash_per_share"].map(
         lambda x: yield_threshold_price(float(x), min_yield)
@@ -445,13 +419,15 @@ def run_screening(
         low_n.astype(float),
     )
 
-    high_default = price * (1 - below_pct)
-    high_arr = high_default.copy()
+    high_arr = price * (1 - below_pct)
     if low_n is not None:
         mask_ln = (~pd.isna(low_n)) & (low_n > 0)
-        high_arr[mask_ln] = np.maximum(high_arr[mask_ln], low_n[mask_ln].astype(float) * (1 + above_pct))
+        high_arr[mask_ln] = np.minimum(
+            high_arr[mask_ln],
+            low_n[mask_ln].astype(float) * (1 + above_pct),
+        )
     mask_ycp = (~pd.isna(ycp)) & (ycp > 0)
-    high_arr[mask_ycp] = np.maximum(high_arr[mask_ycp], ycp[mask_ycp].astype(float))
+    high_arr[mask_ycp] = np.minimum(high_arr[mask_ycp], ycp[mask_ycp].astype(float))
 
     swap = high_arr < low_arr
     final_low = np.where(swap, high_arr, low_arr)

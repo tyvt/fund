@@ -64,19 +64,6 @@ def compute_beta_from_kline(
     return float(cov[0, 1] / cov[1, 1])
 
 
-def compute_beta(
-    *,
-    store,
-    code: str,
-    as_of: pd.Timestamp,
-    benchmark: str = BETA_BENCHMARK_CODE,
-    lookback: int = BETA_LOOKBACK_DAYS,
-) -> float | None:
-    kline = store.kline_df(code) if store is not None else None
-    bench_ret = _benchmark_daily_returns(benchmark, as_of.date().isoformat(), lookback)
-    return compute_beta_from_kline(kline, as_of, bench_ret, lookback)
-
-
 def attach_enhanced_factors(
     panel: pd.DataFrame,
     *,

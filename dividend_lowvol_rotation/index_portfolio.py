@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from dividend_lowvol_rotation.config import INDEX_STYLE_RANKING, MAX_SINGLE_STOCK_WEIGHT
+from dividend_lowvol_rotation.config import MAX_SINGLE_STOCK_WEIGHT
 
 
 def _rank_yield_column(df: pd.DataFrame) -> str:
@@ -142,3 +142,85 @@ def target_weights_for_portfolio(
         for code in missing:
             yields[code] = 1.0
     return capped_dividend_yield_weights(yields, max_weight=max_weight)
+
+
+def classify_index_portfolio(
+    holdings: list[str],
+    target_codes: list[str],
+    panel: pd.DataFrame,
+) -> dict[str, list]:
+    """index_rules 模式：相对目标组合与保留规则分类持仓。"""
+    from dividend_lowvol_rotation.index_retention import index_retention_fail_reason
+
+    held = [str(c) for c in holdings if c]
+    target = [str(c) for c in target_codes if c]
+    target_set = set(target)
+    panel_idx = (
+        panel.drop_duplicates("code").set_index(panel["code"].astype(str))
+        if not panel.empty and "code" in panel.columns
+        else None
+    )
+
+    hold_ok: list[str] = []
+    sell_watch: list[str] = []
+    for code in held:
+        row = panel_idx.loc[code] if panel_idx is not None and code in panel_idx.index else None
+        reason = index_retention_fail_reason(row)
+        if reason:
+            sell_watch.append(f"{code}（{reason}）")
+        elif code in target_set:
+            hold_ok.append(code)
+        else:
+            sell_watch.append(f"{code}（调出目标组合）")
+
+    buy_new = [c for c in target if c not in set(held)]
+    not_in_pool = [
+        c for c in held if panel_idx is None or c not in panel_idx.index
+    ]
+    return {
+        "buy_new": buy_new,
+        "hold_ok": hold_ok,
+        "sell_watch": sell_watch,
+        "not_in_pool": not_in_pool,
+        "target_codes": target,
+    }
+
+
+def target_portfolio_table(
+    target_codes: list[str],
+    ranked: pd.DataFrame,
+    *,
+    panel: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """目标组合明细（保留 ranked 中的字段与排名）。"""
+    if not target_codes or ranked.empty:
+        return pd.DataFrame()
+    lookup = ranked.drop_duplicates("code").set_index(ranked["code"].astype(str))
+    rows = []
+    for i, code in enumerate(target_codes, start=1):
+        if code not in lookup.index:
+            if panel is not None and not panel.empty:
+                sub = panel[panel["code"].astype(str) == str(code)]
+                if sub.empty:
+                    continue
+                row = sub.iloc[0].to_dict()
+            else:
+                continue
+        else:
+            row = lookup.loc[str(code)]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            row = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+        row = dict(row)
+        row["portfolio_rank"] = i
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    codes = out["code"].astype(str).tolist()
+    weights = target_weights_for_portfolio(codes, ranked, panel)
+    if weights:
+        out["target_weight_pct"] = out["code"].astype(str).map(
+            lambda c: weights.get(c, 0) * 100.0
+        )
+    return out

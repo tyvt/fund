@@ -191,3 +191,38 @@ def build_dividend_panel(
 def load_fhps_merged(refresh: bool = False) -> pd.DataFrame:
     """兼容旧接口：返回当前股息面板。"""
     return build_dividend_panel(refresh=refresh)
+
+
+def sort_dividend_prefetch(dividends: pd.DataFrame) -> pd.DataFrame:
+    """与回测一致的预筛排序：fhps_yield_pct → cash_per_share。"""
+    if dividends.empty:
+        return dividends
+    out = dividends.copy()
+    if "fhps_yield_pct" in out.columns:
+        return out.sort_values(
+            ["fhps_yield_pct", "cash_per_share"], ascending=[False, False]
+        ).reset_index(drop=True)
+    return out.sort_values("cash_per_share", ascending=False).reset_index(drop=True)
+
+
+def prefetch_dividend_universe(
+    dividends: pd.DataFrame,
+    prefetch_size: int,
+    *,
+    extra_codes: list[str] | None = None,
+) -> pd.DataFrame:
+    """取预筛 Top N，并并入持仓代码（与回测 enrich 行为一致）。"""
+    if dividends.empty:
+        return dividends
+    sorted_div = sort_dividend_prefetch(dividends)
+    head = sorted_div.head(prefetch_size)
+    if not extra_codes:
+        return head.reset_index(drop=True)
+    seen = set(head["code"].astype(str))
+    extras = sorted_div[sorted_div["code"].astype(str).isin(
+        {str(c) for c in extra_codes if c}
+    )]
+    extras = extras[~extras["code"].astype(str).isin(seen)]
+    if extras.empty:
+        return head.reset_index(drop=True)
+    return pd.concat([head, extras], ignore_index=True)

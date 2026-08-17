@@ -147,7 +147,9 @@ def attach_market_fields(
     mv_vals: list[float | None] = []
     for code in codes:
         nc = normalize_stock_code(code)
-        fdf = field_dict.get(nc) or field_dict.get(code)
+        fdf = field_dict.get(nc)
+        if fdf is None:
+            fdf = field_dict.get(code)
         mv_vals.append(total_mv_at_series(fdf, as_of))
     out["total_mv"] = mv_vals
     return out
