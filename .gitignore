@@ -8,22 +8,38 @@ dist/
 build/
 .venv/
 venv/
+rqalpha_env/
 
 # 本地配置
 push.env
+.env
+.env.*
 
-# 运行时日志（仅 push.log 等）
+# 运行时日志
 logs/
+*.log
 
 # 外部数据本地缓存（行情、估值、国债等）
 cache/
 data/
+*.duckdb
 
-# 回测输出（Markdown 报告）
+# 回测 / 分析输出
 output/
+*.pkl
 
-# 编辑器
+# 编辑器 / IDE
 .idea/
 .vscode/
 *.swp
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地工具生成物
+.code-review-graph/
+
+# Python 工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

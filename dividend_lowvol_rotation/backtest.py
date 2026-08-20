@@ -22,6 +22,8 @@ from dividend_lowvol_rotation.config import (
     BACKTEST_INITIAL_CAPITAL,
     BACKTEST_KLINE_FQ,
     BACKTEST_DIVIDEND_CASH,
+    resolve_backtest_kline_fq,
+    uses_rqalpha_price_source,
     BACKTEST_MIN_HOLD_DAYS,
     BACKTEST_OUTPUT_DIR,
     BACKTEST_PREFETCH_SIZE,
@@ -57,6 +59,7 @@ from dividend_lowvol_rotation.config import (
     SELL_GRACE_PERIOD_DAYS,
     SELL_GRACE_PERIOD_ENABLED,
     SLIPPAGE_RATE,
+    execution_slippage_enabled,
     STOP_LOSS_ENABLED,
     STOP_ATR_ENABLED,
     STOP_ATR_MULTIPLIER,
@@ -83,9 +86,16 @@ from dividend_lowvol_rotation.risk_regime import (
     resolve_stop_loss_pct,
 )
 from dividend_lowvol_rotation.backtest_report import format_backtest_report, save_backtest_outputs
-from dividend_lowvol_rotation.costs import apply_slippage, max_buy_shares, single_side_commission
+from dividend_lowvol_rotation.costs import (
+    max_buy_shares,
+    resolve_execution_raw_price,
+    settle_sell,
+    single_side_commission,
+    trade_execution_price,
+)
 from dividend_lowvol_rotation.dividend import build_dividend_panel, sort_dividend_prefetch, load_fhps_all_records
-from dividend_lowvol_rotation.dividend_tax import accrue_dividend_taxes, build_dividend_index
+from dividend_lowvol_rotation.corporate_actions import apply_splits_on_date, build_split_index
+from dividend_lowvol_rotation.dividend_tax import accrue_dividend_cash_on_date, accrue_dividend_taxes, build_dividend_index
 from dividend_lowvol_rotation.dynamic_params import DynamicParams, resolve_dynamic_params
 from dividend_lowvol_rotation.index_retention import (
     enrich_panel_with_holdings,
@@ -233,7 +243,7 @@ class KlineStore:
         self.start = start
         self.end = end
         self.backtest_start = backtest_start or start
-        self.kline_fq = BACKTEST_KLINE_FQ if kline_fq is None else kline_fq
+        self.kline_fq = resolve_backtest_kline_fq() if kline_fq is None else kline_fq
         self._klines: dict[str, pd.DataFrame] = {}
         self._metrics: dict[str, pd.DataFrame] = {}
         self._total_mv: dict[str, pd.DataFrame] = {}
@@ -252,13 +262,29 @@ class KlineStore:
         total = len(unique)
         if verbose:
             fq_label = self.kline_fq or "none"
-            print(f"预加载 K 线 {total} 只（{self.start} ~ {self.end}，{fq_label}，DuckDB 优先）…")
+            src = "RQAlpha bundle" if uses_rqalpha_price_source() else "DuckDB 优先"
+            print(f"预加载 K 线 {total} 只（{self.start} ~ {self.end}，{fq_label}，{src}）…")
 
         start_ts = pd.Timestamp(self.start)
         end_ts = pd.Timestamp(self.end)
         kline_dict: dict[str, pd.DataFrame] = {}
 
-        if duckdb_available():
+        if uses_rqalpha_price_source():
+            t_rq = time.perf_counter()
+            from dividend_lowvol_rotation.rqalpha.rqalpha_bundle_prices import (
+                batch_load_klines_from_rqalpha,
+            )
+            from dividend_lowvol_rotation.config import RQALPHA_ADJUST_TYPE
+
+            kline_dict = batch_load_klines_from_rqalpha(
+                unique, self.start, self.end, adjust_type=RQALPHA_ADJUST_TYPE
+            )
+            if verbose:
+                print(
+                    f"  RQAlpha bundle 命中 {len(kline_dict)}/{total} 只"
+                    f"（{time.perf_counter() - t_rq:.1f}s）"
+                )
+        elif duckdb_available():
             t_duck = time.perf_counter()
             kline_dict = _batch_load_klines_from_duckdb(
                 unique, self.start, self.end, fq=self.kline_fq
@@ -421,6 +447,8 @@ class BacktestContext:
     industry_df: pd.DataFrame
     risk_hist: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
     dividend_year_index: object = None
+    dividend_cash_records: pd.DataFrame | None = None
+    split_records: pd.DataFrame | None = None
     market_pe_hist: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
     _panel_cache: dict[tuple[str, int, str], pd.DataFrame] = field(default_factory=dict)
     _dividend_cache: dict[str, pd.DataFrame] = field(default_factory=dict)
@@ -500,7 +528,7 @@ def prepare_backtest_context(
     kline_start = (
         pd.Timestamp(start) - timedelta(days=max(PRICE_HISTORY_BUFFER_DAYS, 400))
     ).date().isoformat()
-    store = KlineStore(kline_start, end, backtest_start=start, kline_fq=BACKTEST_KLINE_FQ)
+    store = KlineStore(kline_start, end, backtest_start=start, kline_fq=resolve_backtest_kline_fq())
     tmp_ctx = BacktestContext(
         start=start, end=end, records=records, calendar=calendar, store=store, industry_df=pd.DataFrame()
     )
@@ -509,6 +537,22 @@ def prepare_backtest_context(
 
     preload_codes = list(dict.fromkeys([*candidate_codes, BETA_BENCHMARK_CODE]))
     store.preload(preload_codes, verbose=verbose)
+    dividend_cash_records = None
+    split_records = None
+    if uses_rqalpha_price_source() and BACKTEST_DIVIDEND_CASH:
+        from dividend_lowvol_rotation.rqalpha.rqalpha_bundle_prices import (
+            load_dividend_records_from_rqalpha,
+            load_split_records_from_rqalpha,
+        )
+
+        dividend_cash_records = load_dividend_records_from_rqalpha(preload_codes)
+        split_records = load_split_records_from_rqalpha(preload_codes)
+        if verbose:
+            n = len(dividend_cash_records) if dividend_cash_records is not None else 0
+            print(f"  RQAlpha 分红记录 {n} 条（现金派息与引擎同源）")
+            sn = len(split_records) if split_records is not None else 0
+            if sn:
+                print(f"  RQAlpha 送股记录 {sn} 条")
     industry_df = attach_industry(
         pd.DataFrame({"code": candidate_codes}), refresh=False
     )
@@ -541,6 +585,8 @@ def prepare_backtest_context(
         risk_hist=risk_hist,
         dividend_year_index=div_index,
         market_pe_hist=market_pe_hist,
+        dividend_cash_records=dividend_cash_records,
+        split_records=split_records,
     )
     ctx.warm_panel_cache(reb_dates, prefetch_size, verbose=verbose)
     return ctx
@@ -686,8 +732,7 @@ def _execute_lot_sell(
     if price is None or price <= 0:
         return cash
     proceeds = lot.shares * price
-    fee = single_side_commission(proceeds)
-    net = proceeds - fee
+    fee, stamp, net = settle_sell(proceeds, as_of)
     realized = net - lot.cost_basis
     ret_pct = realized / lot.cost_basis * 100 if lot.cost_basis > 0 else None
     hold_days = (as_of - lot.buy_date).days
@@ -695,7 +740,7 @@ def _execute_lot_sell(
     st.name = lot.name or st.name
     st.sell_count += 1
     st.total_sell_amount += proceeds
-    st.total_fees += fee
+    st.total_fees += fee + stamp
     st.realized_pnl += realized
     st.max_drawdown_pct = min(st.max_drawdown_pct, lot.max_drawdown_pct)
     st.holding_days += hold_days
@@ -734,6 +779,7 @@ def _record_partial_sell(
     rb_date: pd.Timestamp,
     price: float,
     fee: float,
+    stamp: float,
     net: float,
     realized: float,
     ret_pct: float | None,
@@ -747,7 +793,7 @@ def _record_partial_sell(
     st.name = lot.name or st.name
     st.sell_count += 1
     st.total_sell_amount += sell_shares * price
-    st.total_fees += fee
+    st.total_fees += fee + stamp
     st.realized_pnl += realized
     st.max_drawdown_pct = min(st.max_drawdown_pct, lot.max_drawdown_pct)
     trade_rows.append(
@@ -791,9 +837,10 @@ def _apply_index_dividend_rebalance(
     trade_rows: list[dict],
     min_hold_days: int,
     trade_price_fn,
+    target_codes: list[str] | None = None,
 ) -> tuple[dict[str, PositionLot], float]:
     """年度调样：补足至 top_n + 按股息率加权再平衡。"""
-    target_codes = build_index_target_codes(
+    target_codes = target_codes or build_index_target_codes(
         list(lots.keys()), buy_pool, top_n, ranked=ranked
     )
     target_set = set(target_codes)
@@ -801,7 +848,7 @@ def _apply_index_dividend_rebalance(
         return lots, cash
 
     # 卖出不在目标组合内的持仓（防止超过 top_n）
-    for code in list(lots.keys()):
+    for code in sorted(lots.keys()):
         if code in target_set:
             continue
         lot = lots[code]
@@ -820,8 +867,7 @@ def _apply_index_dividend_rebalance(
         if price is None or price <= 0:
             continue
         proceeds = lot.shares * price
-        fee = single_side_commission(proceeds)
-        net = proceeds - fee
+        fee, stamp, net = settle_sell(proceeds, rb_date)
         realized = net - lot.cost_basis
         ret_pct = realized / lot.cost_basis * 100 if lot.cost_basis > 0 else None
         _record_partial_sell(
@@ -831,6 +877,7 @@ def _apply_index_dividend_rebalance(
             rb_date=rb_date,
             price=price,
             fee=fee,
+            stamp=stamp,
             net=net,
             realized=realized,
             ret_pct=ret_pct,
@@ -849,7 +896,7 @@ def _apply_index_dividend_rebalance(
     target_equity = port_value * position_scale
 
     # 先减持超重仓位
-    for code in list(lots.keys()):
+    for code in sorted(lots.keys()):
         if code not in weight_map:
             continue
         lot = lots[code]
@@ -878,8 +925,7 @@ def _apply_index_dividend_rebalance(
         if price is None or price <= 0:
             continue
         proceeds = sell_shares * price
-        fee = single_side_commission(proceeds)
-        net = proceeds - fee
+        fee, stamp, net = settle_sell(proceeds, rb_date)
         sold_cost = lot.cost_basis * (sell_shares / lot.shares)
         realized = net - sold_cost
         ret_pct = realized / sold_cost * 100 if sold_cost > 0 else None
@@ -890,6 +936,7 @@ def _apply_index_dividend_rebalance(
             rb_date=rb_date,
             price=price,
             fee=fee,
+            stamp=stamp,
             net=net,
             realized=realized,
             ret_pct=ret_pct,
@@ -907,8 +954,8 @@ def _apply_index_dividend_rebalance(
             st.closed_lots += 1
             del lots[code]
 
-    # 再买入欠配 / 新成分
-    for code in target_codes:
+    # 再买入欠配 / 新成分（按代码排序，保证现金分配顺序可复现）
+    for code in sorted(target_codes):
         weight = weight_map.get(code)
         if not weight:
             continue
@@ -1069,8 +1116,14 @@ def run_backtest(
     total_dividend_tax = 0.0
     total_gross_dividend = 0.0
 
+    div_records = ctx.dividend_cash_records if ctx.dividend_cash_records is not None else records
     div_index = (
-        build_dividend_index(records) if (apply_dividend_tax or dividend_cash_mode) else {}
+        build_dividend_index(div_records) if (apply_dividend_tax or dividend_cash_mode) else {}
+    )
+    split_index = (
+        build_split_index(ctx.split_records)
+        if uses_rqalpha_price_source() and ctx.split_records is not None
+        else {}
     )
     prev_rb: pd.Timestamp | None = None
     pool_vol_history: list[float] = []
@@ -1092,6 +1145,48 @@ def run_backtest(
         elif apply_dividend_tax and tax > 0:
             cash -= tax
 
+    use_payable_dividends = uses_rqalpha_price_source() and dividend_cash_mode
+
+    def _apply_splits_on_date(as_of: pd.Timestamp) -> None:
+        if not split_index or not lots:
+            return
+        apply_splits_on_date(lots, split_index, as_of)
+
+    def _credit_dividends_on_date(as_of: pd.Timestamp) -> None:
+        nonlocal cash, total_gross_dividend
+        if not use_payable_dividends or not lots:
+            return
+        _tax, gross, rows = accrue_dividend_cash_on_date(
+            lots,
+            div_index,
+            as_of,
+            dividend_cash=True,
+            apply_tax=False,
+            use_payable_date=True,
+        )
+        if not rows:
+            return
+        total_gross_dividend += gross
+        cash += gross
+
+    def _pay_dividend_tax_on_date(as_of: pd.Timestamp) -> None:
+        nonlocal cash, total_dividend_tax
+        if not use_payable_dividends or not lots or not apply_dividend_tax:
+            return
+        tax, _gross, rows = accrue_dividend_cash_on_date(
+            lots,
+            div_index,
+            as_of,
+            dividend_cash=True,
+            apply_tax=True,
+            use_payable_date=True,
+        )
+        if tax <= 0:
+            return
+        total_dividend_tax += tax
+        dividend_tax_rows.extend(rows)
+        cash -= tax
+
     def _resolve_bear_vol_threshold() -> float:
         if not BEAR_VOL_USE_PERCENTILE or len(pool_vol_history) < BEAR_VOL_MIN_SAMPLES:
             return BEAR_VOL_THRESHOLD_PCT
@@ -1112,7 +1207,16 @@ def run_backtest(
         metrics: dict | None = None,
         trade_amount_cny: float | None = None,
     ) -> float | None:
-        raw = _resolve_price(code, panel, as_of, store)
+        if uses_rqalpha_price_source():
+            from dividend_lowvol_rotation.rqalpha.rqalpha_bundle_prices import (
+                is_suspended_on_date,
+            )
+
+            if is_suspended_on_date(code, as_of):
+                return None
+        raw = resolve_execution_raw_price(
+            code, as_of, store, panel=panel, metrics=metrics
+        )
         if raw is None or raw <= 0:
             return None
         vol = metrics.get("ann_vol_pct") if metrics else None
@@ -1123,10 +1227,14 @@ def run_backtest(
         amount = trade_amount_cny
         if amount is None and metrics and metrics.get("price"):
             amount = float(metrics["price"]) * 5000
-        return apply_slippage(raw, side, ann_vol_pct=vol, trade_amount_cny=amount)
+        return trade_execution_price(raw, side, ann_vol_pct=vol, trade_amount_cny=amount)
 
     for rb_date in reb_dates:
-        _credit_period_dividends(rb_date)
+        _credit_dividends_on_date(rb_date)
+        _apply_splits_on_date(rb_date)
+        _pay_dividend_tax_on_date(rb_date)
+        if not use_payable_dividends:
+            _credit_period_dividends(rb_date)
 
         if lots:
             store.ensure(list(lots.keys()))
@@ -1198,7 +1306,9 @@ def run_backtest(
 
         equity_value = 0.0
         for code, lot in lots.items():
-            px = store.price_at(code, rb_date)
+            px = _trade_price(code, panel, rb_date, "buy")
+            if px is None or px <= 0:
+                px = store.price_at(code, rb_date)
             if px and px > 0:
                 equity_value += lot.shares * px
         port_value = cash + equity_value
@@ -1385,8 +1495,7 @@ def run_backtest(
                 if price is None or price <= 0:
                     continue
                 proceeds = lot.shares * price
-                fee = single_side_commission(proceeds)
-                net = proceeds - fee
+                fee, stamp, net = settle_sell(proceeds, rb_date)
                 realized = net - lot.cost_basis
                 ret_pct = realized / lot.cost_basis * 100 if lot.cost_basis > 0 else None
                 hold_days = (rb_date - lot.buy_date).days
@@ -1394,7 +1503,7 @@ def run_backtest(
                 st.name = lot.name or st.name
                 st.sell_count += 1
                 st.total_sell_amount += proceeds
-                st.total_fees += fee
+                st.total_fees += fee + stamp
                 st.realized_pnl += realized
                 st.max_drawdown_pct = min(st.max_drawdown_pct, lot.max_drawdown_pct)
                 st.holding_days += hold_days
@@ -1549,7 +1658,9 @@ def run_backtest(
         # 持仓快照
         port_value = cash
         for code, lot in lots.items():
-            price = _resolve_price(code, panel, rb_date, store)
+            price = resolve_execution_raw_price(code, rb_date, store, panel=panel)
+            if price is None or price <= 0:
+                price = _resolve_price(code, panel, rb_date, store)
             if price is None or price <= 0:
                 continue
             lot.update_peak_drawdown(price)
@@ -1601,7 +1712,7 @@ def run_backtest(
             if rb_idx + 1 < len(reb_dates)
             else pd.Timestamp(end)
         )
-        inter_days = [d for d in calendar if rb_date < d <= next_rb]
+        inter_days = [d for d in calendar if rb_date < d < next_rb]
         daily_stop_loss_pct = resolve_stop_loss_pct(dynamic.market_vol_median_pct)
         daily_atr_mult = STOP_ATR_MULTIPLIER
         if strategy_params and strategy_params.stop_atr_multiplier is not None:
@@ -1618,6 +1729,9 @@ def run_backtest(
             store.ensure(list(lots.keys()))
 
         for day_idx, day in enumerate(inter_days):
+            _credit_dividends_on_date(day)
+            _apply_splits_on_date(day)
+            _pay_dividend_tax_on_date(day)
             if use_daily_risk and lots:
                 prev_day = inter_days[day_idx - 1] if day_idx > 0 else rb_date
                 prev2_day = inter_days[day_idx - 2] if day_idx >= 2 else None
@@ -1714,7 +1828,7 @@ def run_backtest(
 
     nav_df = pd.DataFrame(nav_rows)
 
-    if lots and prev_rb is not None and (dividend_cash_mode or apply_dividend_tax):
+    if lots and prev_rb is not None and (dividend_cash_mode or apply_dividend_tax) and not use_payable_dividends:
         end_ts = pd.Timestamp(end)
         if end_ts > prev_rb:
             row_count_before = len(dividend_tax_rows)
@@ -1804,7 +1918,9 @@ def run_backtest(
         "dividend_tax_enabled": apply_dividend_tax,
         "dividend_cash_mode": dividend_cash_mode,
         "kline_fq": ctx.store.kline_fq or "none",
-        "slippage_rate": SLIPPAGE_RATE,
+        "price_source": "rqalpha" if uses_rqalpha_price_source() else "duckdb",
+        "slippage_rate": 0.0 if not execution_slippage_enabled() else SLIPPAGE_RATE,
+        "execution_at_close": not execution_slippage_enabled(),
         "total_gross_dividend": round(total_gross_dividend, 2),
         "total_dividend_tax": round(total_dividend_tax, 2),
         "total_net_dividend": round(total_gross_dividend - total_dividend_tax, 2),

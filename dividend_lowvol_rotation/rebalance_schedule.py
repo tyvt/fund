@@ -8,6 +8,16 @@ import pandas as pd
 # H30269：每年 12 月第二个星期五的下一交易日
 CSI_INDEX_ANNUAL_MONTH = 12
 
+
+def _maybe_append_end_rebalance(out: list[pd.Timestamp], end: pd.Timestamp) -> list[pd.Timestamp]:
+    """实盘不会在回测截止日额外调仓；仅 DLV_REBALANCE_ON_END=true 时保留旧行为。"""
+    from dividend_lowvol_rotation.config import REBALANCE_ON_END
+
+    out = sorted(set(out))
+    if REBALANCE_ON_END and out and out[-1] != end:
+        out.append(end)
+    return out
+
 # 证监会定期报告披露截止日（月, 日）
 QUARTERLY_REPORT_DEADLINES: tuple[tuple[int, int], ...] = (
     (4, 30),
@@ -91,9 +101,7 @@ def entry_anniversary_rebalance_dates(
         year += 1
 
     out = sorted(set(out))
-    if out[-1] != end:
-        out.append(end)
-    return out
+    return _maybe_append_end_rebalance(out, end)
 
 
 def quarterly_report_rebalance_dates(calendar: list[pd.Timestamp]) -> list[pd.Timestamp]:
@@ -112,9 +120,7 @@ def quarterly_report_rebalance_dates(calendar: list[pd.Timestamp]) -> list[pd.Ti
                 out.append(td)
 
     out = sorted(set(out))
-    if out[-1] != end:
-        out.append(end)
-    return out
+    return _maybe_append_end_rebalance(out, end)
 
 
 def monthly_rebalance_dates(calendar: list[pd.Timestamp]) -> list[pd.Timestamp]:
@@ -140,9 +146,7 @@ def monthly_rebalance_dates(calendar: list[pd.Timestamp]) -> list[pd.Timestamp]:
             out.append(td)
 
     out = sorted(set(out))
-    if out[-1] != end:
-        out.append(end)
-    return out
+    return _maybe_append_end_rebalance(out, end)
 
 
 def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> pd.Timestamp:
@@ -170,9 +174,7 @@ def index_annual_december_rebalance_dates(calendar: list[pd.Timestamp]) -> list[
             out.append(td)
 
     out = sorted(set(out))
-    if out[-1] != end:
-        out.append(end)
-    return out
+    return _maybe_append_end_rebalance(out, end)
 
 
 def index_annual_january_rebalance_dates(
@@ -194,9 +196,7 @@ def index_annual_january_rebalance_dates(
             out.append(td)
 
     out = sorted(set(out))
-    if out[-1] != end:
-        out.append(end)
-    return out
+    return _maybe_append_end_rebalance(out, end)
 
 
 def index_annual_rebalance_dates(calendar: list[pd.Timestamp]) -> list[pd.Timestamp]:

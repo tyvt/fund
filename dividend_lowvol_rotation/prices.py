@@ -96,7 +96,7 @@ def _fetch_kline_from_stockdb(
             end=end_fmt,
             frequency="1d",
             fields="date,close",
-            fq="qfq",
+            fq="qfq" if fq == "qfq" else "bfq",
             as_df=True
         )
         
@@ -139,7 +139,7 @@ def _batch_fetch_klines_from_stockdb(
             end=end_fmt,
             frequency="1d",
             fields="date,code,close",
-            fq="qfq",
+            fq="qfq" if fq == "qfq" else "bfq",
             as_df=True
         )
         

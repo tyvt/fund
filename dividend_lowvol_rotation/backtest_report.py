@@ -470,7 +470,8 @@ def format_backtest_report(
 
     lines.append("---")
     lines.append("")
-    lines.append("完整交互图表请打开同目录 `backtest.html`。")
+    html_name = meta.get("html_report_name", "backtest.html")
+    lines.append(f"完整交互图表请打开同目录 `{html_name}`。")
     return "\n".join(lines)
 
 
@@ -1164,15 +1165,21 @@ def save_backtest_outputs(
     summary_df: pd.DataFrame,
     meta: dict,
     dividend_tax_df: pd.DataFrame | None = None,
+    *,
+    report_basename: str = "backtest",
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    html_name = f"{report_basename}.html"
+    meta = dict(meta)
+    meta.setdefault("html_report_name", html_name)
+    meta.setdefault("report_basename", report_basename)
     md = format_backtest_report(nav_df, trades_df, summary_df, meta, dividend_tax_df)
     html = render_backtest_html(
         nav_df, trades_df, holdings_df, summary_df, meta, dividend_tax_df
     )
     paths = {
-        "report": out_dir / "backtest.md",
-        "html": out_dir / "backtest.html",
+        "report": out_dir / f"{report_basename}.md",
+        "html": out_dir / html_name,
     }
     paths["report"].write_text(md, encoding="utf-8")
     paths["html"].write_text(html, encoding="utf-8")

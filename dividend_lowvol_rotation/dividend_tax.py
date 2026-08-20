@@ -91,3 +91,55 @@ def accrue_dividend_taxes(
                 }
             )
     return total_tax, total_gross, rows
+
+
+def accrue_dividend_cash_on_date(
+    lots: dict,
+    div_index: dict[str, pd.DataFrame],
+    as_of: pd.Timestamp,
+    *,
+    dividend_cash: bool = True,
+    apply_tax: bool = True,
+    use_payable_date: bool = False,
+) -> tuple[float, float, list[dict]]:
+    """按派息日（或除权日）将当日应到账分红计入现金。"""
+    if not lots or not dividend_cash:
+        return 0.0, 0.0, []
+    day = pd.Timestamp(as_of).normalize()
+    total_tax = 0.0
+    total_gross = 0.0
+    rows: list[dict] = []
+
+    for code, lot in lots.items():
+        divs = div_index.get(code)
+        if divs is None or divs.empty:
+            continue
+        date_col = "payable_date" if use_payable_date and "payable_date" in divs.columns else "ex_date"
+        mask = pd.to_datetime(divs[date_col], errors="coerce").dt.normalize() == day
+        for _, div in divs.loc[mask].iterrows():
+            event_date = pd.Timestamp(div[date_col]).normalize()
+            buy = pd.Timestamp(lot.buy_date).normalize()
+            if buy >= event_date:
+                continue
+            hold_days = (event_date - buy).days
+            rate = dividend_tax_rate(hold_days) if apply_tax else 0.0
+            gross = float(div["cash_per_share"]) * int(lot.shares)
+            tax = gross * rate
+            total_gross += gross
+            total_tax += tax
+            rows.append(
+                {
+                    "ex_date": event_date.date().isoformat(),
+                    "code": code,
+                    "name": getattr(lot, "name", ""),
+                    "shares": int(lot.shares),
+                    "cash_per_share": round(float(div["cash_per_share"]), 4),
+                    "gross_dividend": round(gross, 2),
+                    "hold_days": hold_days,
+                    "tax_tier": dividend_tax_tier(hold_days),
+                    "tax_rate_pct": round(rate * 100, 2),
+                    "tax_amount": round(tax, 2),
+                    "net_dividend": round(gross - tax, 2),
+                }
+            )
+    return total_tax, total_gross, rows

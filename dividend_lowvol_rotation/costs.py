@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from dividend_lowvol_rotation.config import (
     BACKTEST_INITIAL_CAPITAL,
     COMMISSION_RATE,
@@ -11,6 +13,40 @@ from dividend_lowvol_rotation.config import (
     PORTFOLIO_CAPITAL_CNY,
 )
 
+# 与 RQAlpha sys_transaction_cost 一致（2023-08-28 起减半）
+STAMP_TAX_CHANGE_DATE = date(2023, 8, 28)
+
+
+def uses_live_settlement() -> bool:
+    """是否按 RQAlpha / A 股实盘口径结算（印花税 + 分红税时点）。"""
+    from dividend_lowvol_rotation.config import uses_rqalpha_execution_model
+
+    return uses_rqalpha_execution_model()
+
+
+def stamp_tax_rate(as_of) -> float:
+    if not uses_live_settlement():
+        return 0.0
+    import pandas as pd
+
+    day = pd.Timestamp(as_of).normalize()
+    if day < pd.Timestamp(STAMP_TAX_CHANGE_DATE):
+        return 0.001
+    return 0.0005
+
+
+def sell_stamp_tax(proceeds: float, as_of) -> float:
+    if proceeds <= 0:
+        return 0.0
+    return proceeds * stamp_tax_rate(as_of)
+
+
+def settle_sell(proceeds: float, as_of) -> tuple[float, float, float]:
+    """卖出结算：佣金 + 印花税（卖侧），返回 (fee, stamp_tax, net_cash)。"""
+    fee = single_side_commission(proceeds)
+    stamp = sell_stamp_tax(proceeds, as_of)
+    return fee, stamp, proceeds - fee - stamp
+
 
 def dynamic_slippage_rate(
     *,
@@ -18,15 +54,20 @@ def dynamic_slippage_rate(
     trade_amount_cny: float | None = None,
 ) -> float:
     from dividend_lowvol_rotation.config import (
+        EXECUTION_AT_CLOSE,
         SLIPPAGE_ADV_BASE_CNY,
         SLIPPAGE_BASE_RATE,
         SLIPPAGE_DYNAMIC_ENABLED,
         SLIPPAGE_MAX_RATE,
         SLIPPAGE_PARTICIPATION_MULT,
         SLIPPAGE_RATE,
+        uses_rqalpha_execution_model,
     )
 
-    if not SLIPPAGE_DYNAMIC_ENABLED:
+    if EXECUTION_AT_CLOSE:
+        return 0.0
+    # RQAlpha PriceRatioSlippage 为固定比例；动态滑点仅用于非 rqalpha 模式的保守估算
+    if not SLIPPAGE_DYNAMIC_ENABLED or uses_rqalpha_execution_model():
         return SLIPPAGE_RATE
     vol = ann_vol_pct if ann_vol_pct is not None and ann_vol_pct > 0 else 25.0
     adv = SLIPPAGE_ADV_BASE_CNY * (22.0 / max(vol, 12.0))
@@ -52,6 +93,58 @@ def apply_slippage(
     if side == "buy":
         return price * (1 + rate)
     return price * (1 - rate)
+
+
+def trade_execution_price(
+    price: float,
+    side: str,
+    *,
+    ann_vol_pct: float | None = None,
+    trade_amount_cny: float | None = None,
+) -> float:
+    """调仓成交价：默认收盘价；``DLV_EXECUTION_AT_CLOSE=false`` 时叠加滑点。"""
+    if price <= 0:
+        return price
+    from dividend_lowvol_rotation.config import EXECUTION_AT_CLOSE
+
+    if EXECUTION_AT_CLOSE:
+        return price
+    return apply_slippage(
+        price,
+        side,
+        ann_vol_pct=ann_vol_pct,
+        trade_amount_cny=trade_amount_cny,
+    )
+
+
+def resolve_execution_raw_price(
+    code: str,
+    as_of: pd.Timestamp,
+    store,
+    *,
+    panel: pd.DataFrame | None = None,
+    metrics: dict | None = None,
+) -> float | None:
+    """调仓用价：rqalpha 模式下强制 store 收盘价（与 RQ bar.close / 实盘同源）。"""
+    from dividend_lowvol_rotation.config import EXECUTION_AT_CLOSE, uses_rqalpha_price_source
+
+    if uses_rqalpha_price_source() and EXECUTION_AT_CLOSE and store is not None:
+        px = store.price_at(code, as_of)
+        if px and px > 0:
+            return float(px)
+    if metrics and metrics.get("price"):
+        px = float(metrics["price"])
+        if px > 0:
+            return px
+    if panel is not None and not panel.empty and "code" in panel.columns:
+        row = panel[panel["code"] == code]
+        if not row.empty and "price" in row.columns:
+            px = float(row["price"].iloc[0])
+            if px > 0:
+                return px
+    if store is not None:
+        return store.price_at(code, as_of)
+    return None
 
 
 def single_side_commission(trade_amount_cny: float) -> float:

@@ -199,6 +199,8 @@ GRACE_VOL_TIER_ADJUSTMENTS = _parse_grace_vol_tiers()
 
 # --- 滑点（动态：波动 + 成交占流动性比例）---
 SLIPPAGE_RATE = _env_float("DLV_SLIPPAGE_RATE", 0.001)
+# True：调仓日按收盘价成交（不含滑点）；False：收盘价 + 滑点
+EXECUTION_AT_CLOSE = _env_bool("DLV_EXECUTION_AT_CLOSE", True)
 SLIPPAGE_DYNAMIC_ENABLED = _env_bool("DLV_SLIPPAGE_DYNAMIC_ENABLED", True)
 SLIPPAGE_BASE_RATE = _env_float("DLV_SLIPPAGE_BASE_RATE", 0.0005)
 SLIPPAGE_MAX_RATE = _env_float("DLV_SLIPPAGE_MAX_RATE", 0.0025)
@@ -304,6 +306,8 @@ def uses_january_screening_params(rebalance_mode: str | None = None) -> bool:
 
 
 BACKTEST_REBALANCE_DAYS = _env_int("DLV_BACKTEST_REBALANCE_DAYS", 30)
+# 回测截止日是否额外调仓（实盘不会在任意结束日再调仓；默认关以对齐 RQAlpha）
+REBALANCE_ON_END = _env_bool("DLV_REBALANCE_ON_END", False)
 BACKTEST_MIN_HOLD_DAYS = _env_int("DLV_BACKTEST_MIN_HOLD_DAYS", 0)
 
 # --- 调出逻辑 ---
@@ -327,6 +331,44 @@ def _env_kline_fq(name: str, default: str | None) -> str | None:
 
 BACKTEST_KLINE_FQ = _env_kline_fq("DLV_BACKTEST_KLINE_FQ", "qfq")
 BACKTEST_DIVIDEND_CASH = _env_bool("DLV_BACKTEST_DIVIDEND_CASH", True)
+# 回测行情源：rqalpha（bundle 不复权，与 RQAlpha bar_dict 同源）| duckdb
+BACKTEST_PRICE_SOURCE = _env_str("DLV_BACKTEST_PRICE_SOURCE", "rqalpha").strip().lower()
+RQALPHA_BUNDLE_PATH = os.environ.get(
+    "RQALPHA_BUNDLE_PATH",
+    r"D:\rqalpha\bundle",
+)
+RQALPHA_ADJUST_TYPE = _env_str("DLV_RQALPHA_ADJUST_TYPE", "none").strip().lower() or "none"
+
+
+def resolve_backtest_kline_fq() -> str | None:
+    """回测 K 线复权口径。
+
+    RQAlpha bundle 存不复权价（与 bar_dict 一致），开启现金分红时不复权。
+    DuckDB 路径：现金分红模式下同样用不复权，避免与前复权双重计入。
+    """
+    if BACKTEST_PRICE_SOURCE == "rqalpha":
+        return None
+    if os.environ.get("DLV_BACKTEST_KLINE_FQ") is not None:
+        return BACKTEST_KLINE_FQ
+    if BACKTEST_DIVIDEND_CASH:
+        return None
+    return BACKTEST_KLINE_FQ
+
+
+def uses_rqalpha_price_source() -> bool:
+    return BACKTEST_PRICE_SOURCE == "rqalpha"
+
+
+def uses_rqalpha_execution_model() -> bool:
+    """与 RQAlpha sys_simulation 对齐：固定比例滑点 + bundle 不复权价。"""
+    return uses_rqalpha_price_source()
+
+
+def execution_slippage_enabled() -> bool:
+    """回测成交价是否叠加滑点（收盘价模式为 False）。"""
+    return not EXECUTION_AT_CLOSE
+
+
 BACKTEST_INITIAL_CAPITAL = _env_float("DLV_BACKTEST_INITIAL_CAPITAL", 100_000.0)
 BACKTEST_YEARS = _env_int("DLV_BACKTEST_YEARS", 10)
 BACKTEST_PREFETCH_SIZE = _env_int("DLV_BACKTEST_PREFETCH_SIZE", 150)
