@@ -126,7 +126,7 @@ flowchart LR
 | `akshare_em_profit_sheet` | 利润表 | 东方财富 | `ak.stock_profit_sheet_by_report_em` | 利息保障倍数回退 |
 | `akshare_sw_industry` | 申万一级行业 | 申万宏源 | `index_realtime_sw` + `index_component_sw` | 行业分散 |
 | `baostock_industry` | 证监会行业 | Baostock | `bs.query_stock_industry` | 行业降级 |
-| `stockdb` | A 股日 K、日历、流动性截面 | 本地 StockDB | `tcp://127.0.0.1:7899` | 回测 K 线、市值/成交额前 90% |
+| `stockdb` | A 股日 K、日历、流动性截面 | 本地 StockDB | `tcp://127.0.0.1:7899` | 回测 K 线、市值/成交额前 90%（与 RQAlpha 对比见 [`docs/stockdb_vs_rqalpha.md`](docs/stockdb_vs_rqalpha.md)） |
 | `tencent_quote` | 实时股价 | 腾讯财经 | 见上文 | 动态股息率分母 |
 
 **本地缓存**：`cache/dividend_lowvol/`；**DuckDB**：`data/market.duckdb`（优先于 CSV / StockDB 直查）

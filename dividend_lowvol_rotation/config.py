@@ -338,6 +338,7 @@ RQALPHA_BUNDLE_PATH = os.environ.get(
     r"D:\rqalpha\bundle",
 )
 RQALPHA_ADJUST_TYPE = _env_str("DLV_RQALPHA_ADJUST_TYPE", "none").strip().lower() or "none"
+RQALPHA_DATA_SOURCE = _env_str("DLV_RQALPHA_DATA_SOURCE", "bundle").strip().lower()
 
 
 def resolve_backtest_kline_fq() -> str | None:
@@ -357,6 +358,11 @@ def resolve_backtest_kline_fq() -> str | None:
 
 def uses_rqalpha_price_source() -> bool:
     return BACKTEST_PRICE_SOURCE == "rqalpha"
+
+
+def uses_parquet_data_source() -> bool:
+    value = os.environ.get("DLV_RQALPHA_DATA_SOURCE", RQALPHA_DATA_SOURCE)
+    return str(value).strip().lower() == "parquet"
 
 
 def uses_rqalpha_execution_model() -> bool:

@@ -297,7 +297,8 @@ def init(context):
     context.dlv_pending_plan = None
     context.dlv_rebalanced_today = False
     context.dlv_native_nav_rows = []
-    nav_path = BACKTEST_OUTPUT_DIR / "rqalpha_native_nav.csv"
+    nav_name = os.environ.get("DLV_RQALPHA_NATIVE_NAV_PATH", "rqalpha_native_nav.csv")
+    nav_path = Path(nav_name) if os.path.isabs(nav_name) else BACKTEST_OUTPUT_DIR / nav_name
     nav_path.parent.mkdir(parents=True, exist_ok=True)
     if nav_path.exists():
         nav_path.unlink()

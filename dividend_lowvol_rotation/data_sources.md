@@ -38,8 +38,9 @@
 
 ## 交叉验证（非生产）
 
-| 数据 | 接口 | 脚本 |
-|------|------|------|
+| 数据 | 接口 | 脚本 / 文档 |
+|------|------|-------------|
+| StockDB vs RQAlpha 全量字段 | `StockDBClient.get_data` / `history_bars` | [`docs/stockdb_vs_rqalpha.md`](../docs/stockdb_vs_rqalpha.md) |
 | Baostock 日 K | `bs.query_history_k_data_plus` | `scripts/validate_data_baostock.py` |
 | ETF 跟踪 | `ak.fund_etf_hist_sina` | `scripts/data_crosscheck.py` |
 

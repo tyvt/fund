@@ -22,6 +22,7 @@ from dividend_lowvol_rotation.config import (  # noqa: E402
     RQALPHA_ADJUST_TYPE,
     RQALPHA_BUNDLE_PATH,
     TOP_N_BUY,
+    uses_parquet_data_source,
     uses_rqalpha_price_source,
 )
 from dividend_lowvol_rotation.rqalpha.execution_costs import (  # noqa: E402
@@ -38,6 +39,9 @@ def _default_start(years: int, *, end: str | None = None) -> str:
     return (anchor - timedelta(days=int(365.25 * years))).isoformat()
 
 
+from config.paths import PARQUET_DIR
+
+
 def build_config(
     *,
     start: str,
@@ -46,10 +50,47 @@ def build_config(
     strategy_file: Path,
     output_file: Path,
     plot: bool,
+    use_parquet: bool | None = None,
 ) -> dict:
     # 佣金：RQ 引擎扣费；成交价默认收盘价（无滑点）
     commission_multiplier = rqalpha_commission_multiplier()
     engine_slippage = rqalpha_engine_slippage_rate()
+    parquet_mode = use_parquet if use_parquet is not None else uses_parquet_data_source()
+    mod: dict = {
+        "sys_analyser": {
+            "enabled": True,
+            "plot": plot,
+            "output_file": str(output_file),
+            "benchmark": "000300.XSHG",
+        },
+        "sys_progress": {
+            "enabled": True,
+            "show": True,
+        },
+        "sys_transaction_cost": {
+            "enabled": True,
+            "stock_commission_multiplier": commission_multiplier,
+            "stock_min_commission": MIN_COMMISSION_CNY,
+        },
+        "sys_simulation": {
+            "enabled": True,
+            "slippage_model": "PriceRatioSlippage",
+            "slippage": engine_slippage,
+        },
+        "sys_accounts": {
+            "enabled": True,
+            # 派息日预扣税由策略 dividend_tax_sync 处理；关闭卖出时补扣避免重复
+            "dividend_tax_enabled": False,
+            "stock_t1": True,
+        },
+    }
+    if parquet_mode:
+        mod["parquet_data"] = {
+            "enabled": True,
+            "lib": "dividend_lowvol_rotation.rqalpha.mod_parquet_data",
+            "priority": 0,
+            "parquet_root": str(os.environ.get("DLV_PARQUET_ROOT", PARQUET_DIR)),
+        }
     return {
         "base": {
             "start_date": start,
@@ -58,38 +99,13 @@ def build_config(
             "accounts": {"stock": capital},
             "benchmark": "000300.XSHG",
             "data_bundle_path": RQALPHA_BUNDLE_PATH,
+            # 显式声明：A 股资本利得税由策略自行处理，保持与历史回测一致（RQAlpha 未来默认可能非 0）
+            "capital_gain_tax_rate": 0,
         },
         "extra": {
             "log_level": "info",
         },
-        "mod": {
-            "sys_analyser": {
-                "enabled": True,
-                "plot": plot,
-                "output_file": str(output_file),
-                "benchmark": "000300.XSHG",
-            },
-            "sys_progress": {
-                "enabled": True,
-                "show": True,
-            },
-            "sys_transaction_cost": {
-                "enabled": True,
-                "stock_commission_multiplier": commission_multiplier,
-                "stock_min_commission": MIN_COMMISSION_CNY,
-            },
-            "sys_simulation": {
-                "enabled": True,
-                "slippage_model": "PriceRatioSlippage",
-                "slippage": engine_slippage,
-            },
-            "sys_accounts": {
-                "enabled": True,
-                # 派息日预扣税由策略 dividend_tax_sync 处理；关闭卖出时补扣避免重复
-                "dividend_tax_enabled": False,
-                "stock_t1": True,
-            },
-        },
+        "mod": mod,
         "strategy_file": str(strategy_file),
     }
 
@@ -181,7 +197,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"RQAlpha 回测：{start} ~ {end}，初始资金 {args.capital:,.0f}")
     print(f"交易成本：{execution_cost_summary()}")
-    print(f"行情源：RQAlpha bundle（adjust={RQALPHA_ADJUST_TYPE}，path={RQALPHA_BUNDLE_PATH}）")
+    print(f"行情源：{'Parquet 数据湖' if uses_parquet_data_source() else 'RQAlpha bundle'}（adjust={RQALPHA_ADJUST_TYPE}）")
+    if uses_parquet_data_source():
+        print(f"Parquet 路径：{os.environ.get('DLV_PARQUET_ROOT', PARQUET_DIR)}")
+    else:
+        print(f"bundle 路径：{RQALPHA_BUNDLE_PATH}")
     if not uses_rqalpha_price_source():
         print("提示：原生回测未设 DLV_BACKTEST_PRICE_SOURCE=rqalpha，对比可能仍不一致")
     print(f"策略文件：{strategy_file}")
