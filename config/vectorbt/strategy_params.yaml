@@ -1,0 +1,23 @@
+# 红利低波策略参数。alignment_mode=true 时，完整规则取现有
+# dividend_lowvol_rotation.config；下面的因子阈值只供矩阵研究模式使用。
+dividend_lowvol:
+  alignment_mode: true
+  top_n: 10
+  alignment_overrides: {}
+  dividend_yield_min: 0.03
+  volatility_60d_max: 0.25
+  beta_max: 1.20
+  roe_min: 0.08
+  debt_ratio_max: 0.70
+  roe_volatility_max: 0.15
+  rebalance_freq: A
+  rebalance_mode: index_annual
+  rebalance_month: 1
+  rebalance_day: 15
+  weight_scheme: dividend_yield
+  max_single_weight: 0.08
+  small_cap_weight_max: 0.40
+  industry_single_max: 0.20
+  industry_defensive_max: 0.45
+  beta_low_min: 0.45
+  beta_high_max: 0.81

@@ -1,0 +1,1 @@
+"""VectorBT configuration package marker."""

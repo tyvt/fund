@@ -1,0 +1,9 @@
+scan:
+  param_grid:
+    top_n: [5, 8, 10, 12, 15, 20]
+    volatility_60d_max: [0.20, 0.25, 0.30, 0.35]
+    rebalance_freq: [A, Q]
+  metric: sharpe_ratio
+  n_jobs: -1
+  top_k: 20
+  output_dir: output/vectorbt/param_scans

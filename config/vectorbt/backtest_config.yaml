@@ -1,0 +1,20 @@
+backtest:
+  initial_capital: 100000
+  start_date: '2016-08-19'
+  end_date: '2026-07-31'
+  price_source: stock_daily
+  execution_price: close
+  lot_size: 100
+  commission: 0.0000854
+  min_commission: 5.0
+  stamp_duty_before_2023_08_28: 0.001
+  stamp_duty_after_2023_08_28: 0.0005
+  slippage: 0.0
+  cash_dividend: true
+  dividend_tax: true
+  output_dir: output/vectorbt
+  report_format: [md, html]
+  cache_enabled: true
+  cache_dir: cache/vectorbt
+  baseline_path: output/vectorbt/baselines/rqalpha_parquet_10y_20160819_20260819.pkl
+  log_path: logs/vectorbt.log

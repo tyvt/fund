@@ -7,11 +7,13 @@ __pycache__/
 dist/
 build/
 .venv/
+.venv-*/
 venv/
 rqalpha_env/
 
-# 本地配置
+# 本地配置（含 SendKey，勿提交）
 push.env
+config/push.env
 .env
 .env.*
 
@@ -21,8 +23,11 @@ logs/
 
 # 外部数据本地缓存（行情、估值、国债等）
 cache/
+config/cache/
 data/
+config/data/
 *.duckdb
+*.parquet
 
 # 回测 / 分析输出
 output/
@@ -43,3 +48,7 @@ desktop.ini
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# 临时 / 备份
+*.bak
+*.tmp
