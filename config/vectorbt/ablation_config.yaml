@@ -2,9 +2,9 @@ backtest:
   start_date: '2015-01-01'
   end_date: '2024-12-31'
   initial_capital: 100000
-  rebalance_freq: A
-  rebalance_month: 1
-  rebalance_day: 15
+  rebalance_freq: M
+  rebalance_day: -1
+  holding_period: 20
   commission: 0.0003
   min_commission: 0.0
   stamp_duty: 0.001
@@ -14,18 +14,21 @@ backtest:
 
 selection:
   top_n: 10
+  min_holdings: 10
+  min_investment_pct: 1.0
+  fallback_top_n: 100
 
 hard_constraints:
   min_listed_days: 365
   exclude_st: true
   min_float_mv: 500000000
-  min_daily_amount: 10000000
+  min_daily_amount: 1000000
 
 full_constraints:
   dividend_yield_min: 0.03
   volatility_60d_max: 0.25
-  roe_min: 0.08
-  debt_ratio_max: 0.70
+  roe_percentile_min: 0.20
+  debt_ratio_percentile_max: 0.80
   roe_volatility_max: 0.15
   max_single_weight: 0.08
   industry_single_max: 0.20

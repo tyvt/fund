@@ -1,23 +1,29 @@
-# 红利低波策略参数。alignment_mode=true 时，完整规则取现有
-# dividend_lowvol_rotation.config；下面的因子阈值只供矩阵研究模式使用。
+# 红利低波策略参数。根因修复后的研究口径使用月末信号、下一交易日执行。
 dividend_lowvol:
-  alignment_mode: true
+  alignment_mode: false
+  rebalance_freq: M
+  rebalance_day: -1
+  holding_period: 20
+
+  min_holdings: 10
+  min_investment_pct: 1.0
+  fallback_top_n: 100
+
   top_n: 10
-  alignment_overrides: {}
   dividend_yield_min: 0.03
   volatility_60d_max: 0.25
-  beta_max: 1.20
-  roe_min: 0.08
-  debt_ratio_max: 0.70
+  roe_percentile_min: 0.20
+  debt_ratio_percentile_max: 0.80
   roe_volatility_max: 0.15
-  rebalance_freq: A
-  rebalance_mode: index_annual
-  rebalance_month: 1
-  rebalance_day: 15
+
   weight_scheme: dividend_yield
   max_single_weight: 0.08
   small_cap_weight_max: 0.40
   industry_single_max: 0.20
-  industry_defensive_max: 0.45
   beta_low_min: 0.45
   beta_high_max: 0.81
+
+  min_listed_days: 365
+  exclude_st: true
+  min_float_mv: 500000000
+  min_daily_amount: 1000000

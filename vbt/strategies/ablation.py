@@ -9,11 +9,10 @@ import pandas as pd
 
 from vbt.strategies.base import BaseStrategy
 from vbt.strategies.signal_generators import (
-    apply_industry_cap,
-    apply_market_cap_cap,
+    apply_percentile_filters,
     compute_equal_weight,
-    compute_weight_by_factor,
     rank_by_factor,
+    select_stocks_with_fallback,
 )
 
 
@@ -35,6 +34,32 @@ def annual_rebalance_pairs(
         if position == 0:
             continue
         pairs.append((pd.Timestamp(dates[position - 1]), pd.Timestamp(dates[position])))
+    return pairs
+
+
+def rebalance_pairs(
+    index: pd.DatetimeIndex,
+    *,
+    freq: str = "M",
+    month: int = 1,
+    day: int = -1,
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Return month/quarter-end signals executed on the next trading day."""
+    normalized_freq = str(freq).upper()
+    if normalized_freq == "A":
+        return annual_rebalance_pairs(index, month=month, day=day)
+    if normalized_freq not in {"M", "Q"}:
+        raise ValueError(f"不支持的调仓频率：{freq}")
+    dates = pd.DatetimeIndex(index).sort_values().unique()
+    periods = dates.to_period(normalized_freq)
+    pairs: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for _, locations in pd.Series(range(len(dates)), index=dates).groupby(periods):
+        signal_position = int(locations.iloc[-1])
+        execution_position = signal_position + 1
+        if execution_position < len(dates):
+            pairs.append(
+                (pd.Timestamp(dates[signal_position]), pd.Timestamp(dates[execution_position]))
+            )
     return pairs
 
 
@@ -121,13 +146,16 @@ class AblationStrategy(BaseStrategy):
 
         close = data["close"].sort_index()
         columns = close.columns
-        pairs = annual_rebalance_pairs(
+        rebalance_freq = str(self.params.get("rebalance_freq", "A"))
+        default_day = -1 if rebalance_freq.upper() in {"M", "Q"} else 15
+        pairs = rebalance_pairs(
             pd.DatetimeIndex(close.index),
+            freq=rebalance_freq,
             month=int(self.params.get("rebalance_month", 1)),
-            day=int(self.params.get("rebalance_day", 15)),
+            day=int(self.params.get("rebalance_day", default_day)),
         )
         if not pairs:
-            raise ValueError("回测区间内没有可用的年度调仓日")
+            raise ValueError("回测区间内没有可用的调仓日")
         signal_dates = [pair[0] for pair in pairs]
         execution_dates = [pair[1] for pair in pairs]
 
@@ -150,10 +178,13 @@ class AblationStrategy(BaseStrategy):
         hard = (
             tradable
             & listed_days.ge(float(self.params.get("min_listed_days", 365)))
-            & is_st.fillna(1).eq(0)
             & float_mv.ge(float(self.params.get("min_float_mv", 500_000_000)))
-            & amount.ge(float(self.params.get("min_daily_amount", 10_000_000)))
+            & amount.ge(float(self.params.get("min_daily_amount", 1_000_000)))
         )
+        if bool(self.params.get("exclude_st", True)):
+            hard &= is_st.fillna(1).eq(0)
+
+        fallback_tiers = pd.Series("not_applicable", index=execution_dates, dtype=object)
 
         if self.name == "baseline0":
             eligible = tradable
@@ -186,41 +217,50 @@ class AblationStrategy(BaseStrategy):
                     execution_dates,
                     columns,
                 )
-                eligible = (
+                factor_eligible = (
                     hard
                     & dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
                     & volatility.le(float(self.params.get("volatility_60d_max", 0.25)))
                     & beta.ge(float(self.params.get("beta_low_min", 0.45)))
                     & beta.le(float(self.params.get("beta_high_max", 0.81)))
-                    & absolute_roe.ge(float(self.params.get("roe_min", 0.08)) * 100.0)
-                    & absolute_debt.le(
-                        float(self.params.get("debt_ratio_max", 0.70)) * 100.0
-                    )
                     & roe_volatility.le(
                         float(self.params.get("roe_volatility_max", 0.15)) * 100.0
                     )
                 )
-                ranks = rank_by_factor(dividend, ascending=False, mask=eligible)
-                selected = eligible & ranks.le(int(self.params.get("top_n", 10)))
-                weights = compute_weight_by_factor(
-                    dividend,
-                    selected=selected,
-                    max_weight=float(self.params.get("max_single_weight", 0.08)),
+                roe_mask = apply_percentile_filters(
+                    absolute_roe.where(factor_eligible),
+                    lower_pct=float(self.params.get("roe_percentile_min", 0.20)),
+                    upper_pct=None,
                 )
+                debt_mask = apply_percentile_filters(
+                    absolute_debt.where(factor_eligible),
+                    lower_pct=None,
+                    upper_pct=float(self.params.get("debt_ratio_percentile_max", 0.80)),
+                )
+                eligible = factor_eligible & roe_mask & debt_mask
                 total_mv = _at_dates(
                     data["total_mv"], signal_dates, execution_dates, columns
                 )
-                weights = apply_market_cap_cap(
-                    weights,
-                    total_mv,
+                selected, weights, fallback_tiers = select_stocks_with_fallback(
+                    dividend,
+                    primary_eligible=eligible,
+                    relaxed_eligible=factor_eligible,
+                    hard_eligible=hard,
+                    top_n=int(self.params.get("top_n", 10)),
+                    min_holdings=int(self.params.get("min_holdings", 10)),
+                    fallback_top_n=int(self.params.get("fallback_top_n", 100)),
+                    min_investment_pct=float(
+                        self.params.get("min_investment_pct", 1.0)
+                    ),
+                    max_single_weight=float(
+                        self.params.get("max_single_weight", 0.08)
+                    ),
+                    industries=data["industry"],
+                    industry_max=float(self.params.get("industry_single_max", 0.20)),
+                    total_mv=total_mv,
                     small_cap_weight_max=float(
                         self.params.get("small_cap_weight_max", 0.40)
                     ),
-                )
-                weights = apply_industry_cap(
-                    weights,
-                    data["industry"],
-                    max_weight=float(self.params.get("industry_single_max", 0.20)),
                 )
 
         targets = pd.DataFrame(
@@ -230,13 +270,14 @@ class AblationStrategy(BaseStrategy):
             dtype="float32",
         )
         targets.loc[execution_dates] = weights.to_numpy(dtype="float32")
-        counts = selected.sum(axis=1).astype(int)
+        counts = weights.gt(1e-12).sum(axis=1).astype(int)
         eligible_counts = eligible.sum(axis=1).astype(int)
         return targets, {
             "mode": "ablation_matrix",
             "strategy": self.name,
             "signal_dates": [day.date().isoformat() for day in signal_dates],
             "rebalance_dates": [day.date().isoformat() for day in execution_dates],
+            "holding_period": int(self.params.get("holding_period", 20)),
             "selected_counts": {
                 day.date().isoformat(): int(value) for day, value in counts.items()
             },
@@ -245,6 +286,10 @@ class AblationStrategy(BaseStrategy):
             },
             "average_holdings": float(counts.mean()),
             "average_invested_weight": float(weights.sum(axis=1).mean()),
+            "fallback_tiers": {
+                day.date().isoformat(): str(value)
+                for day, value in fallback_tiers.items()
+            },
             "turnover": _turnover(weights),
             "point_in_time": True,
         }
@@ -270,6 +315,7 @@ __all__ = [
     "STRATEGY_NAMES",
     "AblationStrategy",
     "annual_rebalance_pairs",
+    "rebalance_pairs",
     "baseline0_strategy",
     "baseline1_strategy",
     "baseline2_strategy",

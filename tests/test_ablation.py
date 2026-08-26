@@ -9,8 +9,16 @@ import pytest
 from scripts.run_ablation import calculate_attribution
 from vbt.adapters.data_loader import VBTData
 from vbt.engine import VBTEngine
-from vbt.strategies.ablation import AblationStrategy, annual_rebalance_pairs
+from vbt.strategies.ablation import (
+    AblationStrategy,
+    annual_rebalance_pairs,
+    rebalance_pairs,
+)
 from vbt.strategies.base import BaseStrategy
+from vbt.strategies.signal_generators import (
+    apply_percentile_filters,
+    select_stocks_with_fallback,
+)
 
 
 def _matrix(values, dates, columns):
@@ -73,6 +81,16 @@ def test_annual_rebalance_uses_previous_trading_day():
     assert annual_rebalance_pairs(index) == [(pd.Timestamp("2020-01-15"), pd.Timestamp("2020-01-16"))]
 
 
+def test_month_end_signal_executes_on_next_trading_day():
+    index = pd.to_datetime(
+        ["2020-01-30", "2020-01-31", "2020-02-03", "2020-02-28", "2020-03-02"]
+    )
+    assert rebalance_pairs(index, freq="M", day=-1) == [
+        (pd.Timestamp("2020-01-31"), pd.Timestamp("2020-02-03")),
+        (pd.Timestamp("2020-02-28"), pd.Timestamp("2020-03-02")),
+    ]
+
+
 def test_baseline2_uses_prior_day_factor_not_execution_day():
     targets, metadata = AblationStrategy("baseline2", {"top_n": 1}).generate_signals(
         _synthetic_data()
@@ -82,18 +100,59 @@ def test_baseline2_uses_prior_day_factor_not_execution_day():
     assert metadata["signal_dates"][0] == "2020-01-15"
 
 
-def test_full_uses_absolute_financials_only_after_disclosure_date():
+def test_full_fallback_remains_invested_before_financial_disclosure():
     params = {
         "top_n": 1,
+        "min_holdings": 1,
         "max_single_weight": 1.0,
         "industry_single_max": 1.0,
         "small_cap_weight_max": 1.0,
     }
     targets, metadata = AblationStrategy("full", params).generate_signals(_synthetic_data())
-    assert targets.loc["2020-01-16"].fillna(0).sum() == pytest.approx(0.0)
+    assert targets.loc["2020-01-16"].fillna(0).sum() == pytest.approx(1.0)
     assert targets.loc["2021-01-18", "000001"] == pytest.approx(1.0)
     assert targets.loc["2021-01-18", "000002"] == pytest.approx(0.0)
+    assert metadata["fallback_tiers"]["2020-01-16"] == "percentile_relaxed"
     assert metadata["point_in_time"] is True
+
+
+def test_percentile_filters_are_one_sided_for_roe_and_debt():
+    frame = pd.DataFrame([[1.0, 2.0, 3.0, 4.0, 5.0]], columns=list("ABCDE"))
+    roe = apply_percentile_filters(frame, lower_pct=0.20, upper_pct=None)
+    debt = apply_percentile_filters(frame, lower_pct=None, upper_pct=0.80)
+    assert int(roe.sum(axis=1).iloc[0]) == 4
+    assert int(debt.sum(axis=1).iloc[0]) == 4
+
+
+def test_full_investment_expands_past_ten_without_breaking_caps():
+    columns = pd.Index([f"S{index:02d}" for index in range(30)])
+    day = pd.Timestamp("2024-02-01")
+    factor = pd.DataFrame(
+        [np.linspace(0.06, 0.03, len(columns))], index=[day], columns=columns
+    )
+    eligible = pd.DataFrame(True, index=[day], columns=columns)
+    industries = pd.Series(
+        {column: f"industry_{index % 6}" for index, column in enumerate(columns)}
+    )
+    _, weights, _ = select_stocks_with_fallback(
+        factor,
+        primary_eligible=eligible,
+        relaxed_eligible=eligible,
+        hard_eligible=eligible,
+        top_n=10,
+        min_holdings=10,
+        fallback_top_n=100,
+        min_investment_pct=1.0,
+        max_single_weight=0.08,
+        industries=industries,
+        industry_max=0.20,
+    )
+    assert weights.loc[day].sum() == pytest.approx(1.0, abs=1e-8)
+    assert weights.loc[day].max() <= 0.08 + 1e-10
+    assert int(weights.loc[day].gt(1e-12).sum()) >= 13
+    for industry in industries.unique():
+        members = industries[industries.eq(industry)].index
+        assert weights.loc[day, members].sum() <= 0.20 + 1e-10
 
 
 def test_attribution_is_normalized_to_excess_return_and_closes():

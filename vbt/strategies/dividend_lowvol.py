@@ -11,12 +11,8 @@ import pandas as pd
 
 from vbt.strategies.base import BaseStrategy
 from vbt.strategies.signal_generators import (
-    apply_beta_constraint,
-    apply_industry_cap,
-    apply_market_cap_cap,
-    compute_equal_weight,
-    compute_weight_by_factor,
-    rank_by_factor,
+    apply_percentile_filters,
+    select_stocks_with_fallback,
 )
 
 
@@ -32,27 +28,47 @@ class CompiledStrategy:
     split_deltas: dict[tuple[pd.Timestamp, str], int] | None = None
 
 
-def _rebalance_mask(index: pd.DatetimeIndex, params: Mapping[str, Any]) -> pd.Series:
+def _rebalance_pairs(
+    index: pd.DatetimeIndex, params: Mapping[str, Any]
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Return look-ahead-safe ``(signal, execution)`` rebalance pairs."""
     freq = str(params.get("rebalance_freq", "A")).upper()
-    mode = str(params.get("rebalance_mode", "")).lower()
-    selected = pd.Series(False, index=index)
-    if index.empty:
-        return selected
-    if freq == "A" or ("rebalance_freq" not in params and mode == "index_annual"):
+    dates = pd.DatetimeIndex(index).sort_values().unique()
+    if dates.empty:
+        return []
+    signal_dates: list[pd.Timestamp] = []
+    if freq == "A":
         month = int(params.get("rebalance_month", 1))
         day = int(params.get("rebalance_day", 15))
-        selected.iloc[0] = True
-        for year in sorted(set(index.year)):
+        for year in sorted(set(dates.year)):
             target = pd.Timestamp(year=year, month=month, day=day)
-            candidates = index[index > target]
-            if len(candidates):
-                selected.loc[candidates[0]] = True
-        return selected
-    periods = index.to_period("M" if freq == "M" else "Q")
-    selected.iloc[0] = True
-    for _, locations in pd.Series(range(len(index)), index=index).groupby(periods):
-        selected.iloc[int(locations.iloc[0])] = True
-    return selected
+            locations = np.flatnonzero(dates > target)
+            if len(locations) and int(locations[0]) > 0:
+                signal_dates.append(pd.Timestamp(dates[int(locations[0]) - 1]))
+    elif freq in {"M", "Q"}:
+        periods = dates.to_period(freq)
+        for _, locations in pd.Series(range(len(dates)), index=dates).groupby(periods):
+            signal_dates.append(pd.Timestamp(dates[int(locations.iloc[-1])]))
+    else:
+        raise ValueError(f"不支持的调仓频率：{freq}")
+
+    pairs: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for signal_date in signal_dates:
+        position = int(dates.searchsorted(signal_date, side="right"))
+        if position < len(dates):
+            pairs.append((signal_date, pd.Timestamp(dates[position])))
+    return pairs
+
+
+def _at_signal_dates(
+    frame: pd.DataFrame,
+    signal_dates: list[pd.Timestamp],
+    execution_dates: list[pd.Timestamp],
+    columns: pd.Index,
+) -> pd.DataFrame:
+    out = frame.reindex(index=signal_dates, columns=columns).copy()
+    out.index = pd.DatetimeIndex(execution_dates)
+    return out
 
 
 @contextmanager
@@ -77,6 +93,11 @@ class DividendLowVolStrategy(BaseStrategy):
     """Full production-rule strategy plus a pure-matrix research path."""
 
     required_factors = (
+        "close",
+        "amount",
+        "float_mv",
+        "is_st",
+        "listed_date",
         "dividend_yield",
         "volatility_60d",
         "beta_300",
@@ -103,79 +124,89 @@ class DividendLowVolStrategy(BaseStrategy):
                 return positions, compiled.metadata
             raise KeyError(f"策略缺少因子：{', '.join(missing)}")
 
-        cache_fields = (
-            "rebalance_freq",
-            "rebalance_mode",
-            "rebalance_month",
-            "rebalance_day",
-            "dividend_yield_min",
-            "volatility_60d_max",
-            "beta_max",
-            "roe_min",
-            "debt_ratio_max",
-            "roe_volatility_max",
+        close = data["close"].sort_index()
+        full_index = pd.DatetimeIndex(close.index)
+        columns = close.columns
+        pairs = _rebalance_pairs(full_index, self.params)
+        if not pairs:
+            raise ValueError("回测区间内没有可用的调仓日")
+        signal_dates = [pair[0] for pair in pairs]
+        rebalance_index = pd.DatetimeIndex(pair[1] for pair in pairs)
+
+        signal_close = _at_signal_dates(close, signal_dates, list(rebalance_index), columns)
+        execution_close = close.reindex(index=rebalance_index, columns=columns)
+        tradable = signal_close.gt(0) & execution_close.gt(0)
+        listed = pd.to_datetime(data["listed_date"], errors="coerce").reindex(columns)
+        listed_days = pd.DataFrame(
+            [(day - listed).dt.days.to_numpy(dtype="float64") for day in signal_dates],
+            index=rebalance_index,
+            columns=columns,
         )
-        cache_key = (id(data), *(self.params.get(field) for field in cache_fields))
-        cached = self._matrix_cache.get(cache_key)
-        if cached is None:
-            full_index = pd.DatetimeIndex(data["close"].index)
-            mask_dates = _rebalance_mask(full_index, self.params)
-            rebalance_index = full_index[mask_dates]
-            # 横截面筛选只在实际调仓日有意义。先切片再执行排序和约束，避免参数
-            # 扫描对全市场每个交易日重复计算同一类无用信号。
-            dividend = data["dividend_yield"].reindex(rebalance_index)
-            volatility = data["volatility_60d"].reindex(rebalance_index)
-            beta = data["beta_300"].reindex(rebalance_index)
-            # 源矩阵的 ROE / 负债率 / ROE 波动率单位是百分点；YAML 使用小数。
-            roe_min = float(self.params.get("roe_min", 0.08)) * 100.0
-            debt_max = float(self.params.get("debt_ratio_max", 0.70)) * 100.0
-            roe_vol_max = float(self.params.get("roe_volatility_max", 0.15)) * 100.0
-            mask = (
-                dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
-                & volatility.le(float(self.params.get("volatility_60d_max", 0.25)))
-                & beta.le(float(self.params.get("beta_max", 1.2)))
-                & data["roe"].reindex(rebalance_index).ge(roe_min)
-                & data["debt_ratio"].reindex(rebalance_index).le(debt_max)
-                & data["roe_volatility"].reindex(rebalance_index).le(roe_vol_max)
-            )
-            ranks = rank_by_factor(dividend, ascending=False, mask=mask)
-            cached = (full_index, rebalance_index, dividend, beta, mask, ranks)
-            self._matrix_cache[cache_key] = cached
-        full_index, rebalance_index, dividend, beta, mask, ranks = cached
-        selected = ranks.le(int(self.params.get("top_n", 10))) & mask
-        selected_counts = selected.sum(axis=1).to_dict()
-        candidate_columns = selected.columns[selected.any(axis=0)]
-        selected = selected.loc[:, candidate_columns]
-        dividend = dividend.loc[:, candidate_columns]
-        beta = beta.loc[:, candidate_columns]
-        if str(self.params.get("weight_scheme", "dividend_yield")) == "equal":
-            weights = compute_equal_weight(
-                selected, max_weight=float(self.params.get("max_single_weight", 0.08))
-            )
-        else:
-            weights = compute_weight_by_factor(
-                dividend,
-                selected=selected,
-                max_weight=float(self.params.get("max_single_weight", 0.08)),
-            )
-        weights = apply_beta_constraint(
-            weights,
-            beta,
-            beta_min=self.params.get("beta_low_min"),
-            beta_max=self.params.get("beta_high_max"),
+        is_st = _at_signal_dates(data["is_st"], signal_dates, list(rebalance_index), columns)
+        amount = _at_signal_dates(data["amount"], signal_dates, list(rebalance_index), columns)
+        float_mv = _at_signal_dates(data["float_mv"], signal_dates, list(rebalance_index), columns)
+        hard = (
+            tradable
+            & listed_days.ge(float(self.params.get("min_listed_days", 365)))
+            & float_mv.ge(float(self.params.get("min_float_mv", 500_000_000)))
+            & amount.ge(float(self.params.get("min_daily_amount", 1_000_000)))
         )
-        if "total_mv" in data:
-            weights = apply_market_cap_cap(
-                weights,
-                data["total_mv"].reindex(index=rebalance_index, columns=weights.columns),
-                small_cap_weight_max=float(self.params.get("small_cap_weight_max", 0.40)),
-            )
-        if "industry" in data:
-            weights = apply_industry_cap(
-                weights,
-                data["industry"],
-                max_weight=float(self.params.get("industry_single_max", 0.20)),
-            )
+        if bool(self.params.get("exclude_st", True)):
+            hard &= is_st.fillna(1).eq(0)
+
+        dividend = _at_signal_dates(
+            data["dividend_yield"], signal_dates, list(rebalance_index), columns
+        )
+        volatility = _at_signal_dates(
+            data["volatility_60d"], signal_dates, list(rebalance_index), columns
+        )
+        beta = _at_signal_dates(data["beta_300"], signal_dates, list(rebalance_index), columns)
+        roe = _at_signal_dates(data["roe"], signal_dates, list(rebalance_index), columns)
+        debt = _at_signal_dates(data["debt_ratio"], signal_dates, list(rebalance_index), columns)
+        roe_volatility = _at_signal_dates(
+            data["roe_volatility"], signal_dates, list(rebalance_index), columns
+        )
+        factor_eligible = (
+            hard
+            & dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
+            & volatility.le(float(self.params.get("volatility_60d_max", 0.25)))
+            & beta.ge(float(self.params.get("beta_low_min", 0.45)))
+            & beta.le(float(self.params.get("beta_high_max", 0.81)))
+            & roe_volatility.le(float(self.params.get("roe_volatility_max", 0.15)) * 100.0)
+        )
+        roe_mask = apply_percentile_filters(
+            roe.where(factor_eligible),
+            lower_pct=float(self.params.get("roe_percentile_min", 0.20)),
+            upper_pct=None,
+        )
+        debt_mask = apply_percentile_filters(
+            debt.where(factor_eligible),
+            lower_pct=None,
+            upper_pct=float(self.params.get("debt_ratio_percentile_max", 0.80)),
+        )
+        primary = factor_eligible & roe_mask & debt_mask
+        total_mv = (
+            _at_signal_dates(data["total_mv"], signal_dates, list(rebalance_index), columns)
+            if "total_mv" in data
+            else None
+        )
+        industries = data["industry"] if "industry" in data else None
+        selected, weights, fallback_tiers = select_stocks_with_fallback(
+            dividend,
+            primary_eligible=primary,
+            relaxed_eligible=factor_eligible,
+            hard_eligible=hard,
+            top_n=int(self.params.get("top_n", 10)),
+            min_holdings=int(self.params.get("min_holdings", 10)),
+            fallback_top_n=int(self.params.get("fallback_top_n", 100)),
+            min_investment_pct=float(self.params.get("min_investment_pct", 1.0)),
+            max_single_weight=float(self.params.get("max_single_weight", 0.08)),
+            industries=industries,
+            industry_max=float(self.params.get("industry_single_max", 0.20)),
+            total_mv=total_mv,
+            small_cap_weight_max=float(self.params.get("small_cap_weight_max", 0.40)),
+        )
+        selected_counts = weights.gt(1e-12).sum(axis=1).astype(int)
         active = weights.abs().sum(axis=0).gt(0.0)
         weights = weights.loc[:, active]
         targets = pd.DataFrame(
@@ -187,8 +218,21 @@ class DividendLowVolStrategy(BaseStrategy):
         targets.loc[rebalance_index] = weights.to_numpy(dtype="float32")
         return targets, {
             "mode": "matrix",
+            "signal_dates": [date.date().isoformat() for date in signal_dates],
             "rebalance_dates": [date.date().isoformat() for date in rebalance_index],
-            "selected_counts": selected_counts,
+            "holding_period": int(self.params.get("holding_period", 20)),
+            "selected_counts": {
+                date.date().isoformat(): int(value) for date, value in selected_counts.items()
+            },
+            "eligible_counts": {
+                date.date().isoformat(): int(value)
+                for date, value in primary.sum(axis=1).items()
+            },
+            "fallback_tiers": {
+                date.date().isoformat(): str(value) for date, value in fallback_tiers.items()
+            },
+            "average_holdings": float(selected_counts.mean()),
+            "average_invested_weight": float(weights.sum(axis=1).mean()),
         }
 
     def compile_aligned(

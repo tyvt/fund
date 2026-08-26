@@ -42,6 +42,19 @@ def _engine(data, strategy, config):
     )
 
 
+def _load_matrix(loader: VBTDataLoader, config: dict):
+    return loader.load(
+        factors=DEFAULT_FACTORS,
+        include_prices=True,
+        include_volumes=True,
+        include_market_cap=True,
+        include_float_mv=True,
+        include_is_st=True,
+        include_listed_date=True,
+        adjusted_prices=bool(config.get("adjusted_prices", True)),
+    )
+
+
 def run_quick(args) -> int:
     overrides = {}
     if args.start:
@@ -52,6 +65,8 @@ def run_quick(args) -> int:
         overrides["initial_capital"] = args.capital
     config = load_backtest_config(overrides)
     params = load_strategy_config()
+    if args.compile_rules:
+        params["alignment_mode"] = True
     approved = load_approved_factors(args.approved_factors, required=args.require_diagnosis)
     params["approved_factors"] = approved
     started = time.perf_counter()
@@ -61,14 +76,17 @@ def run_quick(args) -> int:
         cache_enabled=bool(config.get("cache_enabled", True)),
         cache_dir=config.get("cache_dir", "cache/vectorbt"),
     )
-    use_frozen = not args.compile_rules and not args.start and not args.end
-    data = (
-        loader.load_baseline_aligned(
-            config["baseline_path"], initial_capital=float(config["initial_capital"])
+    if bool(params.get("alignment_mode", False)):
+        use_frozen = not args.compile_rules and not args.start and not args.end
+        data = (
+            loader.load_baseline_aligned(
+                config["baseline_path"], initial_capital=float(config["initial_capital"])
+            )
+            if use_frozen
+            else loader.load_aligned(verbose=args.verbose)
         )
-        if use_frozen
-        else loader.load_aligned(verbose=args.verbose)
-    )
+    else:
+        data = _load_matrix(loader, config)
     results = _engine(data, DividendLowVolStrategy(params), config).run(verbose=args.verbose)
     perf = PerformanceCalculator(results)
     paths = ReportGenerator(results, perf, params).archive(config["output_dir"])
@@ -108,7 +126,7 @@ def run_scan(args) -> int:
         cache_dir=config.get("cache_dir", "cache/vectorbt"),
     )
     started = time.perf_counter()
-    data = loader.load(factors=DEFAULT_FACTORS, include_prices=True)
+    data = _load_matrix(loader, config)
     engine = _engine(data, DividendLowVolStrategy(params), config)
     results = ParameterScan(
         engine=engine,

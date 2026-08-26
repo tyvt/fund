@@ -15,11 +15,16 @@ from vbt.strategies.signal_generators import apply_industry_cap, compute_weight_
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_config_defaults_are_alignment_safe():
+def test_config_defaults_use_root_cause_fixed_matrix_strategy():
     strategy = load_strategy_config()
     backtest = load_backtest_config()
-    assert strategy["alignment_mode"] is True
-    assert strategy["alignment_overrides"] == {}
+    assert strategy["alignment_mode"] is False
+    assert strategy["rebalance_freq"] == "M"
+    assert strategy["holding_period"] == 20
+    assert strategy["min_holdings"] == 10
+    assert strategy["min_investment_pct"] == 1.0
+    assert "roe_min" not in strategy
+    assert "debt_ratio_max" not in strategy
     assert backtest["price_source"] == "stock_daily"
     assert Path(backtest["baseline_path"]).name.startswith("rqalpha_parquet_10y_")
 

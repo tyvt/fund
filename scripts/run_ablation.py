@@ -8,6 +8,7 @@ import gc
 import html
 import json
 import math
+import re
 import sys
 import time
 from datetime import datetime
@@ -58,8 +59,9 @@ def strategy_params(config: dict[str, Any]) -> dict[str, Any]:
         **config["hard_constraints"],
         **config["full_constraints"],
         "rebalance_freq": config["backtest"]["rebalance_freq"],
-        "rebalance_month": config["backtest"]["rebalance_month"],
-        "rebalance_day": config["backtest"].get("rebalance_day", 15),
+        "rebalance_month": config["backtest"].get("rebalance_month", 1),
+        "rebalance_day": config["backtest"].get("rebalance_day", -1),
+        "holding_period": config["backtest"].get("holding_period", 20),
         "alignment_mode": False,
     }
 
@@ -123,7 +125,11 @@ def _engine(data, strategy: AblationStrategy, backtest: dict[str, Any]) -> VBTEn
     )
 
 
-def _plot_series(navs: pd.DataFrame, output_dir: Path) -> None:
+def _artifact_name(stem: str, suffix: str, extension: str) -> str:
+    return f"{stem}_{suffix}.{extension}" if suffix else f"{stem}.{extension}"
+
+
+def _plot_series(navs: pd.DataFrame, output_dir: Path, suffix: str = "") -> None:
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
     normalized = navs.div(navs.iloc[0])
@@ -134,7 +140,7 @@ def _plot_series(navs: pd.DataFrame, output_dir: Path) -> None:
     ax.set_ylabel("净值（起点=1）")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_dir / "nav_comparison.png", dpi=160)
+    fig.savefig(output_dir / _artifact_name("nav_comparison", suffix, "png"), dpi=160)
     plt.close(fig)
 
     drawdowns = navs.div(navs.cummax()).sub(1.0)
@@ -146,7 +152,7 @@ def _plot_series(navs: pd.DataFrame, output_dir: Path) -> None:
     ax.yaxis.set_major_formatter(lambda value, _position: f"{value:.0%}")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_dir / "drawdown_comparison.png", dpi=160)
+    fig.savefig(output_dir / _artifact_name("drawdown_comparison", suffix, "png"), dpi=160)
     plt.close(fig)
 
 
@@ -241,12 +247,15 @@ def _conclusion(
             f"（{attribution['contributions'][largest]:+.2%}）。"
         )
     full_row = holdings.loc[holdings["strategy"].eq("full")].iloc[0]
+    invested = float(full_row["average_invested_weight"])
     exposure_text = (
         f"Full 平均持仓 {float(full_row['average_holdings']):.1f} 只、平均投资比例"
-        f" {float(full_row['average_invested_weight']):.1%}（最少持仓"
-        f" {int(full_row['min_holdings'])} 只），因此回撤改善有相当部分来自现金暴露，"
-        "不能全部解释为股票筛选能力。"
+        f" {invested:.1%}（最少持仓 {int(full_row['min_holdings'])} 只）。"
     )
+    if invested >= 0.999:
+        exposure_text += "现金假象已消除，风险收益变化主要来自股票筛选和约束。"
+    else:
+        exposure_text += "仍存在未投资现金，需要检查候选池或约束可行性。"
     market_text = (
         f"Full 相对市场基准的年化超额收益为 {attribution['excess_return']:+.2%}。"
     )
@@ -269,10 +278,10 @@ def _report_markdown(
         "",
         f"- 区间：{backtest['start_date']} ~ {backtest['end_date']}",
         f"- 初始资金：{float(backtest['initial_capital']):,.0f}",
-        f"- 调仓：每年 1 月 15 日后的首个交易日；信号取前一交易日",
+        "- 调仓：每月最后一个交易日生成信号，下一交易日执行；持有期口径 20 个交易日",
         "- 执行：可分股目标权重；比例佣金、卖出印花税及滑点；不使用最低佣金和整手约束",
         "- 收益：前复权价格；避免除权除息被误记为投资亏损",
-        "- 财务约束：绝对 ROE/资产负债率，年报自次年 4 月 30 日起可用",
+        "- 财务约束：ROE 剔除后 20%、负债率剔除前 20%；年报自次年 4 月 30 日起可用",
         "",
         "## 四组策略绩效",
         "",
@@ -371,11 +380,15 @@ def print_attribution(attribution: dict[str, Any]) -> None:
     print(f"  合计超额收益: {attribution['excess_return']:+.2%}（100%）")
 
 
-def run(config: dict[str, Any], *, verbose: bool = False) -> dict[str, Any]:
+def run(
+    config: dict[str, Any], *, verbose: bool = False, tag: str | None = None
+) -> dict[str, Any]:
     backtest = config["backtest"]
     output_dir = ROOT / config["output"]["directory"]
     output_dir.mkdir(parents=True, exist_ok=True)
     params = strategy_params(config)
+    safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(tag or "")).strip("_")
+    suffix = "after_fix" if safe_tag == "after_root_cause_fix" else safe_tag
     started = time.perf_counter()
     print(f"加载点时数据：{backtest['start_date']} ~ {backtest['end_date']} ...", flush=True)
     loader = VBTDataLoader(
@@ -444,17 +457,39 @@ def run(config: dict[str, Any], *, verbose: bool = False) -> dict[str, Any]:
         "attribution": attribution,
         "config": config,
         "reproducibility": reproducibility,
+        "tag": tag,
     }
-    (output_dir / "metrics.json").write_text(
+    (output_dir / _artifact_name("metrics", suffix, "json")).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
-    nav_frame.rename_axis("trade_date").to_csv(output_dir / "nav_series.csv", encoding="utf-8-sig")
-    holdings.to_csv(output_dir / "holdings_summary.csv", index=False, encoding="utf-8-sig")
-    _plot_series(nav_frame, output_dir)
+    nav_frame.rename_axis("trade_date").to_csv(
+        output_dir / _artifact_name("nav_series", suffix, "csv"), encoding="utf-8-sig"
+    )
+    holdings.to_csv(
+        output_dir / _artifact_name("holdings_summary", suffix, "csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
+    _plot_series(nav_frame, output_dir, suffix)
     markdown = _report_markdown(config, metrics, attribution, holdings)
-    (output_dir / "ablation_report.md").write_text(markdown, encoding="utf-8")
-    (output_dir / "ablation_report.html").write_text(
-        _report_html(markdown, metrics, holdings), encoding="utf-8"
+    if suffix:
+        markdown = markdown.replace("nav_comparison.png", _artifact_name("nav_comparison", suffix, "png"))
+        markdown = markdown.replace(
+            "drawdown_comparison.png", _artifact_name("drawdown_comparison", suffix, "png")
+        )
+    (output_dir / _artifact_name("ablation_report", suffix, "md")).write_text(
+        markdown, encoding="utf-8"
+    )
+    html_report = _report_html(markdown, metrics, holdings)
+    if suffix:
+        html_report = html_report.replace(
+            "nav_comparison.png", _artifact_name("nav_comparison", suffix, "png")
+        ).replace(
+            "drawdown_comparison.png",
+            _artifact_name("drawdown_comparison", suffix, "png"),
+        )
+    (output_dir / _artifact_name("ablation_report", suffix, "html")).write_text(
+        html_report, encoding="utf-8"
     )
     print_attribution(attribution)
     print(f"输出目录：{output_dir}")
@@ -467,6 +502,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start", help="覆盖起始日期 YYYY-MM-DD")
     parser.add_argument("--end", help="覆盖结束日期 YYYY-MM-DD")
     parser.add_argument("--config", default="config/vectorbt/ablation_config.yaml")
+    parser.add_argument("--tag", help="结果标签；after_root_cause_fix 写入 *_after_fix 文件")
     parser.add_argument("--quick", action="store_true", help="读取最近结果，仅打印收益归因")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -484,13 +520,15 @@ def main(argv: list[str] | None = None) -> int:
         config["backtest"]["end_date"] = args.end
     output_dir = ROOT / config["output"]["directory"]
     if args.quick:
-        path = output_dir / "metrics.json"
+        safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(args.tag or "")).strip("_")
+        suffix = "after_fix" if safe_tag == "after_root_cause_fix" else safe_tag
+        path = output_dir / _artifact_name("metrics", suffix, "json")
         if not path.exists():
             raise FileNotFoundError(f"尚无消融结果，请先运行完整实验：{path}")
         payload = json.loads(path.read_text(encoding="utf-8"))
         print_attribution(payload["attribution"])
         return 0
-    run(config, verbose=args.verbose)
+    run(config, verbose=args.verbose, tag=args.tag)
     return 0
 
 
