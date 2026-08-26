@@ -1,0 +1,27 @@
+diagnosis:
+  start_date: '2010-01-01'
+  end_date: null
+  horizons: [1, 5, 10, 20, 40]
+  primary_horizon: 1
+  n_quantiles: 10
+  rebalance_freq: M
+  ic_method: spearman
+  decay_window: 12
+  min_cross_section: 20
+  monotonicity_min_rank_corr: 0.80
+  official_validation:
+    enabled: false
+    max_workers: 1
+
+thresholds:
+  ic_mean_min: 0.015
+  ic_ir_min: 0.30
+  spread_return_min: 0.02
+  quantile_monotonicity: true
+  monotonicity_min_rank_corr: 0.80
+  max_ic_decay: 0.50
+
+output:
+  format: [md, html]
+  output_dir: output/alphapurify
+  approved_factors_file: output/alphapurify/approved_factors.json

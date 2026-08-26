@@ -1118,3 +1118,24 @@ python scripts/verify_parquet_backtest.py --years 10 --capital 100000
 | `DLV_BACKTEST_PRICE_SOURCE` | 策略台账 K 线来源；与引擎数据源是独立开关 |
 
 数据湖当前不包含分钟线、期货或期权；bundle 的 `instruments.pkl` 也不覆盖 StockDB 的全部 ETF 等代码。
+
+# AlphaPurify 因子诊断
+
+项目通过 `alphapurify_bridge` 接入官方 `alphapurify==1.0.6`，避免本地包遮蔽第三方库。诊断层直接读取因子 Snapshot 与 `stock_daily`，输出 IC/IR、分层收益、因子收益归因、MD/HTML 报告，以及供 VectorBT 自动读取的批准因子清单。
+
+```powershell
+# 单因子诊断
+.\.venv-vectorbt\Scripts\python.exe scripts\run_factor_diagnosis.py --factor dividend_yield --start 2010-01-01 --report
+
+# 全因子诊断
+.\.venv-vectorbt\Scripts\python.exe scripts\run_factor_diagnosis.py --all --report
+
+# 验收（快速 / 十年全量）
+.\.venv-vectorbt\Scripts\python.exe scripts\verify_factor_diagnosis.py
+.\.venv-vectorbt\Scripts\python.exe scripts\verify_factor_diagnosis.py --full
+
+# 要求 VectorBT 在批准清单存在后才运行
+.\.venv-vectorbt\Scripts\python.exe scripts\run_vectorbt_pipeline.py --require-diagnosis
+```
+
+默认采用与官方 AlphaPurify 默认口径一致的 Spearman Rank IC。`--official` 会额外运行官方 AlphaPurify 抽检，计算开销较高。因子方向、阈值与预测期位于 `config/alphapurify/`；稳定交接文件为 `output/alphapurify/approved_factors.json`。

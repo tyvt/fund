@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-08-26T10:00:00+08:00",
+  "mode": "full",
+  "date_range": {
+    "start": "2015-01-01",
+    "end": "2024-12-31"
+  },
+  "runs": 3,
+  "single_factor": {
+    "factor": "dividend_yield",
+    "durations": [10.415365500026383, 10.53342920000432, 10.35130359994946],
+    "average": 10.433366099993387,
+    "stages": {
+      "data_load": 2.687881699996069,
+      "data_prep": 0.024411700025666505,
+      "factor_extract": 0.0,
+      "alphapurify": 0.0,
+      "metrics": 4.46605449996423,
+      "report": 0.0,
+      "serialize": 0.0
+    }
+  },
+  "batch": {
+    "factors": ["dividend_yield", "volatility_60d", "beta_300", "roe", "debt_ratio", "roe_volatility"],
+    "durations": [38.440514499961864, 39.22983359999489, 35.05387189995963],
+    "average": 37.57473989997213,
+    "stages": {
+      "data_load": 3.291014400019776,
+      "data_prep": 0.02367630001390353,
+      "factor_extract": 0.0,
+      "alphapurify": 0.0,
+      "metrics": 27.38901840004837,
+      "report": 0.0,
+      "serialize": 0.0
+    }
+  },
+  "memory_delta_gb": 1.55,
+  "note": "当前未提交工作区实现；耗时为本次三次原始测量，内存采用任务说明书给出的 1.55 GB 基线。"
+}

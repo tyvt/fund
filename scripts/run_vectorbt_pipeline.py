@@ -17,7 +17,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vbt.adapters import DEFAULT_FACTORS, VBTDataLoader
-from vbt.config import load_backtest_config, load_scan_config, load_strategy_config
+from vbt.config import (
+    load_approved_factors,
+    load_backtest_config,
+    load_scan_config,
+    load_strategy_config,
+)
 from vbt.engine import PerformanceCalculator, ReportGenerator, VBTEngine
 from vbt.engine.parameter_scan import ParameterScan
 from vbt.strategies import DividendLowVolStrategy
@@ -47,6 +52,8 @@ def run_quick(args) -> int:
         overrides["initial_capital"] = args.capital
     config = load_backtest_config(overrides)
     params = load_strategy_config()
+    approved = load_approved_factors(args.approved_factors, required=args.require_diagnosis)
+    params["approved_factors"] = approved
     started = time.perf_counter()
     loader = VBTDataLoader(
         start_date=config["start_date"],
@@ -75,6 +82,7 @@ def run_quick(args) -> int:
     print(f"HTML 报告：{paths['html']}")
     print(f"Markdown：{paths['markdown']}")
     print(f"结果数据：{paths['run_dir']}")
+    print(f"诊断批准因子：{', '.join(approved) if approved else '无（未启用门禁）'}")
     if args.open:
         webbrowser.open(paths["html"].resolve().as_uri())
     return 0
@@ -91,6 +99,8 @@ def run_scan(args) -> int:
     config = load_backtest_config(config_overrides)
     scan = load_scan_config(args.param_file)
     params = load_strategy_config({"alignment_mode": False})
+    approved = load_approved_factors(args.approved_factors, required=args.require_diagnosis)
+    params["approved_factors"] = approved
     loader = VBTDataLoader(
         start_date=config["start_date"],
         end_date=config["end_date"],
@@ -130,6 +140,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--open", action="store_true", help="回测完成后用浏览器打开 HTML")
     parser.add_argument("--compile-rules", action="store_true", help="忽略冻结基准，重新编译完整生产规则（冷启动较慢）")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--approved-factors",
+        default="output/alphapurify/approved_factors.json",
+        help="因子诊断生成的 VectorBT 批准清单",
+    )
+    parser.add_argument(
+        "--require-diagnosis",
+        action="store_true",
+        help="批准清单缺失时阻止 VectorBT 流水线运行",
+    )
     return parser.parse_args()
 
 

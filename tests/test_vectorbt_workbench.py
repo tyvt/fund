@@ -76,7 +76,7 @@ def test_sparse_scan_values_constant_share_intervals():
 
 def test_all_workbench_notebooks_have_valid_python_cells():
     paths = sorted((ROOT / "notebooks").rglob("*.ipynb"))
-    assert len(paths) == 7
+    assert len(paths) == 8
     for path in paths:
         notebook = nbformat.read(path, as_version=4)
         assert notebook.cells

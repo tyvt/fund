@@ -1,0 +1,67 @@
+factors:
+  dividend_yield:
+    name: dividend_yield
+    display_name: 股息率 TTM
+    category: scoring
+    description: 过去365天每股现金分红合计 / 当日收盘价（小数）
+    source: snapshot
+    version: v1
+    direction: 1
+    last_diagnosed: '2026-08-26T02:44:15+00:00'
+    diagnosis_status: FAIL
+    diagnosis_data_version: fa3ce0d6e690f3d7
+  volatility_60d:
+    name: volatility_60d
+    display_name: 60日年化波动率
+    category: risk
+    description: 最近60个有效交易日对数收益率样本标准差年化值
+    source: snapshot
+    version: v1
+    direction: -1
+    last_diagnosed: '2026-08-26T02:44:15+00:00'
+    diagnosis_status: FAIL
+    diagnosis_data_version: fa3ce0d6e690f3d7
+  beta_300:
+    name: beta_300
+    display_name: 沪深300 Beta
+    category: risk
+    description: 最近252个共同交易日相对沪深300的 Beta
+    source: snapshot
+    version: v1
+    direction: -1
+    last_diagnosed: '2026-08-26T02:44:15+00:00'
+    diagnosis_status: FAIL
+    diagnosis_data_version: fa3ce0d6e690f3d7
+  roe:
+    name: roe
+    display_name: ROE
+    category: quality
+    description: 最近可用年报 ROE（百分比点）
+    source: snapshot
+    version: v1
+    direction: 1
+    last_diagnosed: '2026-08-26T02:44:16+00:00'
+    diagnosis_status: FAIL
+    diagnosis_data_version: fa3ce0d6e690f3d7
+  debt_ratio:
+    name: debt_ratio
+    display_name: 资产负债率
+    category: quality
+    description: 最近可用年报资产负债率（百分比点）
+    source: snapshot
+    version: v1
+    direction: -1
+    last_diagnosed: '2026-08-26T02:44:16+00:00'
+    diagnosis_status: FAIL
+    diagnosis_data_version: fa3ce0d6e690f3d7
+  roe_volatility:
+    name: roe_volatility
+    display_name: ROE 波动率（行业中性）
+    category: quality
+    description: 最近8个年度ROE样本标准差减同期行业均值
+    source: snapshot
+    version: v1
+    direction: -1
+    last_diagnosed: '2026-08-26T02:44:16+00:00'
+    diagnosis_status: FAIL
+    diagnosis_data_version: fa3ce0d6e690f3d7

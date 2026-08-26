@@ -16,6 +16,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "config" / "vectorbt"
+DEFAULT_APPROVED_FACTORS_PATH = ROOT / "output" / "alphapurify" / "approved_factors.json"
 
 
 def deep_merge(base: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -52,6 +53,26 @@ def load_backtest_config(overrides: Mapping[str, Any] | None = None) -> dict[str
 def load_scan_config(path: str | Path | None = None) -> dict[str, Any]:
     raw = load_yaml(path or CONFIG_ROOT / "scan_params.yaml")
     return dict(raw.get("scan", {}))
+
+
+def load_approved_factors(
+    path: str | Path = DEFAULT_APPROVED_FACTORS_PATH,
+    *,
+    required: bool = False,
+) -> list[str]:
+    """Read the stable hand-off artifact produced by factor diagnosis."""
+    target = Path(path)
+    if not target.is_absolute():
+        target = ROOT / target
+    if not target.is_file():
+        if required:
+            raise FileNotFoundError(f"因子诊断批准清单不存在：{target}")
+        return []
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    factors = payload.get("factors")
+    if not isinstance(factors, list):
+        raise ValueError(f"批准清单格式错误，factors 必须为列表：{target}")
+    return list(dict.fromkeys(str(value) for value in factors))
 
 
 def stable_hash(value: Any) -> str:

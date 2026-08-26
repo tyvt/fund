@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-08-26T10:39:57+08:00",
+  "mode": "full",
+  "date_range": {
+    "start": "2015-01-01",
+    "end": "2024-12-31"
+  },
+  "runs": 3,
+  "single_factor": {
+    "factor": "dividend_yield",
+    "durations": [
+      9.14265700004762,
+      0.03664440003922209,
+      0.07260309997946024
+    ],
+    "average": 3.0839681666887677,
+    "stages": {
+      "data_load": 0.9865732666609498,
+      "data_prep": 0.003788933351946374,
+      "factor_extract": 0.0,
+      "alphapurify": 0.0,
+      "metrics": 2.0123784333118238,
+      "report": 0.0,
+      "serialize": 0.0
+    }
+  },
+  "batch": {
+    "factors": [
+      "dividend_yield",
+      "volatility_60d",
+      "beta_300",
+      "roe",
+      "debt_ratio",
+      "roe_volatility"
+    ],
+    "durations": [
+      36.00119000003906,
+      0.2509451999794692,
+      0.25372819998301566
+    ],
+    "average": 12.168621133333849,
+    "stages": {
+      "data_load": 1.309519000002183,
+      "data_prep": 0.002280700001089523,
+      "factor_extract": 0.0,
+      "alphapurify": 0.0,
+      "metrics": 10.720078766695224,
+      "report": 0.0,
+      "serialize": 0.0
+    }
+  },
+  "report_seconds": 0.58476439997321,
+  "memory_delta_gb": 3.7538833618164062,
+  "max_numeric_diff": 0.0
+}
