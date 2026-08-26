@@ -13,6 +13,7 @@ from alphapurify_bridge.filters import ThresholdFilter
 from alphapurify_bridge.io import write_approved_factors
 from alphapurify_bridge.reporting import DiagnosisReporter
 from alphapurify_bridge.utils import PERF_STAGE_NAMES, PerformanceLog, StageTimer
+from alphapurify_bridge.utils import load_industry_mapping, neutralize_by_industry
 from scripts.run_factor_diagnosis import _fast_config
 from vbt.config import load_approved_factors
 
@@ -61,6 +62,51 @@ def test_negative_direction_orients_ic_positive():
         }
     )
     assert compute_ic(frame, direction=-1, min_observations=5).mean() == pytest.approx(1.0)
+
+
+def test_runner_apply_direction_orients_once():
+    values = pd.Series([1.0, -2.0, np.nan])
+    oriented = DiagnosisRunner._apply_direction(values, -1)
+    assert oriented.iloc[:2].tolist() == [-1.0, 2.0]
+    assert DiagnosisRunner._apply_direction(values, 1).equals(values)
+    with pytest.raises(AssertionError, match="重复翻转"):
+        DiagnosisRunner._apply_direction(oriented, -1)
+    with pytest.raises(ValueError, match="direction"):
+        DiagnosisRunner._apply_direction(values, 0)
+
+    runner = DiagnosisRunner(
+        {"diagnosis": {"horizons": [1, 20], "primary_horizon": 1}},
+        registry={
+            "factors": {"alpha": {"direction": 1, "primary_horizon": 20}}
+        },
+    )
+    assert runner._primary_horizon("alpha") == 20
+
+
+def test_industry_neutralization_supports_cache_schema_and_preserves_index(tmp_path):
+    source = tmp_path / "industry.csv"
+    source.write_text(
+        "code,industry,sw_code\n1,银行,801780\n2,银行,801780\n3,电子,801080\n",
+        encoding="utf-8",
+    )
+    mapping = load_industry_mapping(source)
+    assert mapping.to_dict("records") == [
+        {"symbol": "000001", "industry_name": "银行"},
+        {"symbol": "000002", "industry_name": "银行"},
+        {"symbol": "000003", "industry_name": "电子"},
+    ]
+    frame = pd.DataFrame(
+        {
+            "trade_date": ["2024-01-02"] * 4,
+            "symbol": ["000002", "000001", "000003", "000004"],
+            "roe": [30.0, 10.0, 8.0, 99.0],
+        },
+        index=[9, 3, 7, 1],
+    )
+    result = neutralize_by_industry(frame, "roe", mapping)
+    assert result.index.tolist() == [9, 3, 7, 1]
+    assert result.iloc[:3].tolist() == [10.0, -10.0, 0.0]
+    assert pd.isna(result.iloc[3])
 
 
 def test_quantile_monotonicity_uses_oriented_values():
@@ -174,6 +220,7 @@ def test_report_formats_reuse_chart_generation(tmp_path, monkeypatch):
     result = {
         "factor_name": "alpha",
         "direction": 1,
+        "primary_horizon": 20,
         "sample_count": 1,
         "checks": {},
         "ic_by_horizon": {},
@@ -183,6 +230,7 @@ def test_report_formats_reuse_chart_generation(tmp_path, monkeypatch):
     paths = reporter.generate_factor_reports(result, ("md", "html"))
     assert len(calls) == 1
     assert len(paths) == 2 and all(path.is_file() for path in paths)
+    assert "主预测期：20 个交易日" in paths[0].read_text(encoding="utf-8")
 
 
 def test_runner_profile_reports_cache_hit_without_changing_values(tmp_path):
@@ -192,6 +240,7 @@ def test_runner_profile_reports_cache_hit_without_changing_values(tmp_path):
             "start_date": "2024-01-02",
             "end_date": "2024-01-03",
             "horizons": [1],
+            "primary_horizon": 1,
             "primary_horizon": 1,
             "n_quantiles": 5,
             "rebalance_freq": "D",

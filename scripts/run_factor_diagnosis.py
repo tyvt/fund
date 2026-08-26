@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import logging
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     selection.add_argument("--all", action="store_true", help="诊断注册表中的全部因子")
     parser.add_argument("--start", help="覆盖起始日期 YYYY-MM-DD")
     parser.add_argument("--end", help="覆盖结束日期 YYYY-MM-DD")
+    parser.add_argument("--horizon", type=int, help="覆盖本次诊断的主预测期（交易日）")
     parser.add_argument("--config", default="config/alphapurify/diagnosis_config.yaml")
     parser.add_argument("--registry", default="config/alphapurify/factor_registry.yaml")
     parser.add_argument("--report", action="store_true", help="生成单因子和批量报告")
@@ -58,6 +60,16 @@ def main(args: argparse.Namespace) -> int:
     if args.fast:
         config = _fast_config(config)
     registry = load_factor_registry(args.registry)
+    if args.horizon is not None:
+        if args.horizon < 1:
+            raise ValueError("--horizon 必须为正整数")
+        horizons = list(config["diagnosis"]["horizons"])
+        if args.horizon not in horizons:
+            horizons.append(args.horizon)
+        config["diagnosis"]["horizons"] = horizons
+        config["diagnosis"]["primary_horizon"] = args.horizon
+        for metadata in registry["factors"].values():
+            metadata["primary_horizon"] = args.horizon
     runner = DiagnosisRunner(config, registry=registry)
     if args.factor:
         factors = [args.factor]
@@ -94,7 +106,15 @@ def main(args: argparse.Namespace) -> int:
             report_paths.extend(reporter.generate_factor_reports(result, formats))
             factor_report_seconds[str(result["factor_name"])] = time.perf_counter() - factor_started
         for output_format in formats:
-            report_paths.append(reporter.generate_batch_report(results, output_format))
+            result_horizons = {int(result["primary_horizon"]) for result in results}
+            stem = (
+                f"batch_diagnosis_{next(iter(result_horizons))}d"
+                if len(result_horizons) == 1
+                else "batch_diagnosis_mixed"
+            )
+            report_paths.append(
+                reporter.generate_batch_report(results, output_format, stem=stem)
+            )
     report_elapsed = time.perf_counter() - report_started if args.report else 0.0
     total_elapsed = time.perf_counter() - started
     if args.profile:
@@ -142,4 +162,5 @@ def main(args: argparse.Namespace) -> int:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     raise SystemExit(main(parse_args()))

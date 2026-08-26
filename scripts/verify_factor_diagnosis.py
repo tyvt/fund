@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from alphapurify_bridge.adapters import SnapshotAdapter
-from alphapurify_bridge.config import load_diagnosis_config
+from alphapurify_bridge.config import load_diagnosis_config, load_factor_registry
 from alphapurify_bridge.diagnostics import DiagnosisRunner, compute_ic
 from alphapurify_bridge.filters import ThresholdFilter
 from alphapurify_bridge.io import json_safe
@@ -147,15 +147,23 @@ def _average_stages(profiles: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     }
 
 
-def _write_validation_report(checks: Sequence[Mapping[str, object]]) -> Path:
-    output = ROOT / "output" / "alphapurify" / "validation_report.md"
+def _write_validation_report(
+    checks: Sequence[Mapping[str, object]], primary_horizon: int
+) -> Path:
+    output = (
+        ROOT
+        / "output"
+        / "alphapurify"
+        / f"validation_report_{int(primary_horizon)}d.md"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     rows = "\n".join(
         f"| {'✅' if item['passed'] else '❌'} | {item['check']} | {item['detail']} |"
         for item in checks
     )
     output.write_text(
-        "# AlphaPurify 接入验收报告\n\n| 状态 | 检查 | 结果 |\n|---|---|---|\n" + rows + "\n",
+        f"# AlphaPurify {int(primary_horizon)} 日口径接入验收报告\n\n"
+        "| 状态 | 检查 | 结果 |\n|---|---|---|\n" + rows + "\n",
         encoding="utf-8",
     )
     return output
@@ -238,6 +246,22 @@ def main(args: argparse.Namespace) -> int:
                 "ic_decay": {"horizon_1": 0.0, "horizon_5": 0.8},
             }
         )
+        direction_frame = pd.DataFrame(
+            {
+                "trade_date": np.repeat(pd.date_range("2024-01-01", periods=4), 20),
+                "factor_value": np.tile(np.arange(20.0), 4),
+                "forward_return": np.tile(-np.arange(20.0), 4),
+            }
+        )
+        raw_direction_ic = float(compute_ic(direction_frame, min_observations=20).mean())
+        oriented_direction_ic = float(
+            compute_ic(direction_frame, direction=-1, min_observations=20).mean()
+        )
+        registry = load_factor_registry()
+        configured_directions = {
+            name: int(metadata["direction"])
+            for name, metadata in registry["factors"].items()
+        }
 
         report_started = time.perf_counter()
         reporter = DiagnosisReporter("output/alphapurify/reports")
@@ -271,6 +295,27 @@ def main(args: argparse.Namespace) -> int:
             _mark("缓存前后单因子数值一致", single_diff < 1e-6, f"max_diff={single_diff:.3g}"),
             _mark("缓存前后批量数值一致", batch_diff < 1e-6, f"max_diff={batch_diff:.3g}"),
             _mark("随机噪声 IC 接近零", abs(float(noise_ic.mean())) < 0.01, f"IC={noise_ic.mean():.5f}"),
+            _mark(
+                "负向因子只翻转一次",
+                bool(
+                    np.isclose(raw_direction_ic, -1.0)
+                    and np.isclose(oriented_direction_ic, 1.0)
+                ),
+                f"raw={raw_direction_ic:.1f}; oriented={oriented_direction_ic:.1f}",
+            ),
+            _mark(
+                "六因子方向配置",
+                configured_directions
+                == {
+                    "dividend_yield": 1,
+                    "volatility_60d": -1,
+                    "beta_300": -1,
+                    "roe": 1,
+                    "debt_ratio": -1,
+                    "roe_volatility": -1,
+                },
+                str(configured_directions),
+            ),
             _mark(
                 "衰减警告不覆盖最终 PASS",
                 filter_result["status"] == "PASS"
@@ -343,7 +388,9 @@ def main(args: argparse.Namespace) -> int:
         target.write_text(json.dumps(json_safe(baseline), ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"性能基准：{target}")
 
-    output = _write_validation_report(checks)
+    output = _write_validation_report(
+        checks, int(diagnosis.get("primary_horizon", diagnosis["horizons"][0]))
+    )
     failed = [item for item in checks if not item["passed"]]
     print(f"验收完成：{len(checks) - len(failed)}/{len(checks)} 通过")
     print(f"报告：{output}")

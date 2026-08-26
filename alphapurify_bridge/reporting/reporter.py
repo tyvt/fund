@@ -136,6 +136,7 @@ class DiagnosisReporter:
             f"- 诊断区间：{result.get('start_date')} ～ {result.get('end_date')}",
             f"- 有效样本：{int(result.get('sample_count', 0)):,}",
             f"- 因子方向：{'越大越好' if int(result.get('direction', 1)) == 1 else '越小越好'}",
+            f"- 主预测期：{int(result.get('primary_horizon', 1))} 个交易日（IC、IR 与分层收益统一口径）",
             f"- 因子版本：{result.get('factor_version', 'unknown')}；数据版本：{result.get('data_version', 'unknown')}",
             f"- AlphaPurify：{result.get('alphapurify_version') or '未安装'}",
             "",
@@ -200,6 +201,7 @@ class DiagnosisReporter:
         rows = [
             [
                 str(result["factor_name"]),
+                f"{int(result.get('primary_horizon', 1))}日",
                 _number(result.get("ic_mean")),
                 _number(result.get("ic_ir")),
                 _number(result.get("spread_return"), percent=True),
@@ -211,19 +213,25 @@ class DiagnosisReporter:
         return "\n".join([
             "# 因子批量诊断报告",
             "",
-            _table(rows, ["因子", "IC 均值", "IC IR", "多空收益", "判定", "摘要"]),
+            _table(rows, ["因子", "主预测期", "IC 均值", "IC IR", "多空收益", "判定", "摘要"]),
             "",
             f"通过 {sum(result.get('status') == 'PASS' for result in results)} / {len(results)} 个因子。",
             "",
         ])
 
-    def generate_batch_report(self, results: Sequence[Mapping[str, Any]], format: str = "html") -> Path:
+    def generate_batch_report(
+        self,
+        results: Sequence[Mapping[str, Any]],
+        format: str = "html",
+        *,
+        stem: str = "batch_diagnosis",
+    ) -> Path:
         output_format = str(format).lower()
         if output_format not in {"md", "html"}:
             raise ValueError("format 必须为 md 或 html")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         markdown_text = self.batch_markdown(results)
-        target = self.output_dir / f"batch_diagnosis.{output_format}"
+        target = self.output_dir / f"{_slug(stem)}.{output_format}"
         content = markdown_text if output_format == "md" else self._html_document("因子批量诊断报告", markdown_text)
         target.write_text(content, encoding="utf-8")
         return target

@@ -47,10 +47,11 @@ class ThresholdFilter:
                 "operator": "is",
                 "status": "PASS" if value else "FAIL",
             }
+        primary_key = f"horizon_{int(result.get('primary_horizon', 1))}"
         decay_values = [
             float(value)
             for key, value in (result.get("ic_decay") or {}).items()
-            if key != "horizon_1" and self._finite(value)
+            if key != primary_key and self._finite(value)
         ]
         decay = max(decay_values) if decay_values else 0.0
         decay_threshold = float(

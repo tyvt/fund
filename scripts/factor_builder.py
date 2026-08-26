@@ -22,6 +22,12 @@ import duckdb
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from alphapurify_bridge.utils import load_industry_mapping
+
+
 PARQUET_ROOT = ROOT / "data" / "parquet"
 FACTOR_ROOT = PARQUET_ROOT / "factors"
 MANIFEST_PATH = FACTOR_ROOT / "manifest.json"
@@ -33,6 +39,7 @@ RISK_CSV_PATH = ROOT / "cache" / "dividend_lowvol" / "risk_hist_merged.csv"
 INDUSTRY_CSV_PATH = ROOT / "cache" / "dividend_lowvol" / "stock_industry_sw_l1.csv"
 
 BATCH_SIZE = 500
+ROE_VOLATILITY_YEARS = 8
 FACTOR_NAMES = (
     "dividend_yield",
     "volatility_60d",
@@ -76,30 +83,33 @@ def _default_factor_metadata() -> dict[str, dict[str, object]]:
             "name": "roe",
             "display_name": "ROE",
             "category": "quality",
-            "description": "最近可用年报的 roe_pct；年报自次年4月30日起可用",
-            "version": "v1",
-            "depends_on": ["cache/dividend_lowvol/risk_hist_merged.csv"],
-            "schedule": "daily",
-        },
-        "debt_ratio": {
-            "name": "debt_ratio",
-            "display_name": "资产负债率",
-            "category": "quality",
-            "description": "最近可用年报的 debt_ratio_pct；年报自次年4月30日起可用",
-            "version": "v1",
-            "depends_on": ["cache/dividend_lowvol/risk_hist_merged.csv"],
-            "schedule": "daily",
-        },
-        "roe_volatility": {
-            "name": "roe_volatility",
-            "display_name": "ROE 波动率（行业中性）",
-            "category": "quality",
-            "description": "最近8个年度ROE的样本标准差减去同期申万一级行业均值",
+            "description": "最近可用年报的 roe_pct 减同期申万一级行业均值；年报自次年4月30日起可用",
             "version": "v1",
             "depends_on": [
                 "cache/dividend_lowvol/risk_hist_merged.csv",
                 "cache/dividend_lowvol/stock_industry_sw_l1.csv",
             ],
+            "schedule": "daily",
+        },
+        "debt_ratio": {
+            "name": "debt_ratio",
+            "display_name": "资产负债率",
+            "category": "risk",
+            "description": "最近可用年报的 debt_ratio_pct 减同期申万一级行业均值；年报自次年4月30日起可用",
+            "version": "v1",
+            "depends_on": [
+                "cache/dividend_lowvol/risk_hist_merged.csv",
+                "cache/dividend_lowvol/stock_industry_sw_l1.csv",
+            ],
+            "schedule": "daily",
+        },
+        "roe_volatility": {
+            "name": "roe_volatility",
+            "display_name": "ROE 波动率",
+            "category": "quality",
+            "description": "最近8个年度ROE的样本标准差（ddof=1）",
+            "version": "v1",
+            "depends_on": ["cache/dividend_lowvol/risk_hist_merged.csv"],
             "schedule": "daily",
         },
     }
@@ -145,8 +155,9 @@ def load_manifest() -> dict[str, object]:
     for name, defaults in _default_factor_metadata().items():
         current = factors.setdefault(name, {})
         assert isinstance(current, dict)
+        # Definitions are code-owned; only computed statistics are preserved.
         for key, value in defaults.items():
-            current.setdefault(key, value)
+            current[key] = value
         current.setdefault("last_computed", None)
         current.setdefault("row_count", 0)
         current.setdefault("min_date", None)
@@ -180,9 +191,9 @@ def _required_paths(factor_name: str) -> list[Path]:
         "dividend_yield": [DIVIDEND_PATH],
         "volatility_60d": [],
         "beta_300": [PARQUET_ROOT / "index_daily"],
-        "roe": [RISK_CSV_PATH],
-        "debt_ratio": [RISK_CSV_PATH],
-        "roe_volatility": [RISK_CSV_PATH, INDUSTRY_CSV_PATH],
+        "roe": [RISK_CSV_PATH, INDUSTRY_CSV_PATH],
+        "debt_ratio": [RISK_CSV_PATH, INDUSTRY_CSV_PATH],
+        "roe_volatility": [RISK_CSV_PATH],
     }
     return common + extras[factor_name]
 
@@ -416,6 +427,54 @@ risk_reports AS (
 """
 
 
+def _prepare_financial_neutralization(
+    con: duckdb.DuckDBPyConnection, start: date, end: date
+) -> None:
+    """Materialize daily full-market industry means for financial factors."""
+
+    sql = f"""
+CREATE OR REPLACE TEMP TABLE financial_reports AS
+WITH
+{_risk_ctes()}
+SELECT * FROM risk_reports;
+
+CREATE OR REPLACE TEMP TABLE financial_industry_means AS
+WITH
+daily_raw AS (
+    SELECT try_cast(trade_date AS DATE) AS trade_date, symbol
+    FROM read_parquet('{_sql_path(STOCK_DAILY_GLOB)}', hive_partitioning=true)
+    WHERE try_cast(trade_date AS DATE)
+          BETWEEN DATE '{start.isoformat()}' AND DATE '{end.isoformat()}'
+),
+daily AS (
+    SELECT trade_date, symbol
+    FROM daily_raw
+    WHERE trade_date IS NOT NULL
+    GROUP BY trade_date, symbol
+),
+raw_values AS (
+    SELECT d.trade_date, d.symbol, r.roe_pct, r.debt_ratio_pct
+    FROM daily d
+    ASOF LEFT JOIN financial_reports r
+      ON d.symbol = r.symbol AND d.trade_date >= r.available_date
+),
+classified AS (
+    SELECT r.*, i.industry_name
+    FROM raw_values r
+    LEFT JOIN industry_mapping i USING (symbol)
+)
+SELECT
+    trade_date,
+    industry_name,
+    avg(roe_pct)::DOUBLE AS roe_mean,
+    avg(debt_ratio_pct)::DOUBLE AS debt_ratio_mean
+FROM classified
+WHERE industry_name IS NOT NULL
+GROUP BY trade_date, industry_name
+"""
+    con.execute(sql)
+
+
 def _create_financial_factor(
     con: duckdb.DuckDBPyConnection,
     symbols: Sequence[str],
@@ -425,20 +484,37 @@ def _create_financial_factor(
 ) -> None:
     if value_column not in {"roe_pct", "debt_ratio_pct"}:
         raise ValueError(f"不支持的财务字段：{value_column}")
+    mean_column = value_column.replace("_pct", "_mean")
     sql = f"""
 CREATE OR REPLACE TEMP TABLE factor_result AS
 WITH
 {_daily_cte(symbols, end, '')},
-{_risk_ctes()},
 output_daily AS (
     SELECT trade_date, symbol
     FROM daily
     WHERE trade_date BETWEEN DATE '{start.isoformat()}' AND DATE '{end.isoformat()}'
+),
+classified AS (
+    SELECT d.trade_date, d.symbol, i.industry_name
+    FROM output_daily d
+    LEFT JOIN industry_mapping i USING (symbol)
+),
+raw_values AS (
+    SELECT d.trade_date, d.symbol, d.industry_name, r.{value_column}::DOUBLE AS raw_value
+    FROM classified d
+    ASOF LEFT JOIN financial_reports r
+      ON d.symbol = r.symbol AND d.trade_date >= r.available_date
 )
-SELECT d.trade_date, d.symbol, r.{value_column}::DOUBLE AS value
-FROM output_daily d
-ASOF LEFT JOIN risk_reports r
-  ON d.symbol = r.symbol AND d.trade_date >= r.available_date
+SELECT
+    r.trade_date,
+    r.symbol,
+    CASE
+        WHEN r.raw_value IS NOT NULL AND m.{mean_column} IS NOT NULL
+        THEN r.raw_value - m.{mean_column}
+        ELSE NULL
+    END::DOUBLE AS value
+FROM raw_values r
+LEFT JOIN financial_industry_means m USING (trade_date, industry_name)
 """
     con.execute(sql)
 
@@ -446,95 +522,43 @@ ASOF LEFT JOIN risk_reports r
 def _create_roe_volatility(
     con: duckdb.DuckDBPyConnection, symbols: Sequence[str], start: date, end: date
 ) -> None:
-    symbol_list = ", ".join(_sql_string(symbol) for symbol in symbols)
     sql = f"""
 CREATE OR REPLACE TEMP TABLE factor_result AS
 WITH
 {_daily_cte(symbols, end, '')},
 {_risk_ctes()},
-industry_source AS (
-    SELECT
-        lpad(regexp_replace(trim(code), '\\.0$', ''), 6, '0') AS symbol,
-        nullif(trim(industry), '') AS industry
-    FROM read_csv('{_sql_path(INDUSTRY_CSV_PATH)}', header=true, all_varchar=true)
-    QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY industry) = 1
-),
 roe_observations AS (
     SELECT
         r.symbol,
         r.available_date,
-        i.industry,
         r.roe_pct
     FROM risk_reports r
-    LEFT JOIN industry_source i USING (symbol)
     WHERE r.roe_pct IS NOT NULL
 ),
 raw_volatility AS (
     SELECT
         symbol,
         available_date,
-        industry,
         CASE
-            WHEN count(*) OVER factor_window = 8
+            WHEN count(*) OVER factor_window = {ROE_VOLATILITY_YEARS}
             THEN stddev_samp(roe_pct) OVER factor_window
             ELSE NULL
         END::DOUBLE AS raw_value
     FROM roe_observations
     WINDOW factor_window AS (
-        PARTITION BY symbol ORDER BY available_date ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
+        PARTITION BY symbol ORDER BY available_date
+        ROWS BETWEEN {ROE_VOLATILITY_YEARS - 1} PRECEDING AND CURRENT ROW
     )
-),
-availability_dates AS (
-    SELECT DISTINCT available_date
-    FROM risk_reports
-    WHERE available_date <= DATE '{end.isoformat()}'
-),
-risk_symbols AS (
-    SELECT DISTINCT r.symbol, i.industry
-    FROM risk_reports r
-    LEFT JOIN industry_source i USING (symbol)
-),
-annual_states AS (
-    SELECT
-        d.available_date,
-        s.symbol,
-        s.industry,
-        arg_max(v.raw_value, v.available_date)
-            FILTER (WHERE v.raw_value IS NOT NULL) AS raw_value
-    FROM availability_dates d
-    CROSS JOIN risk_symbols s
-    LEFT JOIN raw_volatility v
-      ON v.symbol = s.symbol AND v.available_date <= d.available_date
-    GROUP BY d.available_date, s.symbol, s.industry
-),
-industry_means AS (
-    SELECT available_date, industry, avg(raw_value) AS industry_mean
-    FROM annual_states
-    WHERE industry IS NOT NULL AND raw_value IS NOT NULL
-    GROUP BY available_date, industry
-),
-neutralized AS (
-    SELECT
-        s.available_date,
-        s.symbol,
-        CASE
-            WHEN s.raw_value IS NOT NULL AND m.industry_mean IS NOT NULL
-            THEN s.raw_value - m.industry_mean
-            ELSE NULL
-        END::DOUBLE AS value
-    FROM annual_states s
-    LEFT JOIN industry_means m USING (available_date, industry)
-    WHERE s.symbol IN ({symbol_list})
 ),
 output_daily AS (
     SELECT trade_date, symbol
     FROM daily
     WHERE trade_date BETWEEN DATE '{start.isoformat()}' AND DATE '{end.isoformat()}'
 )
-SELECT d.trade_date, d.symbol, n.value
+SELECT d.trade_date, d.symbol, v.raw_value::DOUBLE AS value
 FROM output_daily d
-ASOF LEFT JOIN neutralized n
-  ON d.symbol = n.symbol AND d.trade_date >= n.available_date
+ASOF LEFT JOIN raw_volatility v
+  ON d.symbol = v.symbol AND d.trade_date >= v.available_date
 """
     con.execute(sql)
 
@@ -745,10 +769,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     con.execute(f"SET temp_directory = '{_sql_path(duckdb_temp)}'")
     con.execute("SET preserve_insertion_order = false")
 
+    industry_mapping = None
+    if any(name in {"roe", "debt_ratio"} for name in factors):
+        industry_mapping = load_industry_mapping(INDUSTRY_CSV_PATH)
+        con.register("industry_mapping", industry_mapping)
+
     started = datetime.now()
+    financial_neutralization_ready = False
     try:
         for factor_name in factors:
             print(f"\n=== {factor_name} ===", flush=True)
+            if factor_name in {"roe", "debt_ratio"} and not financial_neutralization_ready:
+                print("预计算逐交易日行业均值...", flush=True)
+                _prepare_financial_neutralization(con, args.start, args.end)
+                financial_neutralization_ready = True
             build_factor(
                 con,
                 factor_name,

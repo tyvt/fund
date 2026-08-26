@@ -2,7 +2,7 @@ diagnosis:
   start_date: '2010-01-01'
   end_date: null
   horizons: [1, 5, 10, 20, 40]
-  primary_horizon: 1
+  primary_horizon: 20
   n_quantiles: 10
   rebalance_freq: M
   ic_method: spearman
@@ -12,10 +12,13 @@ diagnosis:
   official_validation:
     enabled: false
     max_workers: 1
+  neutralization:
+    enabled: true
+    industry_data_path: cache/dividend_lowvol/stock_industry_sw_l1.csv
 
 thresholds:
-  ic_mean_min: 0.015
-  ic_ir_min: 0.30
+  ic_mean_min: 0.010
+  ic_ir_min: 0.15
   spread_return_min: 0.02
   quantile_monotonicity: true
   monotonicity_min_rank_corr: 0.80

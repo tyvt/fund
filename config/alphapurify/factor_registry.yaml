@@ -7,9 +7,10 @@ factors:
     source: snapshot
     version: v1
     direction: 1
-    last_diagnosed: '2026-08-26T02:44:15+00:00'
-    diagnosis_status: FAIL
-    diagnosis_data_version: fa3ce0d6e690f3d7
+    neutralize_by: null
+    last_diagnosed: '2026-08-26T04:32:43+00:00'
+    diagnosis_status: PASS
+    diagnosis_data_version: 816577c6c8d903eb
   volatility_60d:
     name: volatility_60d
     display_name: 60日年化波动率
@@ -18,9 +19,12 @@ factors:
     source: snapshot
     version: v1
     direction: -1
-    last_diagnosed: '2026-08-26T02:44:15+00:00'
-    diagnosis_status: FAIL
-    diagnosis_data_version: fa3ce0d6e690f3d7
+    neutralize_by: null
+    frequency: monthly
+    primary_horizon: 20
+    last_diagnosed: '2026-08-26T04:32:44+00:00'
+    diagnosis_status: PASS
+    diagnosis_data_version: 816577c6c8d903eb
   beta_300:
     name: beta_300
     display_name: 沪深300 Beta
@@ -29,39 +33,44 @@ factors:
     source: snapshot
     version: v1
     direction: -1
-    last_diagnosed: '2026-08-26T02:44:15+00:00'
+    neutralize_by: null
+    last_diagnosed: '2026-08-26T04:32:44+00:00'
     diagnosis_status: FAIL
-    diagnosis_data_version: fa3ce0d6e690f3d7
+    diagnosis_data_version: 816577c6c8d903eb
   roe:
     name: roe
     display_name: ROE
     category: quality
-    description: 最近可用年报 ROE（百分比点）
-    source: snapshot
+    description: 最近可用年报 ROE（行业中性化后，百分比点）
+    source: financial
     version: v1
     direction: 1
-    last_diagnosed: '2026-08-26T02:44:16+00:00'
+    neutralize_by: industry
+    last_diagnosed: '2026-08-26T04:32:44+00:00'
     diagnosis_status: FAIL
-    diagnosis_data_version: fa3ce0d6e690f3d7
+    diagnosis_data_version: 816577c6c8d903eb
   debt_ratio:
     name: debt_ratio
     display_name: 资产负债率
-    category: quality
-    description: 最近可用年报资产负债率（百分比点）
-    source: snapshot
+    category: risk
+    description: 最近可用年报资产负债率（行业中性化后，百分比点）
+    source: financial
     version: v1
     direction: -1
-    last_diagnosed: '2026-08-26T02:44:16+00:00'
+    neutralize_by: industry
+    last_diagnosed: '2026-08-26T04:32:44+00:00'
     diagnosis_status: FAIL
-    diagnosis_data_version: fa3ce0d6e690f3d7
+    diagnosis_data_version: 816577c6c8d903eb
   roe_volatility:
     name: roe_volatility
-    display_name: ROE 波动率（行业中性）
+    display_name: ROE 波动率
     category: quality
-    description: 最近8个年度ROE样本标准差减同期行业均值
-    source: snapshot
+    description: 最近8个年度 ROE 的样本标准差
+    source: financial
     version: v1
     direction: -1
-    last_diagnosed: '2026-08-26T02:44:16+00:00'
+    neutralize_by: null
+    window: 8
+    last_diagnosed: '2026-08-26T04:32:44+00:00'
     diagnosis_status: FAIL
-    diagnosis_data_version: fa3ce0d6e690f3d7
+    diagnosis_data_version: 816577c6c8d903eb

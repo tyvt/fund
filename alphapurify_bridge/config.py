@@ -54,6 +54,10 @@ def load_diagnosis_config(
     if not horizons or any(int(value) < 1 for value in horizons):
         raise ValueError("diagnosis.horizons 必须是正整数列表")
     diagnosis["horizons"] = list(dict.fromkeys(int(value) for value in horizons))
+    primary_horizon = int(diagnosis.get("primary_horizon", diagnosis["horizons"][0]))
+    if primary_horizon not in diagnosis["horizons"]:
+        raise ValueError("diagnosis.primary_horizon 必须包含在 diagnosis.horizons 中")
+    diagnosis["primary_horizon"] = primary_horizon
     diagnosis["n_quantiles"] = int(diagnosis.get("n_quantiles", 10))
     if diagnosis["n_quantiles"] < 3:
         raise ValueError("diagnosis.n_quantiles 不能小于 3")
@@ -72,6 +76,11 @@ def load_factor_registry(path: str | Path = DEFAULT_REGISTRY_PATH) -> dict[str, 
         if direction not in {-1, 1}:
             raise ValueError(f"因子 {name} 的 direction 必须为 1 或 -1")
         metadata["direction"] = direction
+        if metadata.get("primary_horizon") is not None:
+            primary_horizon = int(metadata["primary_horizon"])
+            if primary_horizon < 1:
+                raise ValueError(f"因子 {name} 的 primary_horizon 必须为正整数")
+            metadata["primary_horizon"] = primary_horizon
     return registry
 
 

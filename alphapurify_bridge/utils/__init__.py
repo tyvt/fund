@@ -6,5 +6,13 @@ from .profiler import (
     StageTimer,
     merge_stages,
 )
+from .neutralization import load_industry_mapping, neutralize_by_industry
 
-__all__ = ["PERF_STAGE_NAMES", "PerformanceLog", "StageTimer", "merge_stages"]
+__all__ = [
+    "PERF_STAGE_NAMES",
+    "PerformanceLog",
+    "StageTimer",
+    "load_industry_mapping",
+    "merge_stages",
+    "neutralize_by_industry",
+]

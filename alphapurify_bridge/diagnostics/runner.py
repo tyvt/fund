@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import time
 from typing import Any, Mapping, Sequence
@@ -29,6 +30,9 @@ from alphapurify_bridge.diagnostics.metrics import (
 from alphapurify_bridge.diagnostics.official import official_version, run_official_diagnostics
 from alphapurify_bridge.filters import ThresholdFilter
 from alphapurify_bridge.utils.profiler import merge_stages
+
+
+logger = logging.getLogger(__name__)
 
 
 def _points(series: pd.Series) -> list[dict[str, Any]]:
@@ -108,6 +112,71 @@ class DiagnosisRunner:
         except KeyError as exc:
             raise ValueError(f"因子未注册：{factor_name}") from exc
 
+    def _primary_horizon(self, factor_name: str) -> int:
+        diagnosis = self.config["diagnosis"]
+        metadata = self._factor_metadata(factor_name)
+        primary = int(
+            metadata.get(
+                "primary_horizon",
+                diagnosis.get("primary_horizon", diagnosis["horizons"][0]),
+            )
+        )
+        if primary not in diagnosis["horizons"]:
+            raise ValueError(
+                f"因子 {factor_name} 的 primary_horizon={primary} 不在 horizons 中"
+            )
+        return primary
+
+    @staticmethod
+    def _apply_direction(factor_values: Any, direction: int) -> Any:
+        """Orient factor values so larger values consistently mean better."""
+
+        if int(direction) not in {-1, 1}:
+            raise ValueError("direction 必须为 1 或 -1")
+        if isinstance(factor_values, pd.Series):
+            assert not factor_values.attrs.get("_alphapurify_direction_applied", False), (
+                "因子方向已应用，禁止重复翻转"
+            )
+            oriented = factor_values.copy()
+            if int(direction) == -1:
+                oriented = -oriented
+            oriented.attrs["_alphapurify_direction_applied"] = True
+            oriented.attrs["_alphapurify_direction"] = int(direction)
+            return oriented
+        return -factor_values if int(direction) == -1 else factor_values
+
+    @staticmethod
+    def _log_metric_ranges(
+        factor_name: str,
+        primary_horizon: int,
+        ic_values: pd.Series,
+        quantile_values: pd.Series,
+    ) -> None:
+        ic_clean = pd.to_numeric(ic_values, errors="coerce").dropna()
+        quantile_clean = pd.to_numeric(quantile_values, errors="coerce").dropna()
+        ic_min = float(ic_clean.min()) if not ic_clean.empty else float("nan")
+        ic_max = float(ic_clean.max()) if not ic_clean.empty else float("nan")
+        quantile_min = (
+            float(quantile_clean.min()) if not quantile_clean.empty else float("nan")
+        )
+        quantile_max = (
+            float(quantile_clean.max()) if not quantile_clean.empty else float("nan")
+        )
+        logger.info(
+            "%s %d日 IC 计算使用的定向因子值范围: [%.6f, %.6f]",
+            factor_name,
+            primary_horizon,
+            ic_min,
+            ic_max,
+        )
+        logger.info(
+            "%s %d日 分层使用的定向因子值范围: [%.6f, %.6f]",
+            factor_name,
+            primary_horizon,
+            quantile_min,
+            quantile_max,
+        )
+
     def diagnose_factor(
         self,
         factor_name: str,
@@ -151,6 +220,7 @@ class DiagnosisRunner:
                 }
             return result
         metadata = self._factor_metadata(factor_name)
+        primary = self._primary_horizon(factor_name)
         aggregates = self.adapter.aggregate_factor_diagnostics(
             factor_name,
             start,
@@ -158,7 +228,7 @@ class DiagnosisRunner:
             horizons=horizons,
             direction=int(metadata.get("direction", 1)),
             ic_method=str(diagnosis.get("ic_method", "spearman")),
-            primary_horizon=int(diagnosis.get("primary_horizon", horizons[0])),
+            primary_horizon=primary,
             n_quantiles=int(diagnosis.get("n_quantiles", 10)),
             rebalance_freq=str(diagnosis.get("rebalance_freq", "M")),
             min_observations=int(diagnosis.get("min_cross_section", 20)),
@@ -188,7 +258,7 @@ class DiagnosisRunner:
         diagnosis = self.config["diagnosis"]
         metadata = self._factor_metadata(factor_name)
         horizons = list(diagnosis["horizons"])
-        primary = int(diagnosis.get("primary_horizon", horizons[0]))
+        primary = self._primary_horizon(factor_name)
         ic_frame = aggregates["ic"]
         ic_series = {
             horizon: pd.Series(
@@ -215,6 +285,14 @@ class DiagnosisRunner:
             float(diagnosis.get("monotonicity_min_rank_corr", 0.8)),
         )
         factor_return_frame = aggregates["factor_return"]
+        histogram = aggregates["histogram"]
+        edges = histogram.get("edges", []) if isinstance(histogram, Mapping) else []
+        oriented_range = pd.Series(
+            [edges[0], edges[-1]] if len(edges) >= 2 else [], dtype=float
+        )
+        self._log_metric_ranges(
+            factor_name, primary, oriented_range, oriented_range
+        )
         factor_returns = pd.Series(
             pd.to_numeric(factor_return_frame["factor_return"], errors="coerce").to_numpy(),
             index=pd.to_datetime(factor_return_frame["trade_date"]),
@@ -226,6 +304,7 @@ class DiagnosisRunner:
             "category": metadata.get("category", "unknown"),
             "factor_version": metadata.get("version", "unknown"),
             "direction": int(metadata.get("direction", 1)),
+            "primary_horizon": primary,
             "start_date": str(start) if start else str(ic_frame["trade_date"].min()),
             "end_date": str(end) if end else str(ic_frame["trade_date"].max()),
             "sample_count": int(aggregates["sample_count"]),
@@ -248,7 +327,7 @@ class DiagnosisRunner:
                 "quantile_curve": quantiles["curve"],
                 "spread_curve": quantiles["spread_curve"],
                 "factor_return_series": _points(factor_returns),
-                "factor_distribution": aggregates["histogram"],
+                "factor_distribution": histogram,
                 "rebalance_observations": quantiles["rebalance_observations"],
             },
         }
@@ -267,12 +346,23 @@ class DiagnosisRunner:
         diagnosis = self.config["diagnosis"]
         metadata = self._factor_metadata(factor_name)
         direction = int(metadata.get("direction", 1))
-        method = str(diagnosis.get("ic_method", "spearman"))
-        minimum = int(diagnosis.get("min_cross_section", 20))
         horizons = list(diagnosis["horizons"])
-        primary = int(diagnosis.get("primary_horizon", horizons[0]))
+        primary = self._primary_horizon(factor_name)
         if primary not in frames:
             raise ValueError(f"primary_horizon={primary} 不在 horizons 中")
+        raw_primary_values = pd.to_numeric(
+            frames[primary]["factor_value"], errors="coerce"
+        )
+        oriented_frames: dict[int, pd.DataFrame] = {}
+        for horizon, frame in frames.items():
+            oriented = frame.copy()
+            oriented["factor_value"] = self._apply_direction(
+                pd.to_numeric(oriented["factor_value"], errors="coerce"), direction
+            )
+            oriented_frames[horizon] = oriented
+        frames = oriented_frames
+        method = str(diagnosis.get("ic_method", "spearman"))
+        minimum = int(diagnosis.get("min_cross_section", 20))
         ic_values: dict[str, float] = {}
         ic_curves: dict[str, list[dict[str, Any]]] = {}
         ic_series_by_horizon: dict[int, pd.Series] = {}
@@ -280,7 +370,7 @@ class DiagnosisRunner:
             ic = compute_ic(
                 frames[horizon],
                 method=method,
-                direction=direction,
+                direction=1,
                 min_observations=minimum,
             )
             ic_series_by_horizon[horizon] = ic
@@ -297,10 +387,23 @@ class DiagnosisRunner:
             else:
                 decay[f"horizon_{horizon}"] = float("nan")
         primary_frame = frames[primary]
+        self._log_metric_ranges(
+            factor_name,
+            primary,
+            primary_frame["factor_value"],
+            primary_frame["factor_value"],
+        )
+        logger.info(
+            "%s 原始因子值范围: [%.6f, %.6f]；direction=%d",
+            factor_name,
+            float(raw_primary_values.min()),
+            float(raw_primary_values.max()),
+            direction,
+        )
         quantiles = compute_quantile_return(
             primary_frame,
             n_quantiles=int(diagnosis.get("n_quantiles", 10)),
-            direction=direction,
+            direction=1,
             rebalance_freq=str(diagnosis.get("rebalance_freq", "M")),
             monotonicity_min_rank_corr=float(
                 diagnosis.get("monotonicity_min_rank_corr", 0.80)
@@ -308,7 +411,7 @@ class DiagnosisRunner:
         )
         factor_returns = compute_factor_returns(
             primary_frame,
-            direction=direction,
+            direction=1,
             min_observations=minimum,
         )
         valid_sample = primary_frame[["factor_value", "forward_return"]].dropna()
@@ -318,6 +421,7 @@ class DiagnosisRunner:
             "category": metadata.get("category", "unknown"),
             "factor_version": metadata.get("version", "unknown"),
             "direction": direction,
+            "primary_horizon": primary,
             "start_date": str(start) if start else str(primary_frame["trade_date"].min().date()),
             "end_date": str(end) if end else str(primary_frame["trade_date"].max().date()),
             "sample_count": int(len(valid_sample)),
@@ -350,7 +454,7 @@ class DiagnosisRunner:
         use_official = bool(official_cfg.get("enabled", False)) if official is None else bool(official)
         if use_official:
             audit = primary_frame.copy()
-            audit["oriented_factor"] = audit["factor_value"] * direction
+            audit["oriented_factor"] = audit["factor_value"]
             official_started = time.perf_counter()
             result["official_validation"] = run_official_diagnostics(
                 audit,
@@ -388,7 +492,9 @@ class DiagnosisRunner:
         end = end_date if end_date is not None else diagnosis.get("end_date")
         official_cfg = diagnosis.get("official_validation", {}) or {}
         use_official = bool(official_cfg.get("enabled", False)) if official is None else bool(official)
-        if not use_official and len(names) > 1:
+        primary_horizons = {name: self._primary_horizon(name) for name in names}
+        shared_primary = set(primary_horizons.values())
+        if not use_official and len(names) > 1 and len(shared_primary) == 1:
             aggregates = self.adapter.aggregate_factors_diagnostics(
                 names,
                 start,
@@ -396,7 +502,7 @@ class DiagnosisRunner:
                 horizons=diagnosis["horizons"],
                 directions={name: int(self._factor_metadata(name).get("direction", 1)) for name in names},
                 ic_method=str(diagnosis.get("ic_method", "spearman")),
-                primary_horizon=int(diagnosis.get("primary_horizon", diagnosis["horizons"][0])),
+                primary_horizon=next(iter(shared_primary)),
                 n_quantiles=int(diagnosis.get("n_quantiles", 10)),
                 rebalance_freq=str(diagnosis.get("rebalance_freq", "M")),
                 min_observations=int(diagnosis.get("min_cross_section", 20)),
