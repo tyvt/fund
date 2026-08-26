@@ -1,0 +1,37 @@
+backtest:
+  start_date: '2015-01-01'
+  end_date: '2024-12-31'
+  initial_capital: 100000
+  rebalance_freq: A
+  rebalance_month: 1
+  rebalance_day: 15
+  commission: 0.0003
+  min_commission: 0.0
+  stamp_duty: 0.001
+  slippage: 0.001
+  adjusted_prices: true
+  fractional_shares: true
+
+selection:
+  top_n: 10
+
+hard_constraints:
+  min_listed_days: 365
+  exclude_st: true
+  min_float_mv: 500000000
+  min_daily_amount: 10000000
+
+full_constraints:
+  dividend_yield_min: 0.03
+  volatility_60d_max: 0.25
+  roe_min: 0.08
+  debt_ratio_max: 0.70
+  roe_volatility_max: 0.15
+  max_single_weight: 0.08
+  industry_single_max: 0.20
+  small_cap_weight_max: 0.40
+  beta_low_min: 0.45
+  beta_high_max: 0.81
+
+output:
+  directory: output/ablation

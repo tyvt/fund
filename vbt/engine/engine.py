@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import gc
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,8 +151,7 @@ class VBTEngine:
             if weights.shape[1] == 0:
                 raise ValueError("策略在回测区间内没有生成任何目标持仓")
             close = self.data["close"].reindex_like(weights).ffill()
-            portfolio = vectorbt_lib.Portfolio.from_orders(
-                close,
+            order_kwargs = dict(
                 size=weights,
                 size_type="targetpercent",
                 fees=self.commission,
@@ -162,6 +162,41 @@ class VBTEngine:
                 call_seq="auto",
                 freq="1D",
             )
+            portfolio = vectorbt_lib.Portfolio.from_orders(
+                close,
+                **order_kwargs,
+            )
+            # ``from_orders`` accepts one fee rate per order but has no separate
+            # sell-tax argument. Infer sell orders once, then replay with their
+            # stamp duty as a fixed fee. This retains fractional target weights
+            # while avoiding the invalid all-market minimum-commission model.
+            if self.stamp_duty_before > 0 or self.stamp_duty_after > 0:
+                readable = portfolio.orders.records_readable
+                sells = readable[
+                    readable["Side"].astype(str).str.casefold().eq("sell")
+                ]
+                if not sells.empty:
+                    fixed_fees = pd.DataFrame(
+                        0.0,
+                        index=weights.index,
+                        columns=weights.columns,
+                        dtype="float32",
+                    )
+                    for order in sells.itertuples(index=False):
+                        timestamp = pd.Timestamp(getattr(order, "Timestamp"))
+                        column = str(getattr(order, "Column"))
+                        gross = abs(float(getattr(order, "Size")) * float(getattr(order, "Price")))
+                        fixed_fees.loc[timestamp, column] += gross * self._stamp_rate(timestamp)
+                    del portfolio
+                    gc.collect()
+                    portfolio = vectorbt_lib.Portfolio.from_orders(
+                        close,
+                        fixed_fees=fixed_fees,
+                        **order_kwargs,
+                    )
+                    metadata = dict(metadata)
+                    metadata["stamp_duty_model"] = "sell_only_two_pass"
+                    del fixed_fees
             value = portfolio.value(group_by=True)
             if isinstance(value, pd.DataFrame):
                 value = value.iloc[:, 0]

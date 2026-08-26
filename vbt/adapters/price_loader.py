@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PRICE_ROOT = ROOT / "data/parquet/stock_daily"
 DEFAULT_INDEX_ROOT = ROOT / "data/parquet/index_daily"
 DEFAULT_CALENDAR_PATH = ROOT / "data/parquet/trade_calendar/calendar.parquet"
+DEFAULT_SECURITY_PATH = ROOT / "data/parquet/stock_meta/securities.parquet"
 DEFAULT_INDUSTRY_PATH = ROOT / "cache/dividend_lowvol/stock_industry_sw_l1.csv"
 DEFAULT_DIVIDEND_PATH = ROOT / "data/parquet/stock_dividend/dividend_events.parquet"
 DEFAULT_SPLIT_PATH = ROOT / "data/parquet/stock_split/split_events.parquet"
@@ -55,6 +56,7 @@ class PriceLoader:
         *,
         index_root: str | Path = DEFAULT_INDEX_ROOT,
         calendar_path: str | Path = DEFAULT_CALENDAR_PATH,
+        security_path: str | Path = DEFAULT_SECURITY_PATH,
         industry_path: str | Path = DEFAULT_INDUSTRY_PATH,
         dividend_path: str | Path = DEFAULT_DIVIDEND_PATH,
         split_path: str | Path = DEFAULT_SPLIT_PATH,
@@ -63,6 +65,7 @@ class PriceLoader:
         self.price_root = Path(price_root).resolve()
         self.index_root = Path(index_root).resolve()
         self.calendar_path = Path(calendar_path).resolve()
+        self.security_path = Path(security_path).resolve()
         self.industry_path = Path(industry_path).resolve()
         self.dividend_path = Path(dividend_path).resolve()
         self.split_path = Path(split_path).resolve()
@@ -189,6 +192,28 @@ class PriceLoader:
         frame["industry"] = frame["industry"].fillna("未分类").astype(str)
         frame["industry_source"] = frame.get("source", "sw")
         return frame[["code", "industry", "industry_source"]].drop_duplicates("code")
+
+    @lru_cache(maxsize=1)
+    def security_table(self) -> pd.DataFrame:
+        """Return point-in-time listing metadata keyed by the six-digit symbol."""
+        if not self.security_path.exists():
+            raise FileNotFoundError(f"证券元数据不存在：{self.security_path}")
+        raw = pd.read_parquet(
+            self.security_path,
+            columns=["symbol", "listed_date", "de_listed_date"],
+        )
+        frame = pd.DataFrame(
+            {
+                "code": raw["symbol"].astype(str).str.zfill(6),
+                "listed_date": pd.to_datetime(
+                    raw["listed_date"], format="%Y-%m-%d", errors="coerce"
+                ),
+                "de_listed_date": pd.to_datetime(
+                    raw["de_listed_date"], format="%Y-%m-%d", errors="coerce"
+                ),
+            }
+        )
+        return frame.drop_duplicates("code", keep="last")
 
     @lru_cache(maxsize=1)
     def dividend_records(self) -> pd.DataFrame:
