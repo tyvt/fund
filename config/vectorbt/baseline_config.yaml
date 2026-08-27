@@ -1,0 +1,48 @@
+baseline:
+  name: "H30269 官网完整方案机械复现"
+  universe: "csi_all_share_proxy"
+  after_tax_factor: 0.90
+  market_cap_rank_pct: 0.80
+  amount_rank_pct: 0.80
+  consecutive_dividend_years: 3
+  payout_high_exclusion_pct: 0.05
+  dividend_top_n: 75
+  volatility_top_n: 50
+  weight_scheme: "average_after_tax_dividend_yield_3y"
+  max_single_weight: 0.15
+  rebalance_freq: "A"
+  rebalance_month: 12
+  rebalance_rule: "second_friday_next_trading_day"
+  incumbent_min_dividend_yield: 0.005
+  incumbent_market_cap_rank_pct: 0.90
+  incumbent_amount_rank_pct: 0.90
+  max_replacement_pct: 0.20
+
+backtest:
+  start_date: "2015-01-01"
+  end_date: "2026-07-28"
+  initial_capital: 100000.0
+  commission: 0.0003
+  stamp_duty: 0.001
+  slippage: 0.001
+  min_commission: 5.0
+
+benchmark:
+  price_index: "H30269"
+  total_return_index: "H20269"
+
+validation:
+  annual_stability_std_max: 0.15
+  candidate_depletion_frequency_max: 0.20
+  buffer_dependency_max: 0.30
+  random_drop_p05_min: 0.05
+  rebalance_shift_p05_min: 0.05
+  rolling_3y_mean_min: 0.05
+  rolling_3y_min: -0.05
+  official_two_stage_candidate_min: 30
+  official_two_stage_annual_return_min: 0.10
+  bootstrap_p05_min: 0.0
+  acceptance_min_passed: 6
+
+output:
+  directory: "output/baseline"

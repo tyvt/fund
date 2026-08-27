@@ -386,6 +386,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.items != 9:
         raise ValueError("锁定协议要求 items 必须等于 9，禁止删减")
     iterations = 1000 if args.full else args.bootstrap_iterations
+    if str(args.tag).startswith("baseline_h30269"):
+        from scripts.baseline_validation import run_baseline_validation
+
+        result = run_baseline_validation(args.tag, iterations=iterations)
+        print(json.dumps({"passed": result["passed"], "accepted": result["accepted"], "checks": result["checks"]}, ensure_ascii=False, indent=2))
+        return 0 if result["accepted"] else 1
     result = run_validation(
         args.tag,
         iterations=iterations,

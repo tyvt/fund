@@ -1140,6 +1140,20 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_stdout_utf8()
     args = parse_args(argv)
+    raw_config = load_yaml(args.config)
+    if "baseline" in raw_config:
+        from scripts.run_h30269_baseline import run_baseline
+
+        if args.start:
+            raw_config.setdefault("backtest", {})["start_date"] = args.start
+        if args.end:
+            raw_config.setdefault("backtest", {})["end_date"] = args.end
+        run_baseline(
+            raw_config,
+            tag=args.tag or "baseline_h30269",
+            verbose=args.verbose,
+        )
+        return 0
     config = load_config(args.config)
     if args.start:
         config["backtest"]["start_date"] = args.start
