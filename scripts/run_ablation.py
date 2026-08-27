@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 import pandas as pd
 
@@ -36,12 +37,22 @@ LABELS = {
     "baseline1": "Baseline 1（硬约束）",
     "baseline2": "Baseline 2（股息率）",
     "full": "Full（完整策略）",
+    "dividend_yield_only": "股息率 Top30（仅硬约束）",
 }
 ATTRIBUTION_LABELS = {
     "hard_constraints": "硬约束贡献",
     "factor_selection": "因子选股贡献",
     "full_constraints": "完整约束贡献",
 }
+
+
+def _configure_chinese_font() -> None:
+    for path in (Path("C:/Windows/Fonts/msyh.ttc"), Path("C:/Windows/Fonts/simhei.ttf")):
+        if path.is_file():
+            font_manager.fontManager.addfont(str(path))
+            plt.rcParams["font.sans-serif"] = [font_manager.FontProperties(fname=str(path)).get_name()]
+            break
+    plt.rcParams["axes.unicode_minus"] = False
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -64,6 +75,36 @@ def strategy_params(config: dict[str, Any]) -> dict[str, Any]:
         "holding_period": config["backtest"].get("holding_period", 20),
         "alignment_mode": False,
     }
+
+
+def experiment_params(config: dict[str, Any], tag: str | None) -> dict[str, Any]:
+    """Return parameter overrides for a named experiment configuration group."""
+    safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(tag or "")).strip("_")
+    experiment = config.get(safe_tag)
+    if not isinstance(experiment, dict):
+        return {}
+    overrides: dict[str, Any] = {}
+    for group in ("selection", "hard_constraints", "full_constraints"):
+        value = experiment.get(group)
+        if isinstance(value, dict):
+            overrides.update(value)
+    nested_overrides = experiment.get("overrides")
+    if nested_overrides is not None and not isinstance(nested_overrides, dict):
+        raise ValueError(f"实验组 {safe_tag} 的 overrides 必须是映射")
+    if isinstance(nested_overrides, dict):
+        overrides.update(nested_overrides)
+    for key, value in experiment.items():
+        if key not in {
+            "name",
+            "description",
+            "extends",
+            "selection",
+            "hard_constraints",
+            "full_constraints",
+            "overrides",
+        }:
+            overrides[key] = value
+    return overrides
 
 
 def calculate_attribution(metrics: dict[str, dict[str, float]]) -> dict[str, Any]:
@@ -130,8 +171,7 @@ def _artifact_name(stem: str, suffix: str, extension: str) -> str:
 
 
 def _plot_series(navs: pd.DataFrame, output_dir: Path, suffix: str = "") -> None:
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
+    _configure_chinese_font()
     normalized = navs.div(navs.iloc[0])
     fig, ax = plt.subplots(figsize=(12, 6))
     normalized.rename(columns=LABELS).plot(ax=ax, linewidth=1.6)
@@ -370,6 +410,150 @@ h1,h2{{color:#0f3d56}}table{{border-collapse:collapse;width:100%;margin:12px 0 2
 <h2>完整 Markdown 内容</h2><pre>{html.escape(markdown_text)}</pre></body></html>"""
 
 
+def _lowvol_acceptance_appendix(
+    output_dir: Path,
+    metrics: dict[str, dict[str, float]],
+    holdings: pd.DataFrame,
+    full_execution: dict[str, Any],
+) -> str:
+    """Build the requested before/after and acceptance section when data exists."""
+    before_path = output_dir / "metrics_after_fix.json"
+    if not before_path.is_file():
+        return ""
+    before = json.loads(before_path.read_text(encoding="utf-8"))["metrics"]["full"]
+    after = metrics["full"]
+    full_row = holdings.loc[holdings["strategy"].eq("full")].iloc[0]
+    average_holdings = float(full_row["average_holdings"])
+    invested = float(full_row["average_invested_weight"])
+    max_sells = int(full_execution.get("max_sells_per_rebalance", 0))
+    checks = [
+        ("年化收益", after["annual_return"], ">= 16%", after["annual_return"] >= 0.16, _pct),
+        ("最大回撤", after["max_drawdown"], ">= -35%（绝对回撤不超过 35%）", after["max_drawdown"] >= -0.35, _pct),
+        ("夏普比率", after["sharpe_ratio"], ">= 0.70", after["sharpe_ratio"] >= 0.70, _number),
+        ("年均单边换手", after["turnover"], "<= 25%", after["turnover"] <= 0.25, _pct),
+        ("平均持仓数", average_holdings, "10–13", 10.0 <= average_holdings <= 13.0, _number),
+        ("平均投资比例", invested, ">= 99.9%", invested >= 0.999, _pct),
+        ("单期最多卖出", float(max_sells), "<= 3", max_sells <= 3, lambda value: str(int(value))),
+    ]
+    lines = [
+        "## Band + 调仓缓冲修复前后",
+        "",
+        "| 指标 | 修复前 Full | 修复后 Full | 变化 |",
+        "|---|---:|---:|---:|",
+    ]
+    for label, key, formatter in (
+        ("年化收益", "annual_return", _pct),
+        ("最大回撤", "max_drawdown", _pct),
+        ("夏普比率", "sharpe_ratio", _number),
+        ("年均单边换手", "turnover", _pct),
+    ):
+        old = float(before[key])
+        new = float(after[key])
+        lines.append(
+            f"| {label} | {formatter(old)} | {formatter(new)} | {formatter(new - old)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## 任务验收",
+            "",
+            "| 验收项 | 实测 | 门槛 | 状态 |",
+            "|---|---:|---:|:---:|",
+        ]
+    )
+    for label, value, threshold, passed, formatter in checks:
+        lines.append(
+            f"| {label} | {formatter(float(value))} | {threshold} | {'通过' if passed else '未通过'} |"
+        )
+    passed_labels = "、".join(label for label, _, _, passed, _ in checks if passed)
+    failed_labels = "、".join(label for label, _, _, passed, _ in checks if not passed)
+    lines.extend(
+        [
+            "",
+            f"已通过：{passed_labels}；未通过：{failed_labels}。",
+            "这些数值为当前点时数据与既定约束下的真实回测结果，未使用示例值替代。",
+            "",
+            "![换手率对比](turnover_comparison.png)",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _rollback_acceptance_appendix(
+    output_dir: Path,
+    metrics: dict[str, dict[str, float]],
+    holdings: pd.DataFrame,
+    full_execution: dict[str, Any],
+) -> str:
+    """Build the Top + Buffer three-stage comparison and acceptance table."""
+    source_paths = {
+        "修复前（原 Top）": output_dir / "metrics_after_fix.json",
+        "Band + Buffer": output_dir / "metrics_lowvol_band_buffer.json",
+    }
+    if not all(path.is_file() for path in source_paths.values()):
+        return ""
+    stages = {
+        label: json.loads(path.read_text(encoding="utf-8"))["metrics"]["full"]
+        for label, path in source_paths.items()
+    }
+    stages["Top + Buffer"] = metrics["full"]
+    after = metrics["full"]
+    full_row = holdings.loc[holdings["strategy"].eq("full")].iloc[0]
+    average_holdings = float(full_row["average_holdings"])
+    invested = float(full_row["average_invested_weight"])
+    max_sells = int(full_execution.get("max_sells_per_rebalance", 0))
+    checks = [
+        ("年化收益", after["annual_return"], ">= 12%", after["annual_return"] >= 0.12, _pct),
+        ("最大回撤", after["max_drawdown"], ">= -36%（绝对回撤不超过 36%）", after["max_drawdown"] >= -0.36, _pct),
+        ("夏普比率", after["sharpe_ratio"], ">= 0.55", after["sharpe_ratio"] >= 0.55, _number),
+        ("年均单边换手", after["turnover"], "<= 30%", after["turnover"] <= 0.30, _pct),
+        ("平均持仓数", average_holdings, "10–14", 10.0 <= average_holdings <= 14.0, _number),
+        ("平均投资比例", invested, ">= 99.9%", invested >= 0.999, _pct),
+        ("单期最多卖出", float(max_sells), "<= 3", max_sells <= 3, lambda value: str(int(value))),
+    ]
+    lines = [
+        "## 三阶段实测对比",
+        "",
+        "| 指标 | 修复前（原 Top） | Band + Buffer | Top + Buffer |",
+        "|---|---:|---:|---:|",
+    ]
+    for label, key, formatter in (
+        ("年化收益", "annual_return", _pct),
+        ("最大回撤", "max_drawdown", _pct),
+        ("夏普比率", "sharpe_ratio", _number),
+        ("年均单边换手", "turnover", _pct),
+    ):
+        values = [formatter(float(stage[key])) for stage in stages.values()]
+        lines.append(f"| {label} | {' | '.join(values)} |")
+    lines.extend(
+        [
+            "",
+            "## 任务验收",
+            "",
+            "| 验收项 | 实测 | 门槛 | 状态 |",
+            "|---|---:|---:|:---:|",
+        ]
+    )
+    for label, value, threshold, passed, formatter in checks:
+        lines.append(
+            f"| {label} | {formatter(float(value))} | {threshold} | {'通过' if passed else '未通过'} |"
+        )
+    passed_labels = "、".join(label for label, _, _, passed, _ in checks if passed)
+    failed_labels = "、".join(label for label, _, _, passed, _ in checks if not passed)
+    lines.extend(
+        [
+            "",
+            f"已通过：{passed_labels or '无'}；未通过：{failed_labels or '无'}。",
+            "以上均为当前点时数据、交易成本和约束下的实际回测结果。",
+            "",
+            "![三阶段对比](three_phase_comparison.png)",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def print_attribution(attribution: dict[str, Any]) -> None:
     print("收益归因分析（相对 Baseline 0 的年化超额收益）：")
     for key in ("hard_constraints", "factor_selection", "full_constraints"):
@@ -388,6 +572,7 @@ def run(
     output_dir.mkdir(parents=True, exist_ok=True)
     params = strategy_params(config)
     safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(tag or "")).strip("_")
+    params.update(experiment_params(config, safe_tag))
     suffix = "after_fix" if safe_tag == "after_root_cause_fix" else safe_tag
     started = time.perf_counter()
     print(f"加载点时数据：{backtest['start_date']} ~ {backtest['end_date']} ...", flush=True)
@@ -411,6 +596,7 @@ def run(
     navs: dict[str, pd.Series] = {}
     metrics: dict[str, dict[str, float]] = {}
     summary_rows: list[dict[str, Any]] = []
+    full_execution: dict[str, Any] = {}
     for position, name in enumerate(STRATEGY_NAMES, 1):
         print(f"[{position}/4] 运行 {LABELS[name]} ...", flush=True)
         result = _engine(data, AblationStrategy(name, params), backtest).run(verbose=verbose)
@@ -419,6 +605,19 @@ def run(
         navs[name] = result.nav.astype(float)
         selected = result.metadata.get("selected_counts", {})
         eligible = result.metadata.get("eligible_counts", {})
+        if name == "full":
+            full_execution = {
+                "volatility_filter_mode": result.metadata.get(
+                    "volatility_filter_mode", "not_applicable"
+                ),
+                "rebalance_buffer_enabled": bool(
+                    result.metadata.get("rebalance_buffer_enabled", False)
+                ),
+                "max_sells_per_rebalance": int(
+                    result.metadata.get("max_sells_per_rebalance", 0)
+                ),
+                "rebalance_trades": result.metadata.get("rebalance_trades", {}),
+            }
         summary_rows.append(
             {
                 "strategy": name,
@@ -456,6 +655,9 @@ def run(
         "metrics": metrics,
         "attribution": attribution,
         "config": config,
+        "experiment_params": experiment_params(config, safe_tag),
+        "holdings_summary": summary_rows,
+        "full_execution": full_execution,
         "reproducibility": reproducibility,
         "tag": tag,
     }
@@ -472,6 +674,24 @@ def run(
     )
     _plot_series(nav_frame, output_dir, suffix)
     markdown = _report_markdown(config, metrics, attribution, holdings)
+    if suffix == "lowvol_band_buffer":
+        markdown = markdown.replace(
+            "# 约束消融实验报告", "# 低波 Band + 调仓缓冲回测报告", 1
+        )
+        appendix = _lowvol_acceptance_appendix(
+            output_dir, metrics, holdings, full_execution
+        )
+        if appendix:
+            markdown = f"{markdown.rstrip()}\n\n{appendix}"
+    elif suffix == "rollback_top_buffer":
+        markdown = markdown.replace(
+            "# 约束消融实验报告", "# 低波 Top + 调仓缓冲回滚报告", 1
+        )
+        appendix = _rollback_acceptance_appendix(
+            output_dir, metrics, holdings, full_execution
+        )
+        if appendix:
+            markdown = f"{markdown.rstrip()}\n\n{appendix}"
     if suffix:
         markdown = markdown.replace("nav_comparison.png", _artifact_name("nav_comparison", suffix, "png"))
         markdown = markdown.replace(
@@ -492,6 +712,142 @@ def run(
         html_report, encoding="utf-8"
     )
     print_attribution(attribution)
+    print(f"输出目录：{output_dir}")
+    print(f"总耗时：{time.perf_counter() - started:.1f}s")
+    return payload
+
+
+def _plot_dividend_single_nav(nav_frame: pd.DataFrame, output_dir: Path) -> None:
+    _configure_chinese_font()
+    normalized = nav_frame.div(nav_frame.iloc[0])
+    fig, ax = plt.subplots(figsize=(12, 6))
+    normalized.rename(columns=LABELS).plot(ax=ax, linewidth=1.7)
+    ax.set_title("股息率 Top30 单因子回测：与 Baseline 1 净值对比")
+    ax.set_xlabel("日期")
+    ax.set_ylabel("净值（起点=1）")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_dir / "nav_comparison_dividend_yield_only.png", dpi=160)
+    plt.close(fig)
+
+
+def run_dividend_yield_only(
+    config: dict[str, Any], *, verbose: bool = False
+) -> dict[str, Any]:
+    """Compare the confirmed dividend Top30 diagnostic with Baseline 1."""
+    backtest = config["backtest"]
+    experiment = config.get("dividend_yield_only")
+    if not isinstance(experiment, dict):
+        raise ValueError("消融配置缺少 dividend_yield_only 分组")
+    selection = experiment.get("selection", {})
+    params = {
+        **strategy_params(config),
+        **selection,
+    }
+    params["top_n"] = int(selection.get("top_n", 30))
+    output_dir = ROOT / config["output"]["directory"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    print(
+        f"加载点时数据：{backtest['start_date']} ~ {backtest['end_date']} ...",
+        flush=True,
+    )
+    loader = VBTDataLoader(
+        start_date=backtest["start_date"],
+        end_date=backtest["end_date"],
+        cache_enabled=False,
+    )
+    data = loader.load(
+        factors=DEFAULT_FACTORS,
+        include_prices=True,
+        include_volumes=True,
+        include_market_cap=True,
+        include_float_mv=True,
+        include_is_st=True,
+        include_listed_date=True,
+        include_absolute_financials=True,
+        adjusted_prices=bool(backtest.get("adjusted_prices", True)),
+    )
+
+    names = ("baseline1", "dividend_yield_only")
+    metrics: dict[str, dict[str, float]] = {}
+    navs: dict[str, pd.Series] = {}
+    holdings: dict[str, float] = {}
+    for position, name in enumerate(names, 1):
+        print(f"[{position}/2] 运行 {LABELS[name]} ...", flush=True)
+        result = _engine(data, AblationStrategy(name, params), backtest).run(verbose=verbose)
+        values = _metrics(result)
+        metrics[name] = values
+        navs[name] = result.nav.astype(float)
+        holdings[name] = float(result.metadata.get("average_holdings", np.nan))
+        print(
+            f"  年化 {values['annual_return']:.2%} | 回撤 {values['max_drawdown']:.2%} | "
+            f"夏普 {values['sharpe_ratio']:.2f} | 换手 {values['turnover']:.2%}",
+            flush=True,
+        )
+        del result
+        gc.collect()
+
+    nav_frame = pd.DataFrame(navs).sort_index()
+    if nav_frame.isna().any().any():
+        missing = nav_frame.isna().sum()
+        raise AssertionError(f"净值序列存在缺失：{missing[missing.gt(0)].to_dict()}")
+    _plot_dividend_single_nav(nav_frame, output_dir)
+
+    baseline = metrics["baseline1"]["annual_return"]
+    single = metrics["dividend_yield_only"]["annual_return"]
+    effective = single > baseline
+    conclusion = (
+        "股息率 Top30 超过硬约束基线，该单因子扩容方案有效。"
+        if effective
+        else "股息率 Top30 未超过硬约束基线；该结果否定的是 Top30 扩容方案，不否定 Q5/Top10 极端分位的有效性。"
+    )
+    lines = [
+        "# dividend_yield Top30 单因子回测",
+        "",
+        f"> 区间：{backtest['start_date']} ~ {backtest['end_date']}；月末信号、下一交易日执行。",
+        "",
+        "| 策略 | 年化收益 | 最大回撤 | 夏普 | 年均单边换手 | 平均持仓数 |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for name in names:
+        value = metrics[name]
+        lines.append(
+            f"| {LABELS[name]} | {_pct(value['annual_return'])} | "
+            f"{_pct(value['max_drawdown'])} | {_number(value['sharpe_ratio'])} | "
+            f"{_pct(value['turnover'])} | {_number(holdings[name], 1)} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"相对 Baseline 1 年化差值：**{single - baseline:+.2%}**。",
+            "",
+            f"**结论：{conclusion}**",
+            "",
+            "![净值对比](nav_comparison_dividend_yield_only.png)",
+            "",
+        ]
+    )
+    payload = {
+        "metrics": metrics,
+        "annual_return_difference_vs_baseline1": single - baseline,
+        "top30_effective": effective,
+        "effective": effective,
+        "conclusion": conclusion,
+        "config": config,
+        "reproducibility": reproducibility_snapshot(params, backtest),
+        "tag": "dividend_yield_only",
+    }
+    (output_dir / "metrics_dividend_yield_only.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+    nav_frame.rename_axis("trade_date").to_csv(
+        output_dir / "nav_series_dividend_yield_only.csv", encoding="utf-8-sig"
+    )
+    (output_dir / "ablation_report_dividend_yield_only.md").write_text(
+        "\n".join(lines), encoding="utf-8"
+    )
+    print(f"结论：{conclusion}")
     print(f"输出目录：{output_dir}")
     print(f"总耗时：{time.perf_counter() - started:.1f}s")
     return payload
@@ -528,7 +884,10 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(path.read_text(encoding="utf-8"))
         print_attribution(payload["attribution"])
         return 0
-    run(config, verbose=args.verbose, tag=args.tag)
+    if args.tag == "dividend_yield_only":
+        run_dividend_yield_only(config, verbose=args.verbose)
+    else:
+        run(config, verbose=args.verbose, tag=args.tag)
     return 0
 
 

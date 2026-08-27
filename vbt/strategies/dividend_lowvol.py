@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,10 @@ import pandas as pd
 from vbt.strategies.base import BaseStrategy
 from vbt.strategies.signal_generators import (
     apply_percentile_filters,
+    compute_constrained_weight_by_factor,
+    filter_volatility_band,
+    filter_volatility_top,
+    rank_by_factor,
     select_stocks_with_fallback,
 )
 
@@ -26,6 +30,275 @@ class CompiledStrategy:
     dividend_taxes: pd.DataFrame
     cash_flows: pd.Series | None = None
     split_deltas: dict[tuple[pd.Timestamp, str], int] | None = None
+
+
+def _position_symbol(position: Any) -> str:
+    if isinstance(position, Mapping):
+        symbol = position.get("symbol", position.get("code"))
+        if symbol is None:
+            raise ValueError("持仓或候选记录缺少 symbol/code")
+        return str(symbol)
+    return str(position)
+
+
+def _position_number(position: Any, key: str, default: float = 0.0) -> float:
+    if not isinstance(position, Mapping):
+        return float(default)
+    try:
+        value = float(position.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+    return value if np.isfinite(value) else float(default)
+
+
+def apply_rebalance_buffer(
+    current_positions: Sequence[Any],
+    new_candidates: Sequence[Any],
+    max_sell: int = 3,
+    *,
+    target_count: int | None = None,
+) -> tuple[list[Any], dict[str, list[Any]]]:
+    """Retain qualified holdings and enforce an absolute per-period sell cap.
+
+    Candidate mappings may provide ``qualified`` (default ``True``), ``score``
+    and ``score_decay``.  Deferred unqualified holdings remain in the portfolio
+    when the sell cap has been reached; they are reconsidered next period.
+    """
+    limit = int(max_sell)
+    if limit < 0:
+        raise ValueError("max_sell 不能为负数")
+
+    candidates = list(new_candidates)
+    candidate_by_symbol = {_position_symbol(item): item for item in candidates}
+    qualified_symbols = {
+        symbol
+        for symbol, item in candidate_by_symbol.items()
+        if not isinstance(item, Mapping) or bool(item.get("qualified", True))
+    }
+    current = list(current_positions)
+    if target_count is None:
+        target = len(current) if current else len(candidates)
+    else:
+        target = max(0, int(target_count))
+
+    qualified: list[Any] = []
+    unqualified: list[Any] = []
+    for position in current:
+        if _position_symbol(position) in qualified_symbols:
+            qualified.append(position)
+        else:
+            unqualified.append(position)
+
+    def deterioration(position: Any) -> tuple[float, float, str]:
+        decay = _position_number(position, "score_decay", 0.0)
+        score = _position_number(position, "score", float("-inf"))
+        return (-decay, score, _position_symbol(position))
+
+    unqualified.sort(key=deterioration)
+    sold = unqualified[:limit]
+    sold_symbols = {_position_symbol(item) for item in sold}
+    kept = qualified + unqualified[limit:]
+    kept_symbols = {_position_symbol(item) for item in kept}
+    buy_slots = max(0, target - len(kept))
+    bought: list[Any] = []
+    for candidate in candidates:
+        symbol = _position_symbol(candidate)
+        if symbol in kept_symbols or symbol in sold_symbols:
+            continue
+        bought.append(candidate)
+        kept_symbols.add(symbol)
+        if len(bought) >= buy_slots:
+            break
+
+    final_positions = kept + bought
+    return final_positions, {"sell": sold, "buy": bought}
+
+
+def build_rebalance_hold_eligible(
+    volatility: pd.DataFrame,
+    dividend: pd.DataFrame,
+    *,
+    hard_eligible: pd.DataFrame,
+    volatility_mode: str,
+    volatility_top_n: int = 10,
+    dividend_top_n: int = 10,
+    hold_threshold_multiplier: int = 3,
+    volatility_mask: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Return the conditional-retention pool for the configured low-vol mode.
+
+    In Top mode, a holding remains qualified only when it is simultaneously in
+    the lowest-volatility expanded pool and the highest-dividend expanded pool.
+    Band/threshold modes retain their existing volatility mask and apply the
+    expanded dividend rank inside that eligible universe.
+    """
+    multiplier = int(hold_threshold_multiplier)
+    if multiplier <= 0:
+        raise ValueError("hold_threshold_multiplier 必须为正整数")
+    hard = hard_eligible.reindex_like(volatility).fillna(False).astype(bool)
+    mode = str(volatility_mode).lower()
+    dividend_limit = int(dividend_top_n) * multiplier
+
+    if mode == "top":
+        volatility_limit = int(volatility_top_n) * multiplier
+        vol_qualified = filter_volatility_top(
+            volatility.where(hard), top_n=volatility_limit
+        )
+        dividend_ranks = rank_by_factor(
+            dividend, ascending=False, mask=hard & dividend.notna()
+        )
+        return hard & vol_qualified & dividend_ranks.le(dividend_limit)
+
+    if volatility_mask is None:
+        raise ValueError(f"{mode} 模式必须提供 volatility_mask")
+    vol_qualified = volatility_mask.reindex_like(volatility).fillna(False).astype(bool)
+    hold_base = hard & vol_qualified & dividend.notna()
+    dividend_ranks = rank_by_factor(dividend, ascending=False, mask=hold_base)
+    return hold_base & dividend_ranks.le(dividend_limit)
+
+
+def build_buffered_weights(
+    factor: pd.DataFrame,
+    *,
+    desired_selected: pd.DataFrame,
+    hold_eligible: pd.DataFrame,
+    expansion_eligible: pd.DataFrame | None = None,
+    max_sell: int = 3,
+    target_weight: float = 1.0,
+    max_weight: float | None = 0.08,
+    industries: Mapping[str, str] | pd.Series | None = None,
+    industry_max: float | None = None,
+    total_mv: pd.DataFrame | None = None,
+    small_cap_weight_max: float | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, dict[str, list[str]]]]:
+    """Apply the stateful buffer and allocate every buffered cross-section."""
+    scores = factor.astype(float)
+    desired = desired_selected.reindex_like(scores).fillna(False).astype(bool)
+    qualified = hold_eligible.reindex_like(scores).fillna(False).astype(bool)
+    expansion = (
+        expansion_eligible.reindex_like(scores).fillna(False).astype(bool)
+        if expansion_eligible is not None
+        else desired | qualified
+    )
+    selected = pd.DataFrame(False, index=scores.index, columns=scores.columns)
+    weights = pd.DataFrame(0.0, index=scores.index, columns=scores.columns)
+    trade_log: dict[str, dict[str, list[str]]] = {}
+    previous: list[dict[str, Any]] = []
+
+    for day in scores.index:
+        row_scores = scores.loc[day]
+        desired_symbols = list(
+            row_scores.where(desired.loc[day]).sort_values(ascending=False).dropna().index
+        )
+        hold_symbols = list(
+            row_scores.where(qualified.loc[day]).sort_values(ascending=False).dropna().index
+        )
+        expansion_symbols = list(
+            row_scores.where(expansion.loc[day]).sort_values(ascending=False).dropna().index
+        )
+        ordered_symbols = list(
+            dict.fromkeys([*desired_symbols, *hold_symbols, *expansion_symbols])
+        )
+        candidates = [
+            {
+                "symbol": str(symbol),
+                "score": float(row_scores.loc[symbol]),
+                "qualified": bool(qualified.loc[day, symbol]),
+            }
+            for symbol in ordered_symbols
+        ]
+        current: list[dict[str, Any]] = []
+        for position in previous:
+            symbol = str(position["symbol"])
+            current_score = row_scores.get(symbol, np.nan)
+            is_qualified = bool(
+                symbol in qualified.columns and qualified.loc[day, symbol]
+            )
+            previous_score = _position_number(position, "score", 0.0)
+            score = float(current_score) if np.isfinite(current_score) else float("-inf")
+            current.append(
+                {
+                    "symbol": symbol,
+                    "score": score,
+                    "score_decay": (
+                        max(0.0, previous_score - score) if is_qualified else float("inf")
+                    ),
+                }
+            )
+
+        # Use the current unconstrained target size rather than perpetually
+        # replacing every supplemental name added by an earlier feasibility
+        # expansion.  Qualified holdings are still never forced out; when an
+        # extra holding later becomes unqualified, the portfolio can converge
+        # back toward the 10-name start / cap-feasible target naturally.
+        target_count = int(desired.loc[day].sum())
+        final, trades = apply_rebalance_buffer(
+            current,
+            candidates,
+            max_sell=max_sell,
+            target_count=target_count,
+        )
+        final_symbols = list(dict.fromkeys(_position_symbol(item) for item in final))
+        sold_symbol_set = {_position_symbol(item) for item in trades["sell"]}
+
+        # The retained set can become infeasible under the 8%/industry/small-cap
+        # caps.  Adding unsold desired names preserves the sell limit and restores
+        # full investment without weakening any allocation constraint.
+        supplemental_buys: list[str] = []
+        while True:
+            row_mask = pd.DataFrame(False, index=[day], columns=scores.columns)
+            row_mask.loc[day, final_symbols] = True
+            allocated = compute_constrained_weight_by_factor(
+                scores.loc[[day]],
+                selected=row_mask,
+                max_weight=max_weight,
+                industries=industries,
+                industry_max=industry_max,
+                total_mv=total_mv.loc[[day]] if total_mv is not None else None,
+                small_cap_weight_max=small_cap_weight_max,
+                target_weight=target_weight,
+            ).iloc[0]
+            if float(allocated.sum()) >= float(target_weight) - 1e-8:
+                break
+            addition = next(
+                (
+                    symbol
+                    for symbol in ordered_symbols
+                    if symbol not in final_symbols and symbol not in sold_symbol_set
+                ),
+                None,
+            )
+            if addition is None:
+                raise ValueError(
+                    f"{pd.Timestamp(day).date()} 缓冲后持仓无法满足满仓及权重约束"
+                )
+            final_symbols.append(addition)
+            supplemental_buys.append(str(addition))
+
+        selected.loc[day, final_symbols] = True
+        weights.loc[day] = allocated
+        sold_symbols = [_position_symbol(item) for item in trades["sell"]]
+        bought_symbols = [
+            *[_position_symbol(item) for item in trades["buy"]],
+            *supplemental_buys,
+        ]
+        trade_log[pd.Timestamp(day).date().isoformat()] = {
+            "sell": sold_symbols,
+            "buy": list(dict.fromkeys(bought_symbols)),
+        }
+        previous = [
+            {
+                "symbol": str(symbol),
+                "score": (
+                    float(row_scores.loc[symbol])
+                    if np.isfinite(row_scores.loc[symbol])
+                    else float("-inf")
+                ),
+            }
+            for symbol in final_symbols
+        ]
+
+    return selected, weights, trade_log
 
 
 def _rebalance_pairs(
@@ -166,10 +439,29 @@ class DividendLowVolStrategy(BaseStrategy):
         roe_volatility = _at_signal_dates(
             data["roe_volatility"], signal_dates, list(rebalance_index), columns
         )
+        volatility_config = dict(self.params.get("volatility_filter") or {})
+        volatility_mode = str(volatility_config.get("mode", "threshold")).lower()
+        if volatility_mode == "band":
+            volatility_mask = filter_volatility_band(
+                volatility.where(hard),
+                lower_quantile=float(volatility_config.get("lower_quantile", 0.20)),
+                upper_quantile=float(volatility_config.get("upper_quantile", 0.80)),
+            )
+        elif volatility_mode == "top":
+            volatility_mask = filter_volatility_top(
+                volatility.where(hard),
+                top_n=int(volatility_config.get("top_n", 10)),
+            )
+        elif volatility_mode == "threshold":
+            volatility_mask = volatility.le(
+                float(self.params.get("volatility_60d_max", 0.25))
+            )
+        else:
+            raise ValueError(f"不支持的波动率过滤模式：{volatility_mode}")
         factor_eligible = (
             hard
             & dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
-            & volatility.le(float(self.params.get("volatility_60d_max", 0.25)))
+            & volatility_mask
             & beta.ge(float(self.params.get("beta_low_min", 0.45)))
             & beta.le(float(self.params.get("beta_high_max", 0.81)))
             & roe_volatility.le(float(self.params.get("roe_volatility_max", 0.15)) * 100.0)
@@ -191,12 +483,16 @@ class DividendLowVolStrategy(BaseStrategy):
             else None
         )
         industries = data["industry"] if "industry" in data else None
+        dividend_config = dict(self.params.get("dividend_filter") or {})
+        dividend_top_n = int(
+            dividend_config.get("top_n", self.params.get("top_n", 10))
+        )
         selected, weights, fallback_tiers = select_stocks_with_fallback(
             dividend,
             primary_eligible=primary,
             relaxed_eligible=factor_eligible,
-            hard_eligible=hard,
-            top_n=int(self.params.get("top_n", 10)),
+            hard_eligible=(hard & volatility_mask if volatility_mode == "band" else hard),
+            top_n=dividend_top_n,
             min_holdings=int(self.params.get("min_holdings", 10)),
             fallback_top_n=int(self.params.get("fallback_top_n", 100)),
             min_investment_pct=float(self.params.get("min_investment_pct", 1.0)),
@@ -206,6 +502,37 @@ class DividendLowVolStrategy(BaseStrategy):
             total_mv=total_mv,
             small_cap_weight_max=float(self.params.get("small_cap_weight_max", 0.40)),
         )
+        buffer_config = dict(self.params.get("rebalance_buffer") or {})
+        buffer_enabled = bool(buffer_config.get("enabled", False))
+        rebalance_trades: dict[str, dict[str, list[str]]] = {}
+        if buffer_enabled:
+            hold_eligible = build_rebalance_hold_eligible(
+                volatility,
+                dividend,
+                hard_eligible=hard,
+                volatility_mode=volatility_mode,
+                volatility_top_n=int(volatility_config.get("top_n", 10)),
+                dividend_top_n=dividend_top_n,
+                hold_threshold_multiplier=int(
+                    buffer_config.get("hold_threshold_multiplier", 3)
+                ),
+                volatility_mask=volatility_mask,
+            )
+            selected, weights, rebalance_trades = build_buffered_weights(
+                dividend,
+                desired_selected=selected,
+                hold_eligible=hold_eligible,
+                expansion_eligible=hard,
+                max_sell=int(buffer_config.get("max_sell_per_month", 3)),
+                target_weight=float(self.params.get("min_investment_pct", 1.0)),
+                max_weight=float(self.params.get("max_single_weight", 0.08)),
+                industries=industries,
+                industry_max=float(self.params.get("industry_single_max", 0.20)),
+                total_mv=total_mv,
+                small_cap_weight_max=float(
+                    self.params.get("small_cap_weight_max", 0.40)
+                ),
+            )
         selected_counts = weights.gt(1e-12).sum(axis=1).astype(int)
         active = weights.abs().sum(axis=0).gt(0.0)
         weights = weights.loc[:, active]
@@ -233,6 +560,13 @@ class DividendLowVolStrategy(BaseStrategy):
             },
             "average_holdings": float(selected_counts.mean()),
             "average_invested_weight": float(weights.sum(axis=1).mean()),
+            "volatility_filter_mode": volatility_mode,
+            "rebalance_buffer_enabled": buffer_enabled,
+            "rebalance_trades": rebalance_trades,
+            "max_sells_per_rebalance": max(
+                (len(trades["sell"]) for trades in rebalance_trades.values()),
+                default=0,
+            ),
         }
 
     def compile_aligned(
@@ -305,4 +639,10 @@ class DividendLowVolStrategy(BaseStrategy):
         return positions.mask(positions.eq(0.0)).ffill().fillna(0.0).astype(float)
 
 
-__all__ = ["CompiledStrategy", "DividendLowVolStrategy"]
+__all__ = [
+    "CompiledStrategy",
+    "DividendLowVolStrategy",
+    "apply_rebalance_buffer",
+    "build_rebalance_hold_eligible",
+    "build_buffered_weights",
+]

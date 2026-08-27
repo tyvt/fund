@@ -10,8 +10,20 @@ dividend_lowvol:
   fallback_top_n: 100
 
   top_n: 10
+  dividend_filter:
+    mode: top
+    top_n: 10
+
   dividend_yield_min: 0.03
-  volatility_60d_max: 0.25
+  volatility_filter:
+    mode: top
+    top_n: 10
+
+  rebalance_buffer:
+    enabled: true
+    max_sell_per_month: 3
+    hold_threshold_multiplier: 3
+
   roe_percentile_min: 0.20
   debt_ratio_percentile_max: 0.80
   roe_volatility_max: 0.15

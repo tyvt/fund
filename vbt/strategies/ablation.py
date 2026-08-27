@@ -8,15 +8,23 @@ import numpy as np
 import pandas as pd
 
 from vbt.strategies.base import BaseStrategy
+from vbt.strategies.dividend_lowvol import (
+    build_buffered_weights,
+    build_rebalance_hold_eligible,
+)
 from vbt.strategies.signal_generators import (
     apply_percentile_filters,
     compute_equal_weight,
+    filter_volatility_band,
+    filter_volatility_top,
     rank_by_factor,
     select_stocks_with_fallback,
 )
 
 
 STRATEGY_NAMES = ("baseline0", "baseline1", "baseline2", "full")
+DIAGNOSTIC_STRATEGY_NAMES = ("dividend_yield_only",)
+SUPPORTED_STRATEGY_NAMES = (*STRATEGY_NAMES, *DIAGNOSTIC_STRATEGY_NAMES)
 
 
 def annual_rebalance_pairs(
@@ -124,7 +132,7 @@ class AblationStrategy(BaseStrategy):
     )
 
     def __init__(self, name: str, params: Mapping[str, Any] | None = None):
-        if name not in STRATEGY_NAMES:
+        if name not in SUPPORTED_STRATEGY_NAMES:
             raise ValueError(f"未知消融策略：{name}")
         super().__init__(params)
         self.name = name
@@ -137,7 +145,7 @@ class AblationStrategy(BaseStrategy):
 
     def generate_signals(self, data):
         missing = [field for field in self.required_common if field not in data]
-        if self.name in {"baseline2", "full"} and "dividend_yield" not in data:
+        if self.name in {"baseline2", "full", "dividend_yield_only"} and "dividend_yield" not in data:
             missing.append("dividend_yield")
         if self.name == "full":
             missing.extend(field for field in self.required_full if field not in data)
@@ -185,6 +193,9 @@ class AblationStrategy(BaseStrategy):
             hard &= is_st.fillna(1).eq(0)
 
         fallback_tiers = pd.Series("not_applicable", index=execution_dates, dtype=object)
+        volatility_mode = "not_applicable"
+        buffer_enabled = False
+        rebalance_trades: dict[str, dict[str, list[str]]] = {}
 
         if self.name == "baseline0":
             eligible = tradable
@@ -198,7 +209,7 @@ class AblationStrategy(BaseStrategy):
             dividend = _at_dates(
                 data["dividend_yield"], signal_dates, execution_dates, columns
             )
-            if self.name == "baseline2":
+            if self.name in {"baseline2", "dividend_yield_only"}:
                 eligible = hard & dividend.notna()
                 ranks = rank_by_factor(dividend, ascending=False, mask=eligible)
                 selected = eligible & ranks.le(int(self.params.get("top_n", 10)))
@@ -217,10 +228,35 @@ class AblationStrategy(BaseStrategy):
                     execution_dates,
                     columns,
                 )
+                volatility_config = dict(self.params.get("volatility_filter") or {})
+                volatility_mode = str(
+                    volatility_config.get("mode", "threshold")
+                ).lower()
+                if volatility_mode == "band":
+                    volatility_mask = filter_volatility_band(
+                        volatility.where(hard),
+                        lower_quantile=float(
+                            volatility_config.get("lower_quantile", 0.20)
+                        ),
+                        upper_quantile=float(
+                            volatility_config.get("upper_quantile", 0.80)
+                        ),
+                    )
+                elif volatility_mode == "top":
+                    volatility_mask = filter_volatility_top(
+                        volatility.where(hard),
+                        top_n=int(volatility_config.get("top_n", 10)),
+                    )
+                elif volatility_mode == "threshold":
+                    volatility_mask = volatility.le(
+                        float(self.params.get("volatility_60d_max", 0.25))
+                    )
+                else:
+                    raise ValueError(f"不支持的波动率过滤模式：{volatility_mode}")
                 factor_eligible = (
                     hard
                     & dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
-                    & volatility.le(float(self.params.get("volatility_60d_max", 0.25)))
+                    & volatility_mask
                     & beta.ge(float(self.params.get("beta_low_min", 0.45)))
                     & beta.le(float(self.params.get("beta_high_max", 0.81)))
                     & roe_volatility.le(
@@ -241,12 +277,18 @@ class AblationStrategy(BaseStrategy):
                 total_mv = _at_dates(
                     data["total_mv"], signal_dates, execution_dates, columns
                 )
+                dividend_config = dict(self.params.get("dividend_filter") or {})
+                dividend_top_n = int(
+                    dividend_config.get("top_n", self.params.get("top_n", 10))
+                )
                 selected, weights, fallback_tiers = select_stocks_with_fallback(
                     dividend,
                     primary_eligible=eligible,
                     relaxed_eligible=factor_eligible,
-                    hard_eligible=hard,
-                    top_n=int(self.params.get("top_n", 10)),
+                    hard_eligible=(
+                        hard & volatility_mask if volatility_mode == "band" else hard
+                    ),
+                    top_n=dividend_top_n,
                     min_holdings=int(self.params.get("min_holdings", 10)),
                     fallback_top_n=int(self.params.get("fallback_top_n", 100)),
                     min_investment_pct=float(
@@ -262,7 +304,41 @@ class AblationStrategy(BaseStrategy):
                         self.params.get("small_cap_weight_max", 0.40)
                     ),
                 )
-
+                buffer_config = dict(self.params.get("rebalance_buffer") or {})
+                buffer_enabled = bool(buffer_config.get("enabled", False))
+                rebalance_trades: dict[str, dict[str, list[str]]] = {}
+                if buffer_enabled:
+                    hold_eligible = build_rebalance_hold_eligible(
+                        volatility,
+                        dividend,
+                        hard_eligible=hard,
+                        volatility_mode=volatility_mode,
+                        volatility_top_n=int(volatility_config.get("top_n", 10)),
+                        dividend_top_n=dividend_top_n,
+                        hold_threshold_multiplier=int(
+                            buffer_config.get("hold_threshold_multiplier", 3)
+                        ),
+                        volatility_mask=volatility_mask,
+                    )
+                    selected, weights, rebalance_trades = build_buffered_weights(
+                        dividend,
+                        desired_selected=selected,
+                        hold_eligible=hold_eligible,
+                        expansion_eligible=hard,
+                        max_sell=int(buffer_config.get("max_sell_per_month", 3)),
+                        target_weight=float(
+                            self.params.get("min_investment_pct", 1.0)
+                        ),
+                        max_weight=float(self.params.get("max_single_weight", 0.08)),
+                        industries=data["industry"],
+                        industry_max=float(
+                            self.params.get("industry_single_max", 0.20)
+                        ),
+                        total_mv=total_mv,
+                        small_cap_weight_max=float(
+                            self.params.get("small_cap_weight_max", 0.40)
+                        ),
+                    )
         targets = pd.DataFrame(
             np.nan,
             index=close.index,
@@ -292,6 +368,13 @@ class AblationStrategy(BaseStrategy):
             },
             "turnover": _turnover(weights),
             "point_in_time": True,
+            "volatility_filter_mode": volatility_mode,
+            "rebalance_buffer_enabled": buffer_enabled,
+            "rebalance_trades": rebalance_trades,
+            "max_sells_per_rebalance": max(
+                (len(trades["sell"]) for trades in rebalance_trades.values()),
+                default=0,
+            ),
         }
 
 
@@ -313,6 +396,8 @@ def full_strategy(data, params):
 
 __all__ = [
     "STRATEGY_NAMES",
+    "DIAGNOSTIC_STRATEGY_NAMES",
+    "SUPPORTED_STRATEGY_NAMES",
     "AblationStrategy",
     "annual_rebalance_pairs",
     "rebalance_pairs",

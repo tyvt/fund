@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scripts.run_ablation import calculate_attribution
+from scripts.run_ablation import calculate_attribution, experiment_params
 from vbt.adapters.data_loader import VBTData
 from vbt.engine import VBTEngine
 from vbt.strategies.ablation import (
@@ -15,8 +15,14 @@ from vbt.strategies.ablation import (
     rebalance_pairs,
 )
 from vbt.strategies.base import BaseStrategy
+from vbt.strategies.dividend_lowvol import (
+    apply_rebalance_buffer,
+    build_rebalance_hold_eligible,
+)
 from vbt.strategies.signal_generators import (
     apply_percentile_filters,
+    filter_volatility_band,
+    filter_volatility_top,
     select_stocks_with_fallback,
 )
 
@@ -100,6 +106,33 @@ def test_baseline2_uses_prior_day_factor_not_execution_day():
     assert metadata["signal_dates"][0] == "2020-01-15"
 
 
+def test_dividend_yield_only_selects_top30_after_hard_constraints():
+    dates = pd.to_datetime(["2020-01-30", "2020-01-31", "2020-02-03"])
+    columns = pd.Index([f"{index:06d}" for index in range(1, 41)])
+    shape = (len(dates), len(columns))
+    data = VBTData(
+        matrices={
+            "close": _matrix(np.full(shape, 10.0), dates, columns),
+            "amount": _matrix(np.full(shape, 20_000_000.0), dates, columns),
+            "float_mv": _matrix(np.full(shape, 1_000_000_000.0), dates, columns),
+            "is_st": _matrix(np.zeros(shape), dates, columns),
+            "listed_date": pd.Series(pd.Timestamp("2010-01-01"), index=columns),
+            "dividend_yield": _matrix(
+                np.tile(np.arange(1.0, 41.0), (len(dates), 1)), dates, columns
+            ),
+        },
+        metadata={"start_date": "2020-01-30", "end_date": "2020-02-03"},
+    )
+    targets, metadata = AblationStrategy(
+        "dividend_yield_only", {"top_n": 30, "rebalance_freq": "M"}
+    ).generate_signals(data)
+    selected = targets.loc["2020-02-03"].dropna().gt(0)
+    assert int(selected.sum()) == 30
+    assert not selected.loc["000001"]
+    assert selected.loc["000040"]
+    assert metadata["strategy"] == "dividend_yield_only"
+
+
 def test_full_fallback_remains_invested_before_financial_disclosure():
     params = {
         "top_n": 1,
@@ -122,6 +155,146 @@ def test_percentile_filters_are_one_sided_for_roe_and_debt():
     debt = apply_percentile_filters(frame, lower_pct=None, upper_pct=0.80)
     assert int(roe.sum(axis=1).iloc[0]) == 4
     assert int(debt.sum(axis=1).iloc[0]) == 4
+
+
+def test_volatility_band_excludes_lowest_and_highest_quintiles():
+    day = pd.Timestamp("2024-01-31")
+    volatility = pd.DataFrame(
+        [np.arange(1.0, 11.0)], index=[day], columns=[f"S{i}" for i in range(10)]
+    )
+    mask = filter_volatility_band(volatility)
+    assert mask.loc[day].tolist() == [False, False, True, True, True, True, True, True, False, False]
+
+
+def test_volatility_top_selects_exactly_the_ten_lowest_names():
+    day = pd.Timestamp("2024-01-31")
+    columns = [f"S{i:02d}" for i in range(15)]
+    volatility = pd.DataFrame(
+        [[5.0, 1.0, 3.0, np.nan, 2.0, 4.0, *range(6, 15)]],
+        index=[day],
+        columns=columns,
+    )
+    mask = filter_volatility_top(volatility, top_n=10)
+    expected = volatility.loc[day].dropna().nsmallest(10).index
+    assert int(mask.loc[day].sum()) == 10
+    assert set(mask.columns[mask.loc[day]]) == set(expected)
+
+
+def test_top_buffer_retention_requires_both_volatility_and_dividend_top30():
+    day = pd.Timestamp("2024-01-31")
+    columns = pd.Index([f"S{i:02d}" for i in range(40)])
+    volatility = pd.DataFrame([np.arange(40.0)], index=[day], columns=columns)
+    dividend = pd.DataFrame([np.arange(40.0)], index=[day], columns=columns)
+    hard = pd.DataFrame(True, index=[day], columns=columns)
+    qualified = build_rebalance_hold_eligible(
+        volatility,
+        dividend,
+        hard_eligible=hard,
+        volatility_mode="top",
+        volatility_top_n=10,
+        dividend_top_n=10,
+        hold_threshold_multiplier=3,
+    )
+    # Lowest-volatility Top30 is S00-S29; highest-dividend Top30 is S10-S39.
+    assert set(qualified.columns[qualified.loc[day]]) == set(columns[10:30])
+
+
+def test_rollback_experiment_reads_nested_overrides():
+    config = {
+        "rollback_top_buffer": {
+            "name": "rollback_top_buffer",
+            "extends": "full",
+            "overrides": {
+                "volatility_filter": {"mode": "top", "top_n": 10},
+                "rebalance_buffer": {"enabled": True, "max_sell_per_month": 3},
+            },
+        }
+    }
+    overrides = experiment_params(config, "rollback_top_buffer")
+    assert overrides["volatility_filter"] == {"mode": "top", "top_n": 10}
+    assert overrides["rebalance_buffer"]["max_sell_per_month"] == 3
+
+
+def test_rebalance_buffer_enforces_absolute_sell_cap_and_defers_the_rest():
+    current = [
+        {"symbol": f"OLD{i}", "score": 1.0 - i / 10, "score_decay": i}
+        for i in range(6)
+    ]
+    candidates = [
+        {"symbol": f"NEW{i}", "score": 2.0 - i / 10, "qualified": True}
+        for i in range(6)
+    ]
+    final, trades = apply_rebalance_buffer(
+        current, candidates, max_sell=3, target_count=6
+    )
+    assert len(trades["sell"]) == 3
+    assert len(trades["buy"]) == 3
+    assert len(final) == 6
+    assert {_item["symbol"] for _item in trades["sell"]} == {"OLD3", "OLD4", "OLD5"}
+
+
+def test_rebalance_buffer_does_not_rebuy_a_name_sold_in_the_same_period():
+    current = [
+        {"symbol": "A", "score": 1.0, "score_decay": 1.0},
+        {"symbol": "B", "score": 0.9, "score_decay": 0.5},
+    ]
+    candidates = [
+        {"symbol": "A", "score": 2.0, "qualified": False},
+        {"symbol": "C", "score": 1.8, "qualified": True},
+    ]
+    final, trades = apply_rebalance_buffer(
+        current, candidates, max_sell=1, target_count=2
+    )
+    sold = {_item["symbol"] for _item in trades["sell"]}
+    bought = {_item["symbol"] for _item in trades["buy"]}
+    assert sold == {"A"}
+    assert bought == {"C"}
+    assert sold.isdisjoint(bought)
+    assert {_item["symbol"] for _item in final} == {"B", "C"}
+
+
+def test_full_band_fallback_never_reintroduces_extreme_volatility():
+    dates = pd.to_datetime(["2020-01-30", "2020-01-31", "2020-02-03"])
+    columns = pd.Index([f"S{index:02d}" for index in range(20)])
+    shape = (len(dates), len(columns))
+    data = VBTData(
+        matrices={
+            "close": _matrix(np.full(shape, 10.0), dates, columns),
+            "amount": _matrix(np.full(shape, 20_000_000.0), dates, columns),
+            "float_mv": _matrix(np.full(shape, 1_000_000_000.0), dates, columns),
+            "total_mv": _matrix(np.full(shape, 2_000_000_000.0), dates, columns),
+            "is_st": _matrix(np.zeros(shape), dates, columns),
+            "listed_date": pd.Series(pd.Timestamp("2010-01-01"), index=columns),
+            "dividend_yield": _matrix(np.full(shape, 0.04), dates, columns),
+            "volatility_60d": _matrix(
+                np.tile(np.arange(1.0, 21.0), (len(dates), 1)), dates, columns
+            ),
+            "beta_300": _matrix(np.full(shape, 0.60), dates, columns),
+            "roe_volatility": _matrix(np.full(shape, 5.0), dates, columns),
+            "industry": pd.Series({column: f"I{index}" for index, column in enumerate(columns)}),
+            "absolute_financials": pd.DataFrame(),
+        },
+        metadata={"start_date": "2020-01-30", "end_date": "2020-02-03"},
+    )
+    params = {
+        "rebalance_freq": "M",
+        "top_n": 10,
+        "min_holdings": 10,
+        "max_single_weight": 0.10,
+        "industry_single_max": 1.0,
+        "small_cap_weight_max": 1.0,
+        "volatility_filter": {
+            "mode": "band",
+            "lower_quantile": 0.20,
+            "upper_quantile": 0.80,
+        },
+    }
+    targets, metadata = AblationStrategy("full", params).generate_signals(data)
+    selected = targets.loc["2020-02-03"].fillna(0).gt(0)
+    assert selected.loc[columns[:4]].sum() == 0
+    assert selected.loc[columns[16:]].sum() == 0
+    assert int(selected.sum()) == 10
+    assert metadata["volatility_filter_mode"] == "band"
 
 
 def test_full_investment_expands_past_ten_without_breaking_caps():

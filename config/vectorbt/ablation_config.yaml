@@ -36,5 +36,68 @@ full_constraints:
   beta_low_min: 0.45
   beta_high_max: 0.81
 
+# 单因子诊断：只保留 ST、上市时间、市值和流动性硬约束，按股息率选 Top30。
+dividend_yield_only:
+  name: dividend_yield_only
+  description: 股息率 Top30（月度调仓、等权、仅硬约束）
+  selection:
+    top_n: 30
+
+# Full 策略交易成本消融。无成本版清零全部成本；低成本版仅降低可控成本，
+# 仍保留法定卖出印花税；高成本版与当前 Full 配置完全一致。
+full_no_cost:
+  extends: full
+  name: full_no_cost
+  commission: 0.0
+  slippage: 0.0
+  stamp_duty: 0.0
+
+full_low_cost:
+  extends: full
+  name: full_low_cost
+  commission: 0.0001
+  slippage: 0.0005
+  stamp_duty: 0.001
+
+full_high_cost:
+  extends: full
+  name: full_high_cost
+  commission: 0.0003
+  slippage: 0.001
+  stamp_duty: 0.001
+
+# 低波中间 60% Band + 条件保留/每月最多卖出 3 只。
+lowvol_band_buffer:
+  name: lowvol_band_buffer
+  description: 低波 Q2-Q4、股息率 Top10 起选、Top30 保留缓冲
+  volatility_filter:
+    mode: band
+    lower_quantile: 0.20
+    upper_quantile: 0.80
+  dividend_filter:
+    mode: top
+    top_n: 10
+  rebalance_buffer:
+    enabled: true
+    max_sell_per_month: 3
+    hold_threshold_multiplier: 3
+
+# 低波 Top10 回滚 + 条件保留/每月最多卖出 3 只。
+rollback_top_buffer:
+  name: rollback_top_buffer
+  description: 低波 Top10 + 调仓缓冲
+  extends: full
+  overrides:
+    volatility_filter:
+      mode: top
+      top_n: 10
+    dividend_filter:
+      mode: top
+      top_n: 10
+    rebalance_buffer:
+      enabled: true
+      max_sell_per_month: 3
+      hold_threshold_multiplier: 3
+
 output:
   directory: output/ablation

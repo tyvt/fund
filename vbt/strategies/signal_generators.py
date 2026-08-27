@@ -44,6 +44,73 @@ def filter_by_quantile(
     return factor.ge(boundary, axis=0) if upper else factor.le(boundary, axis=0)
 
 
+def filter_volatility_top(
+    df: pd.DataFrame | pd.Series,
+    vol_col: str = "volatility_60d",
+    *,
+    top_n: int = 10,
+) -> pd.DataFrame | pd.Series:
+    """Select the ``top_n`` lowest-volatility names in each cross-section.
+
+    A date-by-security matrix is ranked across columns for every date.  A
+    Series, or ``vol_col`` from a long-form frame, is treated as one
+    cross-section.  ``method='first'`` makes ties deterministic and keeps the
+    selection at no more than ``top_n`` names.
+    """
+    limit = int(top_n)
+    if limit <= 0:
+        raise ValueError("波动率 Top N 必须为正整数")
+
+    is_long_form = isinstance(df, pd.DataFrame) and vol_col in df.columns
+    factor = df[vol_col] if is_long_form else df
+    if isinstance(factor, pd.Series):
+        selected = factor.dropna().nsmallest(limit)
+        return pd.Series(factor.index.isin(selected.index), index=factor.index)
+
+    ranks = factor.rank(
+        axis=1,
+        ascending=True,
+        method="first",
+        na_option="bottom",
+    )
+    return ranks.le(limit) & factor.notna()
+
+
+def filter_volatility_band(
+    df: pd.DataFrame | pd.Series,
+    vol_col: str = "volatility_60d",
+    *,
+    lower_quantile: float = 0.20,
+    upper_quantile: float = 0.80,
+) -> pd.DataFrame | pd.Series:
+    """Keep the middle cross-sectional volatility band (Q2-Q4 by default).
+
+    Matrix input is interpreted as dates by securities and is evaluated across
+    columns on every date.  A Series, or ``vol_col`` from a long-form frame, is
+    evaluated as one cross-section.  Boundaries are deliberately strict so the
+    lowest and highest quintiles are both excluded.
+    """
+    lower = float(lower_quantile)
+    upper = float(upper_quantile)
+    if not 0.0 <= lower < upper <= 1.0:
+        raise ValueError("波动率 Band 分位点必须满足 0 <= lower < upper <= 1")
+
+    is_long_form = isinstance(df, pd.DataFrame) and vol_col in df.columns
+    factor = df[vol_col] if is_long_form else df
+    if isinstance(factor, pd.Series):
+        lower_boundary = factor.quantile(lower)
+        upper_boundary = factor.quantile(upper)
+        return factor.gt(lower_boundary) & factor.lt(upper_boundary) & factor.notna()
+
+    lower_boundary = factor.quantile(lower, axis=1)
+    upper_boundary = factor.quantile(upper, axis=1)
+    return (
+        factor.gt(lower_boundary, axis=0)
+        & factor.lt(upper_boundary, axis=0)
+        & factor.notna()
+    )
+
+
 def apply_percentile_filters(
     df: pd.DataFrame | pd.Series,
     factor_col: str | None = None,
