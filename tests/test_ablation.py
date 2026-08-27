@@ -21,8 +21,10 @@ from vbt.strategies.dividend_lowvol import (
 )
 from vbt.strategies.signal_generators import (
     apply_percentile_filters,
+    compute_fusion_score,
     filter_volatility_band,
     filter_volatility_top,
+    select_by_fusion_score,
     select_stocks_with_fallback,
 )
 
@@ -340,6 +342,29 @@ def test_attribution_is_normalized_to_excess_return_and_closes():
     assert sum(result["contributions"].values()) == pytest.approx(0.04)
     assert sum(result["percentages"].values()) == pytest.approx(100.0)
     assert result["closure_error"] == pytest.approx(0.0)
+
+
+def test_fusion_score_rewards_high_dividend_and_low_volatility():
+    frame = pd.DataFrame(
+        {
+            "dividend_yield": [0.02, 0.04, 0.06],
+            "volatility_60d": [0.30, 0.20, 0.10],
+        },
+        index=list("ABC"),
+    )
+    score = compute_fusion_score(frame)
+    assert score.loc["C"] > score.loc["B"] > score.loc["A"]
+
+
+def test_matrix_fusion_selection_respects_candidate_width():
+    day = pd.Timestamp("2024-01-31")
+    columns = [f"S{index}" for index in range(8)]
+    dividend = pd.DataFrame([np.arange(8.0)], index=[day], columns=columns)
+    volatility = pd.DataFrame([np.arange(8.0, 0.0, -1.0)], index=[day], columns=columns)
+    score = compute_fusion_score(dividend, volatility)
+    selected = select_by_fusion_score(score, top_n=3)
+    assert int(selected.loc[day].sum()) == 3
+    assert set(selected.columns[selected.loc[day]]) == {"S5", "S6", "S7"}
 
 
 class _TwoStepStrategy(BaseStrategy):

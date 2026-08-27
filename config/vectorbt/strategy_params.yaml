@@ -10,6 +10,14 @@ dividend_lowvol:
   fallback_top_n: 100
 
   top_n: 10
+  # 融合排序先保持 experimental；综合验收 7 项中至少 5 项通过后，
+  # generate_robustness_report.py 才会建议将 fusion_mode 升级为 true。
+  fusion_status: experimental
+  fusion_mode: false
+  fusion_candidate_n: 100
+  dividend_weight: 0.50
+  volatility_weight: 0.50
+  max_holding: 13
   dividend_filter:
     mode: top
     top_n: 10

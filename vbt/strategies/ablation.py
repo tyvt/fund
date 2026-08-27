@@ -15,9 +15,11 @@ from vbt.strategies.dividend_lowvol import (
 from vbt.strategies.signal_generators import (
     apply_percentile_filters,
     compute_equal_weight,
+    compute_fusion_score,
     filter_volatility_band,
     filter_volatility_top,
     rank_by_factor,
+    select_by_fusion_score,
     select_stocks_with_fallback,
 )
 
@@ -196,6 +198,11 @@ class AblationStrategy(BaseStrategy):
         volatility_mode = "not_applicable"
         buffer_enabled = False
         rebalance_trades: dict[str, dict[str, list[str]]] = {}
+        fusion_mode = False
+        hard_stage = hard
+        volatility_stage = hard
+        dividend_stage = hard
+        core_eligible = hard
 
         if self.name == "baseline0":
             eligible = tradable
@@ -229,10 +236,15 @@ class AblationStrategy(BaseStrategy):
                     columns,
                 )
                 volatility_config = dict(self.params.get("volatility_filter") or {})
-                volatility_mode = str(
-                    volatility_config.get("mode", "threshold")
-                ).lower()
-                if volatility_mode == "band":
+                fusion_mode = bool(self.params.get("fusion_mode", False))
+                volatility_mode = (
+                    "fusion"
+                    if fusion_mode
+                    else str(volatility_config.get("mode", "threshold")).lower()
+                )
+                if fusion_mode:
+                    volatility_mask = volatility.notna()
+                elif volatility_mode == "band":
                     volatility_mask = filter_volatility_band(
                         volatility.where(hard),
                         lower_quantile=float(
@@ -253,10 +265,14 @@ class AblationStrategy(BaseStrategy):
                     )
                 else:
                     raise ValueError(f"不支持的波动率过滤模式：{volatility_mode}")
-                factor_eligible = (
-                    hard
+                hard_stage = hard
+                volatility_stage = hard & volatility_mask
+                dividend_stage = (
+                    volatility_stage
                     & dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
-                    & volatility_mask
+                )
+                factor_eligible = (
+                    dividend_stage
                     & beta.ge(float(self.params.get("beta_low_min", 0.45)))
                     & beta.le(float(self.params.get("beta_high_max", 0.81)))
                     & roe_volatility.le(
@@ -273,7 +289,7 @@ class AblationStrategy(BaseStrategy):
                     lower_pct=None,
                     upper_pct=float(self.params.get("debt_ratio_percentile_max", 0.80)),
                 )
-                eligible = factor_eligible & roe_mask & debt_mask
+                constrained_eligible = factor_eligible & roe_mask & debt_mask
                 total_mv = _at_dates(
                     data["total_mv"], signal_dates, execution_dates, columns
                 )
@@ -281,13 +297,36 @@ class AblationStrategy(BaseStrategy):
                 dividend_top_n = int(
                     dividend_config.get("top_n", self.params.get("top_n", 10))
                 )
+                selection_factor = dividend
+                relaxed_eligible = factor_eligible
+                hard_fallback = (
+                    hard & volatility_mask if volatility_mode == "band" else hard
+                )
+                fusion_candidate_n = int(self.params.get("fusion_candidate_n", 100))
+                max_holding = (
+                    int(self.params.get("max_holding", 13)) if fusion_mode else None
+                )
+                if fusion_mode:
+                    selection_factor = compute_fusion_score(
+                        dividend,
+                        volatility,
+                        dividend_weight=float(self.params.get("dividend_weight", 0.5)),
+                        volatility_weight=float(self.params.get("volatility_weight", 0.5)),
+                        mask=constrained_eligible,
+                    )
+                    eligible = select_by_fusion_score(
+                        selection_factor, top_n=fusion_candidate_n
+                    )
+                    relaxed_eligible = constrained_eligible
+                    hard_fallback = hard & dividend.notna() & volatility.notna()
+                else:
+                    eligible = constrained_eligible
+                core_eligible = eligible
                 selected, weights, fallback_tiers = select_stocks_with_fallback(
-                    dividend,
-                    primary_eligible=eligible,
-                    relaxed_eligible=factor_eligible,
-                    hard_eligible=(
-                        hard & volatility_mask if volatility_mode == "band" else hard
-                    ),
+                    selection_factor,
+                    primary_eligible=core_eligible,
+                    relaxed_eligible=relaxed_eligible,
+                    hard_eligible=hard_fallback,
                     top_n=dividend_top_n,
                     min_holdings=int(self.params.get("min_holdings", 10)),
                     fallback_top_n=int(self.params.get("fallback_top_n", 100)),
@@ -303,28 +342,39 @@ class AblationStrategy(BaseStrategy):
                     small_cap_weight_max=float(
                         self.params.get("small_cap_weight_max", 0.40)
                     ),
+                    max_holdings=max_holding,
+                    allow_partial=fusion_mode,
                 )
                 buffer_config = dict(self.params.get("rebalance_buffer") or {})
                 buffer_enabled = bool(buffer_config.get("enabled", False))
                 rebalance_trades: dict[str, dict[str, list[str]]] = {}
                 if buffer_enabled:
-                    hold_eligible = build_rebalance_hold_eligible(
-                        volatility,
-                        dividend,
-                        hard_eligible=hard,
-                        volatility_mode=volatility_mode,
-                        volatility_top_n=int(volatility_config.get("top_n", 10)),
-                        dividend_top_n=dividend_top_n,
-                        hold_threshold_multiplier=int(
-                            buffer_config.get("hold_threshold_multiplier", 3)
-                        ),
-                        volatility_mask=volatility_mask,
+                    hold_multiplier = int(
+                        buffer_config.get("hold_threshold_multiplier", 3)
                     )
+                    if fusion_mode:
+                        hold_eligible = select_by_fusion_score(
+                            selection_factor,
+                            top_n=fusion_candidate_n * hold_multiplier,
+                        ) & constrained_eligible
+                    else:
+                        hold_eligible = build_rebalance_hold_eligible(
+                            volatility,
+                            dividend,
+                            hard_eligible=hard,
+                            volatility_mode=volatility_mode,
+                            volatility_top_n=int(volatility_config.get("top_n", 10)),
+                            dividend_top_n=dividend_top_n,
+                            hold_threshold_multiplier=hold_multiplier,
+                            volatility_mask=volatility_mask,
+                        )
                     selected, weights, rebalance_trades = build_buffered_weights(
-                        dividend,
+                        selection_factor,
                         desired_selected=selected,
                         hold_eligible=hold_eligible,
-                        expansion_eligible=hard,
+                        expansion_eligible=(
+                            constrained_eligible if fusion_mode else hard
+                        ),
                         max_sell=int(buffer_config.get("max_sell_per_month", 3)),
                         target_weight=float(
                             self.params.get("min_investment_pct", 1.0)
@@ -338,6 +388,8 @@ class AblationStrategy(BaseStrategy):
                         small_cap_weight_max=float(
                             self.params.get("small_cap_weight_max", 0.40)
                         ),
+                        max_holdings=max_holding,
+                        allow_partial=fusion_mode,
                     )
         targets = pd.DataFrame(
             np.nan,
@@ -348,6 +400,15 @@ class AblationStrategy(BaseStrategy):
         targets.loc[execution_dates] = weights.to_numpy(dtype="float32")
         counts = weights.gt(1e-12).sum(axis=1).astype(int)
         eligible_counts = eligible.sum(axis=1).astype(int)
+        selected_mask = weights.gt(1e-12)
+        turnover_by_date = weights.diff().abs().sum(axis=1).mul(0.5)
+        if len(turnover_by_date):
+            turnover_by_date.iloc[0] = 0.0
+        expanded_mask = selected_mask & ~core_eligible.reindex_like(selected_mask).fillna(False)
+        symbols_by_date = lambda mask: {
+            day.date().isoformat(): [str(symbol) for symbol in mask.columns[mask.loc[day]]]
+            for day in mask.index
+        }
         return targets, {
             "mode": "ablation_matrix",
             "strategy": self.name,
@@ -360,6 +421,39 @@ class AblationStrategy(BaseStrategy):
             "eligible_counts": {
                 day.date().isoformat(): int(value) for day, value in eligible_counts.items()
             },
+            "candidate_stage_counts": {
+                "hard": {
+                    day.date().isoformat(): int(value)
+                    for day, value in hard_stage.sum(axis=1).items()
+                },
+                "after_vol": {
+                    day.date().isoformat(): int(value)
+                    for day, value in volatility_stage.sum(axis=1).items()
+                },
+                "after_div": {
+                    day.date().isoformat(): int(value)
+                    for day, value in dividend_stage.sum(axis=1).items()
+                },
+                "final": {
+                    day.date().isoformat(): int(value)
+                    for day, value in core_eligible.sum(axis=1).items()
+                },
+                "holdings": {
+                    day.date().isoformat(): int(value)
+                    for day, value in selected_mask.sum(axis=1).items()
+                },
+            },
+            "core_candidate_symbols": symbols_by_date(core_eligible),
+            "selected_symbols": symbols_by_date(selected_mask),
+            "expanded_symbols": symbols_by_date(expanded_mask),
+            "invested_weights": {
+                day.date().isoformat(): float(value)
+                for day, value in weights.sum(axis=1).items()
+            },
+            "turnover_by_date": {
+                day.date().isoformat(): float(value)
+                for day, value in turnover_by_date.items()
+            },
             "average_holdings": float(counts.mean()),
             "average_invested_weight": float(weights.sum(axis=1).mean()),
             "fallback_tiers": {
@@ -369,6 +463,9 @@ class AblationStrategy(BaseStrategy):
             "turnover": _turnover(weights),
             "point_in_time": True,
             "volatility_filter_mode": volatility_mode,
+            "fusion_mode": fusion_mode,
+            "fusion_candidate_n": int(self.params.get("fusion_candidate_n", 100)),
+            "max_holding": int(self.params.get("max_holding", 13)) if fusion_mode else None,
             "rebalance_buffer_enabled": buffer_enabled,
             "rebalance_trades": rebalance_trades,
             "max_sells_per_rebalance": max(

@@ -22,6 +22,69 @@ def rank_by_factor(
     return eligible.rank(axis=1, ascending=ascending, method="first", na_option="bottom")
 
 
+def compute_fusion_score(
+    df: pd.DataFrame,
+    volatility: pd.DataFrame | None = None,
+    *,
+    dividend_weight: float = 0.5,
+    volatility_weight: float = 0.5,
+    mask: pd.DataFrame | None = None,
+) -> pd.Series | pd.DataFrame:
+    """Return a cross-sectional dividend/low-volatility fusion score.
+
+    ``df`` may be a long-form cross-section containing ``dividend_yield`` and
+    ``volatility_60d`` columns, or a date-by-security dividend matrix paired
+    with a same-shaped ``volatility`` matrix.  Ranking is always performed
+    within the current cross-section, so values from another date cannot leak
+    into the score.
+    """
+    div_weight = float(dividend_weight)
+    vol_weight = float(volatility_weight)
+    if div_weight < 0.0 or vol_weight < 0.0 or div_weight + vol_weight <= 0.0:
+        raise ValueError("融合排序权重必须非负且合计大于 0")
+    total = div_weight + vol_weight
+    div_weight /= total
+    vol_weight /= total
+
+    if volatility is None:
+        required = {"dividend_yield", "volatility_60d"}
+        missing = required - set(df.columns)
+        if missing:
+            raise KeyError(f"融合评分缺少字段：{', '.join(sorted(missing))}")
+        dividend = pd.to_numeric(df["dividend_yield"], errors="coerce")
+        vol = pd.to_numeric(df["volatility_60d"], errors="coerce")
+        valid = dividend.notna() & vol.notna()
+        div_rank = dividend.where(valid).rank(pct=True, method="average")
+        vol_rank = vol.where(valid).rank(pct=True, method="average")
+        return (div_weight * div_rank + vol_weight * (1.0 - vol_rank)).where(valid)
+
+    dividend = df.astype(float)
+    vol = volatility.reindex_like(dividend).astype(float)
+    valid = dividend.notna() & vol.notna() & _aligned_mask(dividend, mask)
+    div_rank = dividend.where(valid).rank(axis=1, pct=True, method="average")
+    vol_rank = vol.where(valid).rank(axis=1, pct=True, method="average")
+    return (div_weight * div_rank + vol_weight * (1.0 - vol_rank)).where(valid)
+
+
+def select_by_fusion_score(
+    df: pd.DataFrame | pd.Series,
+    score_col: str = "fusion_score",
+    *,
+    top_n: int = 10,
+) -> pd.DataFrame | pd.Series:
+    """Select the highest fusion scores from one or many cross-sections."""
+    limit = int(top_n)
+    if limit <= 0:
+        raise ValueError("融合排序 Top N 必须为正整数")
+    if isinstance(df, pd.Series):
+        chosen = df.dropna().nlargest(limit).index
+        return pd.Series(df.index.isin(chosen), index=df.index)
+    if score_col in df.columns:
+        return df.nlargest(limit, score_col)
+    ranks = df.rank(axis=1, ascending=False, method="first", na_option="bottom")
+    return ranks.le(limit) & df.notna()
+
+
 def filter_by_threshold(
     factor: pd.DataFrame, threshold: float, *, operator: str = ">="
 ) -> pd.DataFrame:
@@ -271,6 +334,8 @@ def select_stocks_with_fallback(
     industry_max: float | None = None,
     total_mv: pd.DataFrame | None = None,
     small_cap_weight_max: float | None = None,
+    max_holdings: int | None = None,
+    allow_partial: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Select, expand and allocate each cross-section until caps permit full investment."""
     factor = factor.astype(float)
@@ -289,6 +354,11 @@ def select_stocks_with_fallback(
         else 1
     )
     start_count = max(int(top_n), int(min_holdings), cap_count)
+    holding_cap = int(max_holdings) if max_holdings is not None else None
+    if holding_cap is not None and holding_cap <= 0:
+        raise ValueError("最大持仓数必须为正整数")
+    if holding_cap is not None and holding_cap < int(min_holdings):
+        raise ValueError("最大持仓数不能小于最小持仓数")
     tier_names = ("primary", "percentile_relaxed", "hard_only")
 
     for day in factor.index:
@@ -302,6 +372,8 @@ def select_stocks_with_fallback(
             if count < int(min_holdings) and tier_name != "hard_only":
                 continue
             limit = min(count, max(int(fallback_top_n), start_count))
+            if holding_cap is not None:
+                limit = min(limit, holding_cap)
             if limit <= 0:
                 continue
             ranked = factor.loc[day].where(eligible).rank(
@@ -337,7 +409,9 @@ def select_stocks_with_fallback(
         weights.loc[day] = best_weights
         tiers.loc[day] = best_tier
         actual_holdings = int(best_weights.gt(1e-12).sum())
-        if best_sum < target - 1e-8 or actual_holdings < int(min_holdings):
+        if not allow_partial and (
+            best_sum < target - 1e-8 or actual_holdings < int(min_holdings)
+        ):
             raise ValueError(
                 f"{pd.Timestamp(day).date()} 无法在约束下满足满仓/最小持仓："
                 f"投资比例={max(best_sum, 0.0):.6f}，持仓={actual_holdings}"

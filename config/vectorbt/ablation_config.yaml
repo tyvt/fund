@@ -99,5 +99,23 @@ rollback_top_buffer:
       max_sell_per_month: 3
       hold_threshold_multiplier: 3
 
+# 融合排序实验：100 只评分候选与 10 只目标持仓分离；8% 单票上限使
+# 实际目标通常为 13 只，且禁止突破 max_holding。
+fusion_experimental:
+  name: fusion_experimental
+  description: 股息率与低波融合排序（experimental）
+  extends: full
+  overrides:
+    fusion_status: experimental
+    fusion_mode: true
+    fusion_candidate_n: 100
+    dividend_weight: 0.50
+    volatility_weight: 0.50
+    max_holding: 13
+    rebalance_buffer:
+      enabled: true
+      max_sell_per_month: 3
+      hold_threshold_multiplier: 3
+
 output:
   directory: output/ablation

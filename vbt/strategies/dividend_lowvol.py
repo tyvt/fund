@@ -13,9 +13,11 @@ from vbt.strategies.base import BaseStrategy
 from vbt.strategies.signal_generators import (
     apply_percentile_filters,
     compute_constrained_weight_by_factor,
+    compute_fusion_score,
     filter_volatility_band,
     filter_volatility_top,
     rank_by_factor,
+    select_by_fusion_score,
     select_stocks_with_fallback,
 )
 
@@ -170,6 +172,8 @@ def build_buffered_weights(
     industry_max: float | None = None,
     total_mv: pd.DataFrame | None = None,
     small_cap_weight_max: float | None = None,
+    max_holdings: int | None = None,
+    allow_partial: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, dict[str, list[str]]]]:
     """Apply the stateful buffer and allocate every buffered cross-section."""
     scores = factor.astype(float)
@@ -239,6 +243,8 @@ def build_buffered_weights(
             target_count=target_count,
         )
         final_symbols = list(dict.fromkeys(_position_symbol(item) for item in final))
+        if max_holdings is not None:
+            final_symbols = final_symbols[: int(max_holdings)]
         sold_symbol_set = {_position_symbol(item) for item in trades["sell"]}
 
         # The retained set can become infeasible under the 8%/industry/small-cap
@@ -260,6 +266,12 @@ def build_buffered_weights(
             ).iloc[0]
             if float(allocated.sum()) >= float(target_weight) - 1e-8:
                 break
+            if max_holdings is not None and len(final_symbols) >= int(max_holdings):
+                if allow_partial:
+                    break
+                raise ValueError(
+                    f"{pd.Timestamp(day).date()} 达到最大持仓数后仍无法满足满仓及权重约束"
+                )
             addition = next(
                 (
                     symbol
@@ -269,6 +281,8 @@ def build_buffered_weights(
                 None,
             )
             if addition is None:
+                if allow_partial:
+                    break
                 raise ValueError(
                     f"{pd.Timestamp(day).date()} 缓冲后持仓无法满足满仓及权重约束"
                 )
@@ -440,8 +454,15 @@ class DividendLowVolStrategy(BaseStrategy):
             data["roe_volatility"], signal_dates, list(rebalance_index), columns
         )
         volatility_config = dict(self.params.get("volatility_filter") or {})
-        volatility_mode = str(volatility_config.get("mode", "threshold")).lower()
-        if volatility_mode == "band":
+        fusion_mode = bool(self.params.get("fusion_mode", False))
+        volatility_mode = (
+            "fusion"
+            if fusion_mode
+            else str(volatility_config.get("mode", "threshold")).lower()
+        )
+        if fusion_mode:
+            volatility_mask = volatility.notna()
+        elif volatility_mode == "band":
             volatility_mask = filter_volatility_band(
                 volatility.where(hard),
                 lower_quantile=float(volatility_config.get("lower_quantile", 0.20)),
@@ -458,10 +479,14 @@ class DividendLowVolStrategy(BaseStrategy):
             )
         else:
             raise ValueError(f"不支持的波动率过滤模式：{volatility_mode}")
-        factor_eligible = (
-            hard
+        hard_stage = hard
+        volatility_stage = hard & volatility_mask
+        dividend_stage = (
+            volatility_stage
             & dividend.ge(float(self.params.get("dividend_yield_min", 0.03)))
-            & volatility_mask
+        )
+        factor_eligible = (
+            dividend_stage
             & beta.ge(float(self.params.get("beta_low_min", 0.45)))
             & beta.le(float(self.params.get("beta_high_max", 0.81)))
             & roe_volatility.le(float(self.params.get("roe_volatility_max", 0.15)) * 100.0)
@@ -476,7 +501,7 @@ class DividendLowVolStrategy(BaseStrategy):
             lower_pct=None,
             upper_pct=float(self.params.get("debt_ratio_percentile_max", 0.80)),
         )
-        primary = factor_eligible & roe_mask & debt_mask
+        constrained_eligible = factor_eligible & roe_mask & debt_mask
         total_mv = (
             _at_signal_dates(data["total_mv"], signal_dates, list(rebalance_index), columns)
             if "total_mv" in data
@@ -487,11 +512,31 @@ class DividendLowVolStrategy(BaseStrategy):
         dividend_top_n = int(
             dividend_config.get("top_n", self.params.get("top_n", 10))
         )
+        selection_factor = dividend
+        relaxed_eligible = factor_eligible
+        hard_fallback = hard & volatility_mask if volatility_mode == "band" else hard
+        fusion_candidate_n = int(self.params.get("fusion_candidate_n", 100))
+        max_holding = int(self.params.get("max_holding", 13)) if fusion_mode else None
+        if fusion_mode:
+            selection_factor = compute_fusion_score(
+                dividend,
+                volatility,
+                dividend_weight=float(self.params.get("dividend_weight", 0.5)),
+                volatility_weight=float(self.params.get("volatility_weight", 0.5)),
+                mask=constrained_eligible,
+            )
+            primary = select_by_fusion_score(
+                selection_factor, top_n=fusion_candidate_n
+            )
+            relaxed_eligible = constrained_eligible
+            hard_fallback = hard & dividend.notna() & volatility.notna()
+        else:
+            primary = constrained_eligible
         selected, weights, fallback_tiers = select_stocks_with_fallback(
-            dividend,
+            selection_factor,
             primary_eligible=primary,
-            relaxed_eligible=factor_eligible,
-            hard_eligible=(hard & volatility_mask if volatility_mode == "band" else hard),
+            relaxed_eligible=relaxed_eligible,
+            hard_eligible=hard_fallback,
             top_n=dividend_top_n,
             min_holdings=int(self.params.get("min_holdings", 10)),
             fallback_top_n=int(self.params.get("fallback_top_n", 100)),
@@ -501,28 +546,35 @@ class DividendLowVolStrategy(BaseStrategy):
             industry_max=float(self.params.get("industry_single_max", 0.20)),
             total_mv=total_mv,
             small_cap_weight_max=float(self.params.get("small_cap_weight_max", 0.40)),
+            max_holdings=max_holding,
+            allow_partial=fusion_mode,
         )
         buffer_config = dict(self.params.get("rebalance_buffer") or {})
         buffer_enabled = bool(buffer_config.get("enabled", False))
         rebalance_trades: dict[str, dict[str, list[str]]] = {}
         if buffer_enabled:
-            hold_eligible = build_rebalance_hold_eligible(
-                volatility,
-                dividend,
-                hard_eligible=hard,
-                volatility_mode=volatility_mode,
-                volatility_top_n=int(volatility_config.get("top_n", 10)),
-                dividend_top_n=dividend_top_n,
-                hold_threshold_multiplier=int(
-                    buffer_config.get("hold_threshold_multiplier", 3)
-                ),
-                volatility_mask=volatility_mask,
-            )
+            hold_multiplier = int(buffer_config.get("hold_threshold_multiplier", 3))
+            if fusion_mode:
+                hold_eligible = select_by_fusion_score(
+                    selection_factor,
+                    top_n=fusion_candidate_n * hold_multiplier,
+                ) & constrained_eligible
+            else:
+                hold_eligible = build_rebalance_hold_eligible(
+                    volatility,
+                    dividend,
+                    hard_eligible=hard,
+                    volatility_mode=volatility_mode,
+                    volatility_top_n=int(volatility_config.get("top_n", 10)),
+                    dividend_top_n=dividend_top_n,
+                    hold_threshold_multiplier=hold_multiplier,
+                    volatility_mask=volatility_mask,
+                )
             selected, weights, rebalance_trades = build_buffered_weights(
-                dividend,
+                selection_factor,
                 desired_selected=selected,
                 hold_eligible=hold_eligible,
-                expansion_eligible=hard,
+                expansion_eligible=(constrained_eligible if fusion_mode else hard),
                 max_sell=int(buffer_config.get("max_sell_per_month", 3)),
                 target_weight=float(self.params.get("min_investment_pct", 1.0)),
                 max_weight=float(self.params.get("max_single_weight", 0.08)),
@@ -532,8 +584,19 @@ class DividendLowVolStrategy(BaseStrategy):
                 small_cap_weight_max=float(
                     self.params.get("small_cap_weight_max", 0.40)
                 ),
+                max_holdings=max_holding,
+                allow_partial=fusion_mode,
             )
         selected_counts = weights.gt(1e-12).sum(axis=1).astype(int)
+        selected_mask = weights.gt(1e-12)
+        turnover_by_date = weights.diff().abs().sum(axis=1).mul(0.5)
+        if len(turnover_by_date):
+            turnover_by_date.iloc[0] = 0.0
+        expanded_mask = selected_mask & ~primary.reindex_like(selected_mask).fillna(False)
+        symbols_by_date = lambda mask: {
+            date.date().isoformat(): [str(symbol) for symbol in mask.columns[mask.loc[date]]]
+            for date in mask.index
+        }
         active = weights.abs().sum(axis=0).gt(0.0)
         weights = weights.loc[:, active]
         targets = pd.DataFrame(
@@ -555,12 +618,48 @@ class DividendLowVolStrategy(BaseStrategy):
                 date.date().isoformat(): int(value)
                 for date, value in primary.sum(axis=1).items()
             },
+            "candidate_stage_counts": {
+                "hard": {
+                    date.date().isoformat(): int(value)
+                    for date, value in hard_stage.sum(axis=1).items()
+                },
+                "after_vol": {
+                    date.date().isoformat(): int(value)
+                    for date, value in volatility_stage.sum(axis=1).items()
+                },
+                "after_div": {
+                    date.date().isoformat(): int(value)
+                    for date, value in dividend_stage.sum(axis=1).items()
+                },
+                "final": {
+                    date.date().isoformat(): int(value)
+                    for date, value in primary.sum(axis=1).items()
+                },
+                "holdings": {
+                    date.date().isoformat(): int(value)
+                    for date, value in selected_mask.sum(axis=1).items()
+                },
+            },
+            "core_candidate_symbols": symbols_by_date(primary),
+            "selected_symbols": symbols_by_date(selected_mask),
+            "expanded_symbols": symbols_by_date(expanded_mask),
+            "invested_weights": {
+                date.date().isoformat(): float(value)
+                for date, value in weights.sum(axis=1).items()
+            },
+            "turnover_by_date": {
+                date.date().isoformat(): float(value)
+                for date, value in turnover_by_date.items()
+            },
             "fallback_tiers": {
                 date.date().isoformat(): str(value) for date, value in fallback_tiers.items()
             },
             "average_holdings": float(selected_counts.mean()),
             "average_invested_weight": float(weights.sum(axis=1).mean()),
             "volatility_filter_mode": volatility_mode,
+            "fusion_mode": fusion_mode,
+            "fusion_candidate_n": fusion_candidate_n,
+            "max_holding": max_holding,
             "rebalance_buffer_enabled": buffer_enabled,
             "rebalance_trades": rebalance_trades,
             "max_sells_per_rebalance": max(

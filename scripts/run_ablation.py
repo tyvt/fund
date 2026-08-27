@@ -151,6 +151,135 @@ def _metrics(result) -> dict[str, float]:
     return {key: _finite(value) for key, value in values.items()}
 
 
+def calculate_yearly_performance(
+    navs: pd.DataFrame,
+    full_metadata: dict[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Calculate calendar-year metrics from one continuous point-in-time run."""
+    daily_returns = navs.pct_change()
+    stage_counts = full_metadata.get("candidate_stage_counts", {})
+    final_counts = pd.Series(stage_counts.get("final", {}), dtype=float)
+    if not final_counts.empty:
+        final_counts.index = pd.to_datetime(final_counts.index)
+    turnover = pd.Series(full_metadata.get("turnover_by_date", {}), dtype=float)
+    if not turnover.empty:
+        turnover.index = pd.to_datetime(turnover.index)
+
+    rows: list[dict[str, Any]] = []
+    log_contributions: dict[int, float] = {}
+    for year in sorted(set(navs.index.year)):
+        period_returns = daily_returns.loc[daily_returns.index.year == year]
+        if period_returns.empty:
+            continue
+        full_returns = period_returns["full"].dropna()
+        benchmark_returns = period_returns["baseline0"].dropna()
+        full_total = float((1.0 + full_returns).prod() - 1.0)
+        benchmark_total = float((1.0 + benchmark_returns).prod() - 1.0)
+        annual_return = (
+            float((1.0 + full_total) ** (252.0 / len(full_returns)) - 1.0)
+            if len(full_returns)
+            else float("nan")
+        )
+        path = (1.0 + full_returns).cumprod()
+        max_drawdown = float((path / path.cummax() - 1.0).min()) if len(path) else float("nan")
+        std = float(full_returns.std(ddof=1)) if len(full_returns) > 1 else float("nan")
+        sharpe = (
+            float(full_returns.mean() / std * math.sqrt(252.0))
+            if np.isfinite(std) and std > 0.0
+            else float("nan")
+        )
+        year_candidates = final_counts.loc[final_counts.index.year == year]
+        year_turnover = turnover.loc[turnover.index.year == year]
+        log_contributions[int(year)] = float(np.log1p(full_total))
+        rows.append(
+            {
+                "year": int(year),
+                "annual_return": annual_return,
+                "total_return": full_total,
+                "max_drawdown": max_drawdown,
+                "sharpe": sharpe,
+                "turnover": float(year_turnover.mean()) if len(year_turnover) else float("nan"),
+                "avg_candidates": float(year_candidates.mean()) if len(year_candidates) else float("nan"),
+                "benchmark_return": benchmark_total,
+                "beat_baseline0": bool(full_total > benchmark_total),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    total_log = float(sum(log_contributions.values()))
+    if not frame.empty:
+        frame["cumulative_return_contribution"] = frame["year"].map(
+            lambda year: (
+                log_contributions[int(year)] / total_log
+                if not math.isclose(total_log, 0.0, abs_tol=1e-12)
+                else float("nan")
+            )
+        )
+    return_std = float(frame["annual_return"].std(ddof=1)) if len(frame) > 1 else float("nan")
+    max_contribution = (
+        float(frame["cumulative_return_contribution"].max()) if len(frame) else float("nan")
+    )
+    full_worst_year = (
+        int(frame.loc[frame["max_drawdown"].idxmin(), "year"]) if len(frame) else None
+    )
+    benchmark_drawdowns: dict[int, float] = {}
+    for year in frame.get("year", []):
+        values = daily_returns.loc[daily_returns.index.year == int(year), "baseline0"].dropna()
+        path = (1.0 + values).cumprod()
+        benchmark_drawdowns[int(year)] = (
+            float((path / path.cummax() - 1.0).min()) if len(path) else float("nan")
+        )
+    benchmark_worst_year = (
+        min(benchmark_drawdowns, key=benchmark_drawdowns.get) if benchmark_drawdowns else None
+    )
+    acceptance = {
+        "year_count": int(len(frame)),
+        "annual_return_std": return_std,
+        "annual_return_std_pass": bool(return_std < 0.10),
+        "max_single_year_contribution": max_contribution,
+        "single_year_contribution_pass": bool(max_contribution <= 0.50),
+        "full_worst_drawdown_year": full_worst_year,
+        "baseline0_worst_drawdown_year": benchmark_worst_year,
+        "drawdown_year_match": full_worst_year == benchmark_worst_year,
+    }
+    return frame, acceptance
+
+
+def _yearly_markdown(frame: pd.DataFrame, acceptance: dict[str, Any]) -> str:
+    shown = frame.copy()
+    shown["year"] = shown["year"].astype(str)
+    for column in ("annual_return", "max_drawdown", "turnover", "benchmark_return"):
+        shown[column] = shown[column].map(_pct)
+    shown["sharpe"] = shown["sharpe"].map(_number)
+    shown["avg_candidates"] = shown["avg_candidates"].map(_number)
+    shown["beat_baseline0"] = shown["beat_baseline0"].map(lambda value: "是" if value else "否")
+    shown = shown[
+        ["year", "annual_return", "max_drawdown", "sharpe", "turnover", "avg_candidates", "beat_baseline0"]
+    ].rename(
+        columns={
+            "year": "年份",
+            "annual_return": "年化收益",
+            "max_drawdown": "最大回撤",
+            "sharpe": "夏普",
+            "turnover": "换手率",
+            "avg_candidates": "平均候选池",
+            "beat_baseline0": "跑赢 Baseline 0?",
+        }
+    )
+    return "\n".join(
+        [
+            "## 分年度回测",
+            "",
+            _markdown_table(shown),
+            "",
+            f"年度收益标准差：{_pct(float(acceptance['annual_return_std']))}；"
+            f"最大单年累计收益贡献：{_pct(float(acceptance['max_single_year_contribution']))}；"
+            f"Full/Baseline 0 最差回撤年份：{acceptance['full_worst_drawdown_year']} / "
+            f"{acceptance['baseline0_worst_drawdown_year']}。",
+            "",
+        ]
+    )
+
+
 def _engine(data, strategy: AblationStrategy, backtest: dict[str, Any]) -> VBTEngine:
     stamp = float(backtest["stamp_duty"])
     return VBTEngine(
@@ -565,7 +694,8 @@ def print_attribution(attribution: dict[str, Any]) -> None:
 
 
 def run(
-    config: dict[str, Any], *, verbose: bool = False, tag: str | None = None
+    config: dict[str, Any], *, verbose: bool = False, tag: str | None = None,
+    by_year: bool = False, parameter_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backtest = config["backtest"]
     output_dir = ROOT / config["output"]["directory"]
@@ -573,6 +703,7 @@ def run(
     params = strategy_params(config)
     safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(tag or "")).strip("_")
     params.update(experiment_params(config, safe_tag))
+    params.update(dict(parameter_overrides or {}))
     suffix = "after_fix" if safe_tag == "after_root_cause_fix" else safe_tag
     started = time.perf_counter()
     print(f"加载点时数据：{backtest['start_date']} ~ {backtest['end_date']} ...", flush=True)
@@ -617,6 +748,15 @@ def run(
                     result.metadata.get("max_sells_per_rebalance", 0)
                 ),
                 "rebalance_trades": result.metadata.get("rebalance_trades", {}),
+                "candidate_stage_counts": result.metadata.get("candidate_stage_counts", {}),
+                "core_candidate_symbols": result.metadata.get("core_candidate_symbols", {}),
+                "selected_symbols": result.metadata.get("selected_symbols", {}),
+                "expanded_symbols": result.metadata.get("expanded_symbols", {}),
+                "invested_weights": result.metadata.get("invested_weights", {}),
+                "turnover_by_date": result.metadata.get("turnover_by_date", {}),
+                "fusion_mode": bool(result.metadata.get("fusion_mode", False)),
+                "fusion_candidate_n": result.metadata.get("fusion_candidate_n"),
+                "max_holding": result.metadata.get("max_holding"),
             }
         summary_rows.append(
             {
@@ -651,15 +791,28 @@ def run(
         raise AssertionError(f"收益归因未闭合：{attribution['closure_error']}")
 
     reproducibility = reproducibility_snapshot(params, backtest)
+    yearly_frame = pd.DataFrame()
+    yearly_acceptance: dict[str, Any] = {}
+    if by_year:
+        yearly_frame, yearly_acceptance = calculate_yearly_performance(
+            nav_frame, full_execution
+        )
+        yearly_frame.to_csv(
+            output_dir / _artifact_name("yearly_results", suffix, "csv"),
+            index=False,
+            encoding="utf-8-sig",
+        )
     payload = {
         "metrics": metrics,
         "attribution": attribution,
         "config": config,
-        "experiment_params": experiment_params(config, safe_tag),
+        "experiment_params": {**experiment_params(config, safe_tag), **dict(parameter_overrides or {})},
         "holdings_summary": summary_rows,
         "full_execution": full_execution,
         "reproducibility": reproducibility,
         "tag": tag,
+        "yearly_results": yearly_frame.to_dict(orient="records") if by_year else [],
+        "yearly_acceptance": yearly_acceptance,
     }
     (output_dir / _artifact_name("metrics", suffix, "json")).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
@@ -674,6 +827,8 @@ def run(
     )
     _plot_series(nav_frame, output_dir, suffix)
     markdown = _report_markdown(config, metrics, attribution, holdings)
+    if by_year:
+        markdown = f"{markdown.rstrip()}\n\n{_yearly_markdown(yearly_frame, yearly_acceptance)}"
     if suffix == "lowvol_band_buffer":
         markdown = markdown.replace(
             "# 约束消融实验报告", "# 低波 Band + 调仓缓冲回测报告", 1
@@ -861,6 +1016,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tag", help="结果标签；after_root_cause_fix 写入 *_after_fix 文件")
     parser.add_argument("--quick", action="store_true", help="读取最近结果，仅打印收益归因")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--by-year", action="store_true", help="输出连续回测的分年度绩效")
+    parser.add_argument("--fusion", action="store_true", help="启用 experimental 融合排序")
+    parser.add_argument("--dividend-weight", type=float, default=None)
+    parser.add_argument("--volatility-weight", type=float, default=None)
+    parser.add_argument("--fusion-candidate-n", type=int, default=None)
+    parser.add_argument("--max-holding", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -887,7 +1048,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.tag == "dividend_yield_only":
         run_dividend_yield_only(config, verbose=args.verbose)
     else:
-        run(config, verbose=args.verbose, tag=args.tag)
+        overrides: dict[str, Any] = {}
+        if args.fusion:
+            overrides["fusion_mode"] = True
+            overrides["fusion_status"] = "experimental"
+        if args.dividend_weight is not None:
+            overrides["dividend_weight"] = args.dividend_weight
+        if args.volatility_weight is not None:
+            overrides["volatility_weight"] = args.volatility_weight
+        if args.fusion_candidate_n is not None:
+            overrides["fusion_candidate_n"] = args.fusion_candidate_n
+        if args.max_holding is not None:
+            overrides["max_holding"] = args.max_holding
+        run(
+            config,
+            verbose=args.verbose,
+            tag=args.tag,
+            by_year=args.by_year,
+            parameter_overrides=overrides,
+        )
     return 0
 
 
