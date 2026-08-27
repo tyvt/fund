@@ -23,21 +23,95 @@ def rank_by_factor(
 
 
 def compute_fusion_score(
-    df: pd.DataFrame,
-    volatility: pd.DataFrame | None = None,
+    df: pd.DataFrame | Mapping[str, pd.DataFrame],
+    volatility: pd.DataFrame | Mapping[str, float] | None = None,
+    factors: list[str] | tuple[str, ...] | None = None,
     *,
+    weights: Mapping[str, float] | None = None,
+    directions: Mapping[str, int] | None = None,
+    min_valid_factors: int | None = None,
     dividend_weight: float = 0.5,
     volatility_weight: float = 0.5,
     mask: pd.DataFrame | None = None,
 ) -> pd.Series | pd.DataFrame:
-    """Return a cross-sectional dividend/low-volatility fusion score.
+    """Return a direction-adjusted cross-sectional fusion score.
 
-    ``df`` may be a long-form cross-section containing ``dividend_yield`` and
-    ``volatility_60d`` columns, or a date-by-security dividend matrix paired
-    with a same-shaped ``volatility`` matrix.  Ranking is always performed
-    within the current cross-section, so values from another date cannot leak
-    into the score.
+    The generic API is ``compute_fusion_score(data, weights, factors)`` where
+    ``data`` is either a factor-to-matrix mapping or a long-form DataFrame.
+    The former two-factor dividend/volatility API remains supported.  Ranking
+    is always within a date's cross-section, so future observations cannot
+    leak into the score.
     """
+    if isinstance(volatility, Mapping):
+        if weights is not None:
+            raise ValueError("weights was supplied both positionally and by keyword")
+        weights = {str(key): float(value) for key, value in volatility.items()}
+        volatility = None
+
+    if weights is not None or isinstance(df, Mapping) or factors is not None:
+        selected_factors = list(factors or (weights or {}).keys())
+        if not selected_factors:
+            raise ValueError("multi-factor fusion requires at least one factor")
+        raw_weights = dict(weights or {name: 1.0 for name in selected_factors})
+        missing_weights = set(selected_factors) - set(raw_weights)
+        if missing_weights:
+            raise KeyError(f"fusion weights missing: {', '.join(sorted(missing_weights))}")
+        selected_weights = {name: float(raw_weights[name]) for name in selected_factors}
+        if any(value < 0.0 for value in selected_weights.values()):
+            raise ValueError("fusion weights must be non-negative")
+        weight_total = sum(selected_weights.values())
+        if weight_total <= 0.0:
+            raise ValueError("fusion weights must sum to a positive value")
+        selected_weights = {
+            name: value / weight_total for name, value in selected_weights.items()
+        }
+        factor_directions = {name: 1 for name in selected_factors}
+        factor_directions.update({str(k): int(v) for k, v in (directions or {}).items()})
+        required_valid = (
+            max(1, int(min_valid_factors))
+            if min_valid_factors is not None
+            else len(selected_factors)
+        )
+        required_valid = min(required_valid, len(selected_factors))
+
+        if isinstance(df, Mapping):
+            absent = set(selected_factors) - set(df)
+            if absent:
+                raise KeyError(f"fusion data missing: {', '.join(sorted(absent))}")
+            base = df[selected_factors[0]].astype(float)
+            hard_mask = _aligned_mask(base, mask)
+            score = pd.DataFrame(0.0, index=base.index, columns=base.columns)
+            valid_count = pd.DataFrame(0, index=base.index, columns=base.columns)
+            for name in selected_factors:
+                values = df[name].reindex_like(base).astype(float)
+                valid = values.notna() & hard_mask
+                direction = 1 if factor_directions.get(name, 1) >= 0 else -1
+                ranks = (values * direction).where(valid).rank(
+                    axis=1, pct=True, method="average"
+                )
+                score += selected_weights[name] * ranks.fillna(0.5)
+                valid_count += valid.astype(int)
+            return score.where(hard_mask & valid_count.ge(required_valid))
+
+        absent = set(selected_factors) - set(df.columns)
+        if absent:
+            raise KeyError(f"fusion data missing: {', '.join(sorted(absent))}")
+        group_key = "trade_date" if "trade_date" in df.columns else None
+        score = pd.Series(0.0, index=df.index, dtype=float)
+        valid_count = pd.Series(0, index=df.index, dtype=int)
+        for name in selected_factors:
+            values = pd.to_numeric(df[name], errors="coerce")
+            direction = 1 if factor_directions.get(name, 1) >= 0 else -1
+            ranked_input = values * direction
+            ranks = (
+                ranked_input.groupby(df[group_key]).rank(pct=True, method="average")
+                if group_key is not None
+                else ranked_input.rank(pct=True, method="average")
+            )
+            score += selected_weights[name] * ranks.fillna(0.5)
+            valid_count += values.notna().astype(int)
+        return score.where(valid_count.ge(required_valid))
+
     div_weight = float(dividend_weight)
     vol_weight = float(volatility_weight)
     if div_weight < 0.0 or vol_weight < 0.0 or div_weight + vol_weight <= 0.0:

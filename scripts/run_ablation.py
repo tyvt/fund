@@ -77,6 +77,88 @@ def strategy_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def fusion_defaults(path: str | Path = "config/vectorbt/strategy_params.yaml") -> dict[str, Any]:
+    """Load the audit-locked fusion defaults from the strategy config."""
+
+    raw = load_yaml(path)
+    fusion = raw.get("fusion")
+    if not isinstance(fusion, dict):
+        raise ValueError("策略配置缺少 fusion 分组")
+    factors = list(dict.fromkeys(str(value) for value in fusion.get("factors", ())))
+    candidate_factors = list(
+        dict.fromkeys(str(value) for value in fusion.get("candidate_factors", factors))
+    )
+    if not factors:
+        raise ValueError("fusion.factors 不得为空")
+    directions = {str(key): int(value) for key, value in dict(fusion.get("directions") or {}).items()}
+    weights = {str(key): float(value) for key, value in dict(fusion.get("weights") or {}).items()}
+    missing_directions = set(candidate_factors) - set(directions)
+    missing_weights = set(factors) - set(weights)
+    if missing_directions or missing_weights:
+        raise ValueError(
+            "fusion 配置不完整："
+            f"缺少方向 {sorted(missing_directions)}，缺少权重 {sorted(missing_weights)}"
+        )
+    return {
+        "fusion_mode": True,
+        "fusion_status": "validation",
+        "fusion_factors": factors,
+        "fusion_candidate_factors": candidate_factors,
+        "fusion_directions": {factor: directions[factor] for factor in factors},
+        "fusion_weights": {factor: weights[factor] for factor in factors},
+        "fusion_min_valid_factors": len(factors),
+        "fusion_candidate_n": int(fusion.get("candidate_n", 100)),
+        "top_n": int(fusion.get("top_n", 20)),
+        "min_holdings": int(fusion.get("top_n", 20)),
+        "max_holding": int(fusion.get("top_n", 20)),
+        "max_single_weight": float(fusion.get("max_single_weight", 0.08)),
+        "hold_bonus": float(fusion.get("hold_bonus", 0.10)),
+        "cost_threshold": float(fusion.get("cost_threshold", 0.01)),
+        "overheat_filter_enabled": True,
+        "overheat_factor": "reversal_5d",
+        "overheat_quantile": 0.95,
+        "rebalance_buffer": {"enabled": False},
+    }
+
+
+def fusion_cli_overrides(
+    *,
+    factors: str | None,
+    equal_weight: bool,
+) -> dict[str, Any]:
+    """Resolve an explicit, reproducible fusion factor pool for the CLI."""
+
+    resolved = fusion_defaults()
+    selected = (
+        list(dict.fromkeys(value.strip() for value in factors.split(",") if value.strip()))
+        if factors is not None
+        else list(resolved["fusion_factors"])
+    )
+    if not selected:
+        raise ValueError("--factors 至少需要一个因子")
+    configured = set(resolved.pop("fusion_candidate_factors", resolved["fusion_factors"]))
+    unknown = set(selected) - configured
+    if unknown:
+        raise ValueError(f"--factors 包含未配置因子：{', '.join(sorted(unknown))}")
+    resolved["fusion_factors"] = selected
+    resolved["fusion_directions"] = {
+        factor: resolved["fusion_directions"][factor] for factor in selected
+    }
+    if equal_weight:
+        weight = 1.0 / len(selected)
+        resolved["fusion_weights"] = {factor: weight for factor in selected}
+    else:
+        raw = {factor: resolved["fusion_weights"][factor] for factor in selected}
+        total = sum(raw.values())
+        if total <= 0.0:
+            raise ValueError("入选因子权重之和必须大于 0")
+        resolved["fusion_weights"] = {
+            factor: value / total for factor, value in raw.items()
+        }
+    resolved["fusion_min_valid_factors"] = len(selected)
+    return resolved
+
+
 def experiment_params(config: dict[str, Any], tag: str | None) -> dict[str, Any]:
     """Return parameter overrides for a named experiment configuration group."""
     safe_tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(tag or "")).strip("_")
@@ -712,8 +794,13 @@ def run(
         end_date=backtest["end_date"],
         cache_enabled=False,
     )
+    data_factors = list(DEFAULT_FACTORS)
+    if bool(params.get("fusion_mode", False)):
+        data_factors.extend(params.get("fusion_factors") or ())
+        if bool(params.get("overheat_filter_enabled", True)):
+            data_factors.append(str(params.get("overheat_factor", "reversal_5d")))
     data = loader.load(
-        factors=DEFAULT_FACTORS,
+        factors=tuple(dict.fromkeys(data_factors)),
         include_prices=True,
         include_volumes=True,
         include_market_cap=True,
@@ -755,6 +842,25 @@ def run(
                 "invested_weights": result.metadata.get("invested_weights", {}),
                 "turnover_by_date": result.metadata.get("turnover_by_date", {}),
                 "fusion_mode": bool(result.metadata.get("fusion_mode", False)),
+                "fusion_v2": bool(result.metadata.get("fusion_v2", False)),
+                "fusion_factors": result.metadata.get("fusion_factors", []),
+                "fusion_directions": result.metadata.get("fusion_directions", {}),
+                "fusion_weights": result.metadata.get("fusion_weights", {}),
+                "fusion_min_valid_factors": result.metadata.get(
+                    "fusion_min_valid_factors"
+                ),
+                "overheat_factor": result.metadata.get("overheat_factor"),
+                "hold_bonus": result.metadata.get("hold_bonus", 0.0),
+                "cost_threshold": result.metadata.get("cost_threshold", 0.0),
+                "overheat_excluded_counts": result.metadata.get(
+                    "overheat_excluded_counts", {}
+                ),
+                "selected_counts": result.metadata.get("selected_counts", {}),
+                "eligible_counts": result.metadata.get("eligible_counts", {}),
+                "average_holdings": result.metadata.get("average_holdings"),
+                "average_invested_weight": result.metadata.get(
+                    "average_invested_weight"
+                ),
                 "fusion_candidate_n": result.metadata.get("fusion_candidate_n"),
                 "max_holding": result.metadata.get("max_holding"),
             }
@@ -1018,10 +1124,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--by-year", action="store_true", help="输出连续回测的分年度绩效")
     parser.add_argument("--fusion", action="store_true", help="启用 experimental 融合排序")
+    parser.add_argument("--equal-weight", action="store_true", help="在指定因子池内严格等权")
+    parser.add_argument("--factors", help="逗号分隔的融合因子池")
     parser.add_argument("--dividend-weight", type=float, default=None)
     parser.add_argument("--volatility-weight", type=float, default=None)
     parser.add_argument("--fusion-candidate-n", type=int, default=None)
     parser.add_argument("--max-holding", type=int, default=None)
+    parser.add_argument("--hold-bonus", type=float, default=None)
+    parser.add_argument("--cost-threshold", type=float, default=None)
     return parser.parse_args(argv)
 
 
@@ -1050,8 +1160,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         overrides: dict[str, Any] = {}
         if args.fusion:
-            overrides["fusion_mode"] = True
-            overrides["fusion_status"] = "experimental"
+            overrides.update(
+                fusion_cli_overrides(
+                    factors=args.factors,
+                    equal_weight=args.equal_weight,
+                )
+            )
+        elif args.equal_weight or args.factors:
+            parser.error("--equal-weight/--factors 必须与 --fusion 同时使用")
         if args.dividend_weight is not None:
             overrides["dividend_weight"] = args.dividend_weight
         if args.volatility_weight is not None:
@@ -1060,11 +1176,15 @@ def main(argv: list[str] | None = None) -> int:
             overrides["fusion_candidate_n"] = args.fusion_candidate_n
         if args.max_holding is not None:
             overrides["max_holding"] = args.max_holding
+        if args.hold_bonus is not None:
+            overrides["hold_bonus"] = args.hold_bonus
+        if args.cost_threshold is not None:
+            overrides["cost_threshold"] = args.cost_threshold
         run(
             config,
             verbose=args.verbose,
             tag=args.tag,
-            by_year=args.by_year,
+            by_year=args.by_year or bool(args.fusion),
             parameter_overrides=overrides,
         )
     return 0

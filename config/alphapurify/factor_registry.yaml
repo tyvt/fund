@@ -74,3 +74,72 @@ factors:
     last_diagnosed: '2026-08-26T04:32:44+00:00'
     diagnosis_status: FAIL
     diagnosis_data_version: 816577c6c8d903eb
+  roe_ttm:
+    name: roe_ttm
+    display_name: ROE TTM（行业 z-score）
+    category: quality
+    description: 最新已公告季度 ROE，申万一级行业内 z-score；仅使用 pubDate 不晚于信号日的数据
+    source: stockdb_fundamentals_parquet
+    version: v2
+    direction: 1
+    neutralize_by: industry
+    normalization: industry_zscore
+    frequency: monthly
+  fcf_ev:
+    name: fcf_ev
+    display_name: FCF/EV（截面 z-score）
+    category: cashflow
+    description: TTM(经营现金流-资本支出)/(总市值+总负债-现金)，全市场截面 z-score
+    source: stockdb_fundamentals_parquet
+    version: v2
+    direction: 1
+    neutralize_by: null
+    normalization: cross_sectional_zscore
+    frequency: monthly
+    industry_neutral_candidate_on_purified_ic_fail: true
+  pe_industry_quantile:
+    name: pe_industry_quantile
+    display_name: PE 行业内三年便宜度
+    category: valuation
+    description: 1-行业内过去三年正PE百分位；正PE回退盈利收益率归一化；非正或缺失PE为0.5
+    source: stock_daily_parquet
+    version: v2
+    direction: 1
+    neutralize_by: null
+    normalization: embedded_industry_quantile
+    fallback: pe_earnings_yield_norm
+    nonpositive_pe: neutral_0.5
+    frequency: monthly
+  gross_margin:
+    name: gross_margin
+    display_name: 毛利率（行业 z-score）
+    category: quality
+    description: 最新已公告毛利率，申万一级行业内 z-score；仅使用 pubDate 不晚于信号日的数据
+    source: stockdb_fundamentals_parquet
+    version: v2
+    direction: 1
+    neutralize_by: industry
+    normalization: industry_zscore
+    frequency: monthly
+  reversal_5d:
+    name: reversal_5d
+    display_name: 5日反转
+    category: price
+    description: 前复权收盘价过去5个交易区间累计收益取负
+    source: stock_daily_qfq_parquet
+    version: v2
+    direction: 1
+    neutralize_by: null
+    frequency: weekly
+    competition: reversal_10d
+  reversal_10d:
+    name: reversal_10d
+    display_name: 10日反转
+    category: price
+    description: 前复权收盘价过去10个交易区间累计收益取负
+    source: stock_daily_qfq_parquet
+    version: v2
+    direction: 1
+    neutralize_by: null
+    frequency: weekly
+    competition: reversal_5d

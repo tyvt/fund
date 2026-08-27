@@ -8,6 +8,8 @@ from scripts.monte_carlo_robustness import (
     rolling_window_backtest,
     simulate_sparse_targets,
 )
+from scripts.incremental_capital_test import simulate_injection
+from scripts.block_bootstrap import summarize
 from scripts.run_ablation import calculate_yearly_performance
 
 
@@ -63,3 +65,20 @@ def test_yearly_performance_uses_baseline0_and_candidate_counts():
     assert frame["beat_baseline0"].all()
     assert frame["avg_candidates"].eq(100.0).all()
     assert acceptance["year_count"] == 2
+
+
+def test_bootstrap_summary_uses_fifth_percentile():
+    result = summarize(np.arange(1.0, 101.0))
+    assert result["p05"] == np.quantile(np.arange(1.0, 101.0), 0.05)
+
+
+def test_incremental_capital_three_day_deployment_is_auditable():
+    result = simulate_injection(
+        ["A", "B"],
+        ["A", "B", "C", "D"],
+        current_value=100_000.0,
+        new_capital=100_000.0,
+    )
+    assert result["passed"] is True
+    assert result["deployment_ratio"] >= 0.99
+    assert result["daily_cap_respected"] is True

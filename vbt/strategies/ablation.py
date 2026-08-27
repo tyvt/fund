@@ -10,6 +10,7 @@ import pandas as pd
 from vbt.strategies.base import BaseStrategy
 from vbt.strategies.dividend_lowvol import (
     build_buffered_weights,
+    build_cost_aware_selection,
     build_rebalance_hold_eligible,
 )
 from vbt.strategies.signal_generators import (
@@ -151,6 +152,15 @@ class AblationStrategy(BaseStrategy):
             missing.append("dividend_yield")
         if self.name == "full":
             missing.extend(field for field in self.required_full if field not in data)
+            fusion_factors = tuple(self.params.get("fusion_factors") or ())
+            if bool(self.params.get("fusion_mode", False)) and len(fusion_factors) > 2:
+                missing.extend(field for field in fusion_factors if field not in data)
+                if bool(self.params.get("overheat_filter_enabled", True)):
+                    overheat_factor = str(
+                        self.params.get("overheat_factor", "reversal_5d")
+                    )
+                    if overheat_factor not in data:
+                        missing.append(overheat_factor)
         if missing:
             raise KeyError(f"{self.name} 缺少数据字段：{', '.join(dict.fromkeys(missing))}")
 
@@ -199,6 +209,9 @@ class AblationStrategy(BaseStrategy):
         buffer_enabled = False
         rebalance_trades: dict[str, dict[str, list[str]]] = {}
         fusion_mode = False
+        fusion_v2 = False
+        fusion_factors: tuple[str, ...] = ()
+        overheat_excluded = pd.DataFrame(False, index=hard.index, columns=hard.columns)
         hard_stage = hard
         volatility_stage = hard
         dividend_stage = hard
@@ -237,6 +250,24 @@ class AblationStrategy(BaseStrategy):
                 )
                 volatility_config = dict(self.params.get("volatility_filter") or {})
                 fusion_mode = bool(self.params.get("fusion_mode", False))
+                fusion_factors = tuple(self.params.get("fusion_factors") or ())
+                fusion_v2 = fusion_mode and len(fusion_factors) > 2
+                overheat_excluded = pd.DataFrame(
+                    False, index=hard.index, columns=hard.columns
+                )
+                if fusion_v2 and bool(self.params.get("overheat_filter_enabled", True)):
+                    overheat_factor = str(
+                        self.params.get("overheat_factor", "reversal_5d")
+                    )
+                    overheat_signal = _at_dates(
+                        data[overheat_factor], signal_dates, execution_dates, columns
+                    )
+                    trailing_gain = -overheat_signal
+                    boundary = trailing_gain.where(hard).quantile(
+                        float(self.params.get("overheat_quantile", 0.95)), axis=1
+                    )
+                    overheat_excluded = trailing_gain.gt(boundary, axis=0) & hard
+                    hard &= ~overheat_excluded
                 volatility_mode = (
                     "fusion"
                     if fusion_mode
@@ -289,7 +320,9 @@ class AblationStrategy(BaseStrategy):
                     lower_pct=None,
                     upper_pct=float(self.params.get("debt_ratio_percentile_max", 0.80)),
                 )
-                constrained_eligible = factor_eligible & roe_mask & debt_mask
+                constrained_eligible = (
+                    hard if fusion_v2 else factor_eligible & roe_mask & debt_mask
+                )
                 total_mv = _at_dates(
                     data["total_mv"], signal_dates, execution_dates, columns
                 )
@@ -304,16 +337,44 @@ class AblationStrategy(BaseStrategy):
                 )
                 fusion_candidate_n = int(self.params.get("fusion_candidate_n", 100))
                 max_holding = (
-                    int(self.params.get("max_holding", 13)) if fusion_mode else None
+                    int(self.params.get("max_holding", 20 if fusion_v2 else 13))
+                    if fusion_mode else None
                 )
                 if fusion_mode:
-                    selection_factor = compute_fusion_score(
-                        dividend,
-                        volatility,
-                        dividend_weight=float(self.params.get("dividend_weight", 0.5)),
-                        volatility_weight=float(self.params.get("volatility_weight", 0.5)),
-                        mask=constrained_eligible,
-                    )
+                    if fusion_v2:
+                        factor_matrices = {
+                            name: _at_dates(
+                                data[name], signal_dates, execution_dates, columns
+                            )
+                            for name in fusion_factors
+                        }
+                        default_weights = {
+                            name: 1.0 / len(fusion_factors) for name in fusion_factors
+                        }
+                        selection_factor = compute_fusion_score(
+                            factor_matrices,
+                            weights=dict(
+                                self.params.get("fusion_weights") or default_weights
+                            ),
+                            factors=list(fusion_factors),
+                            directions=dict(
+                                self.params.get("fusion_directions") or {}
+                            ),
+                            min_valid_factors=int(
+                                self.params.get(
+                                    "fusion_min_valid_factors", len(fusion_factors)
+                                )
+                            ),
+                            mask=constrained_eligible,
+                        )
+                    else:
+                        selection_factor = compute_fusion_score(
+                            dividend,
+                            volatility,
+                            dividend_weight=float(self.params.get("dividend_weight", 0.5)),
+                            volatility_weight=float(self.params.get("volatility_weight", 0.5)),
+                            mask=constrained_eligible,
+                        )
                     eligible = select_by_fusion_score(
                         selection_factor, top_n=fusion_candidate_n
                     )
@@ -322,33 +383,47 @@ class AblationStrategy(BaseStrategy):
                 else:
                     eligible = constrained_eligible
                 core_eligible = eligible
-                selected, weights, fallback_tiers = select_stocks_with_fallback(
-                    selection_factor,
-                    primary_eligible=core_eligible,
-                    relaxed_eligible=relaxed_eligible,
-                    hard_eligible=hard_fallback,
-                    top_n=dividend_top_n,
-                    min_holdings=int(self.params.get("min_holdings", 10)),
-                    fallback_top_n=int(self.params.get("fallback_top_n", 100)),
-                    min_investment_pct=float(
-                        self.params.get("min_investment_pct", 1.0)
-                    ),
-                    max_single_weight=float(
-                        self.params.get("max_single_weight", 0.08)
-                    ),
-                    industries=data["industry"],
-                    industry_max=float(self.params.get("industry_single_max", 0.20)),
-                    total_mv=total_mv,
-                    small_cap_weight_max=float(
-                        self.params.get("small_cap_weight_max", 0.40)
-                    ),
-                    max_holdings=max_holding,
-                    allow_partial=fusion_mode,
-                )
+                if fusion_v2:
+                    selected, rebalance_trades = build_cost_aware_selection(
+                        selection_factor,
+                        hard_eligible=core_eligible,
+                        candidate_n=fusion_candidate_n,
+                        top_n=int(self.params.get("top_n", 20)),
+                        hold_bonus=float(self.params.get("hold_bonus", 0.10)),
+                        cost_threshold=float(self.params.get("cost_threshold", 0.01)),
+                    )
+                    weights = compute_equal_weight(
+                        selected,
+                        max_weight=float(self.params.get("max_single_weight", 0.08)),
+                    )
+                    fallback_tiers = pd.Series("fusion_v2", index=selection_factor.index)
+                else:
+                    selected, weights, fallback_tiers = select_stocks_with_fallback(
+                        selection_factor,
+                        primary_eligible=core_eligible,
+                        relaxed_eligible=relaxed_eligible,
+                        hard_eligible=hard_fallback,
+                        top_n=dividend_top_n,
+                        min_holdings=int(self.params.get("min_holdings", 10)),
+                        fallback_top_n=int(self.params.get("fallback_top_n", 100)),
+                        min_investment_pct=float(
+                            self.params.get("min_investment_pct", 1.0)
+                        ),
+                        max_single_weight=float(
+                            self.params.get("max_single_weight", 0.08)
+                        ),
+                        industries=data["industry"],
+                        industry_max=float(self.params.get("industry_single_max", 0.20)),
+                        total_mv=total_mv,
+                        small_cap_weight_max=float(
+                            self.params.get("small_cap_weight_max", 0.40)
+                        ),
+                        max_holdings=max_holding,
+                        allow_partial=fusion_mode,
+                    )
                 buffer_config = dict(self.params.get("rebalance_buffer") or {})
                 buffer_enabled = bool(buffer_config.get("enabled", False))
-                rebalance_trades: dict[str, dict[str, list[str]]] = {}
-                if buffer_enabled:
+                if buffer_enabled and not fusion_v2:
                     hold_multiplier = int(
                         buffer_config.get("hold_threshold_multiplier", 3)
                     )
@@ -464,9 +539,40 @@ class AblationStrategy(BaseStrategy):
             "point_in_time": True,
             "volatility_filter_mode": volatility_mode,
             "fusion_mode": fusion_mode,
+            "fusion_v2": fusion_v2,
+            "fusion_factors": list(fusion_factors) if fusion_v2 else [],
+            "fusion_directions": (
+                {
+                    factor: int(dict(self.params.get("fusion_directions") or {}).get(factor, 1))
+                    for factor in fusion_factors
+                }
+                if fusion_v2 else {}
+            ),
+            "fusion_weights": (
+                {
+                    factor: float(dict(self.params.get("fusion_weights") or {}).get(factor, 0.0))
+                    for factor in fusion_factors
+                }
+                if fusion_v2 else {}
+            ),
+            "fusion_min_valid_factors": (
+                int(self.params.get("fusion_min_valid_factors", len(fusion_factors)))
+                if fusion_v2 else None
+            ),
+            "overheat_factor": (
+                str(self.params.get("overheat_factor", "reversal_5d"))
+                if fusion_v2 and bool(self.params.get("overheat_filter_enabled", True))
+                else None
+            ),
+            "hold_bonus": float(self.params.get("hold_bonus", 0.10)) if fusion_v2 else 0.0,
+            "cost_threshold": float(self.params.get("cost_threshold", 0.01)) if fusion_v2 else 0.0,
+            "overheat_excluded_counts": {
+                day.date().isoformat(): int(value)
+                for day, value in overheat_excluded.sum(axis=1).items()
+            },
             "fusion_candidate_n": int(self.params.get("fusion_candidate_n", 100)),
-            "max_holding": int(self.params.get("max_holding", 13)) if fusion_mode else None,
-            "rebalance_buffer_enabled": buffer_enabled,
+            "max_holding": int(self.params.get("max_holding", 20 if fusion_v2 else 13)) if fusion_mode else None,
+            "rebalance_buffer_enabled": buffer_enabled and not fusion_v2,
             "rebalance_trades": rebalance_trades,
             "max_sells_per_rebalance": max(
                 (len(trades["sell"]) for trades in rebalance_trades.values()),

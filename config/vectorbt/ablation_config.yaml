@@ -117,5 +117,57 @@ fusion_experimental:
       max_sell_per_month: 3
       hold_threshold_multiplier: 3
 
+# 审计整改主配置：开发期纯化 IC Newey-West t>=2 的因子池内严格等权。
+fusion_v2:
+  name: fusion_v2
+  description: t 统计闸门裁决后的三因子等权融合排序
+  extends: full
+  overrides:
+    fusion_status: validation
+    fusion_mode: true
+    fusion_factors:
+      - volatility_60d
+      - fcf_ev
+      - reversal_10d
+    fusion_directions:
+      dividend_yield: 1
+      volatility_60d: -1
+      roe_ttm: 1
+      fcf_ev: 1
+      pe_industry_quantile: 1
+      reversal_10d: 1
+    fusion_weights:
+      volatility_60d: 0.3333333333
+      fcf_ev: 0.3333333333
+      reversal_10d: 0.3333333333
+    fusion_min_valid_factors: 3
+    fusion_candidate_n: 100
+    top_n: 20
+    min_holdings: 20
+    max_holding: 20
+    max_single_weight: 0.08
+    hold_bonus: 0.10
+    cost_threshold: 0.01
+    overheat_filter_enabled: true
+    overheat_quantile: 0.95
+    rebalance_buffer:
+      enabled: false
+
+# V2 锁定协议规定的固定对照：低波 + FCF/EV + PE 行业分位，池内等权。
+fusion_v2_control:
+  name: fusion_v2_control
+  description: 只留传统强因子的固定三因子对照
+  extends: fusion_v2
+  overrides:
+    fusion_factors:
+      - volatility_60d
+      - fcf_ev
+      - pe_industry_quantile
+    fusion_weights:
+      volatility_60d: 0.3333333333
+      fcf_ev: 0.3333333333
+      pe_industry_quantile: 0.3333333333
+    fusion_min_valid_factors: 3
+
 output:
   directory: output/ablation

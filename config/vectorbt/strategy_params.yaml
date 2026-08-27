@@ -10,7 +10,7 @@ dividend_lowvol:
   fallback_top_n: 100
 
   top_n: 10
-  # 融合排序先保持 experimental；综合验收 7 项中至少 5 项通过后，
+  # 融合排序先保持 experimental；综合验收 9 项中至少 6 项通过后，
   # generate_robustness_report.py 才会建议将 fusion_mode 升级为 true。
   fusion_status: experimental
   fusion_mode: false
@@ -47,3 +47,34 @@ dividend_lowvol:
   exclude_st: true
   min_float_mv: 500000000
   min_daily_amount: 1000000
+
+fusion:
+  # 开发期 Newey-West t>=2 闸门裁决（output/t_stats/factor_t_stats.csv）。
+  candidate_factors:
+    - dividend_yield
+    - volatility_60d
+    - roe_ttm
+    - fcf_ev
+    - pe_industry_quantile
+    - reversal_10d
+  candidate_n: 100
+  top_n: 20
+  max_single_weight: 0.08
+  hold_bonus: 0.10
+  cost_threshold: 0.01
+  factors:
+    - volatility_60d
+    - fcf_ev
+    - reversal_10d
+  directions:
+    dividend_yield: 1
+    volatility_60d: -1
+    roe_ttm: 1
+    fcf_ev: 1
+    pe_industry_quantile: 1
+    reversal_10d: 1
+  weights:
+    # 主配置在通过闸门②的因子池内严格等权。
+    volatility_60d: 0.3333333333
+    fcf_ev: 0.3333333333
+    reversal_10d: 0.3333333333
