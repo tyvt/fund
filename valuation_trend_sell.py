@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 
 TIER_VALUATION = "valuation"
+TIER_PE_MID = "pe_mid"
 TIER_TREND = "trend"
 TIER_EXTREME = "extreme"
 TIER_DIV_SPREAD = "div_spread"
@@ -15,6 +16,7 @@ TIER_DIV_YIELD = "div_yield"
 
 _TIER_FRACTION = {
     TIER_VALUATION: 1 / 3,
+    TIER_PE_MID: 1 / 3,
     TIER_TREND: 1 / 3,
     TIER_DIV_SPREAD: 1 / 3,
     TIER_DIV_YIELD: 1 / 3,
@@ -46,6 +48,12 @@ def _flag(value) -> bool:
     return bool(value)
 
 
+def pe_sell_bounds(code):
+    """返回 (第一档, 第二档, 清仓)，统一 80/85/90。"""
+    del code
+    return 80.0, 85.0, 90.0
+
+
 def active_sell_tiers(
     *,
     pe_percentile,
@@ -54,6 +62,7 @@ def active_sell_tiers(
     ma_slope_pct=None,
     is_buy=False,
     pe_high=80.0,
+    pe_mid=85.0,
     pe_extreme=90.0,
     spread_low=20.0,
     spread_extreme=10.0,
@@ -75,6 +84,8 @@ def active_sell_tiers(
         spread is not None and spread <= spread_low
     ):
         tiers.append(TIER_VALUATION)
+    if pe is not None and pe >= pe_mid:
+        tiers.append(TIER_PE_MID)
     if _flag(below_ma) and slope is not None and slope < slope_max:
         tiers.append(TIER_TREND)
     return tiers
@@ -87,7 +98,14 @@ def units_for_new_tiers(tiers, already, units, initial_units):
         return 0.0, False, []
     if TIER_EXTREME in pending:
         return float(units), True, list(
-            {TIER_EXTREME, TIER_VALUATION, TIER_TREND, TIER_DIV_SPREAD, TIER_DIV_YIELD}
+            {
+                TIER_EXTREME,
+                TIER_VALUATION,
+                TIER_PE_MID,
+                TIER_TREND,
+                TIER_DIV_SPREAD,
+                TIER_DIV_YIELD,
+            }
         )
     fraction = sum(_TIER_FRACTION[tier] for tier in pending if tier in _TIER_FRACTION)
     sell_units = min(float(units), float(initial_units) * fraction)

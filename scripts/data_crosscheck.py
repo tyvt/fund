@@ -306,7 +306,7 @@ def fetch_multpl_sp500_trailing_pe() -> pd.DataFrame:
     return get_or_fetch_dataframe("multpl_sp500_pe", _download, subdir="us")
 
 
-def compare_us_forward_pe_sources(key: str = "spx", *, months: int = 120) -> dict:
+def compare_us_forward_pe_sources(key: str = "ndx", *, months: int = 120) -> dict:
     """HOM Forward PE 与 Barron's Birinyi / Multpl Trailing 交叉比对。"""
     from us_index_data import fetch_pe_payload
 

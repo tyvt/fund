@@ -14,19 +14,15 @@ def get_dividend_total_return_code(index_code):
     """红利价格指数对应的全收益指数代码（含分红再投资）。"""
     return DIVIDEND_TOTAL_RETURN_INDEX.get(index_code)
 
-ZZ1000_INDEX = {"code": "000852", "name": "中证1000"}
 KC50_INDEX = {"code": "000688", "name": "科创50"}
 CYB_INDEX = {"code": "399006", "name": "创业板指"}
 NDX_INDEX = {"code": "NDX", "name": "纳斯达克100"}
 NDX_MARKET_DATA_START = "2010-01-01"
-SPX_INDEX = {"code": "SPX", "name": "标普500"}
-SPX_MARKET_DATA_START = "2013-01-01"
 
 CN_BROAD_INDICES = [
-    ZZ1000_INDEX,
     KC50_INDEX,
 ]
-US_INDEX_KEYS = ("ndx", "spx")
+US_INDEX_KEYS = ("ndx",)
 
 HEADERS = {
     "User-Agent": (

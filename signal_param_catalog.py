@@ -145,7 +145,7 @@ def build_signal_param_catalog() -> list[SignalParam]:
     """构建全部买卖点阈值（逐个筛选用）。"""
     params: list[SignalParam] = []
 
-    for code in ("000852", "000688"):
+    for code in ("000688",):
         cfg = _load_cn_defaults(code)
         params.extend([
             _cn_broad(
@@ -274,7 +274,7 @@ def build_signal_param_catalog() -> list[SignalParam]:
         ),
     ])
 
-    for us_key in ("ndx", "spx"):
+    for us_key in ("ndx",):
         prefix = us_key.upper()
         sell_cfg = config.get_us_index_sell_config(us_key)
         params.extend([

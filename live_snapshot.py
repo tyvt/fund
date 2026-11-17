@@ -38,10 +38,10 @@ def resolve_live_price_params(index_code: str) -> dict:
             "slope_lookback": CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
             "close_col": "close",
         }
-    if index_code in ("NDX", "SPX"):
+    if index_code == "NDX":
         from us_index_data import _cfg
 
-        key = "ndx" if index_code == "NDX" else "spx"
+        key = "ndx"
         return {
             "low_lookback_days": _cfg(key, "BUY_LOW_LOOKBACK_DAYS"),
             "high_lookback_days": _cfg(key, "BUY_HIGH_LOOKBACK_DAYS"),

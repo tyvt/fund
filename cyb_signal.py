@@ -128,14 +128,18 @@ def evaluate_cyb_signal(snapshot):
     ):
         is_buy = False
 
-    from valuation_trend_sell import active_sell_tiers
+    from valuation_trend_sell import active_sell_tiers, pe_sell_bounds
 
+    pe_high, pe_mid, pe_extreme = pe_sell_bounds(snapshot.get("code"))
     sell_tiers = active_sell_tiers(
         pe_percentile=snapshot.get("pe_percentile"),
         spread_percentile=None,
         below_ma=snapshot.get("below_ma"),
         ma_slope_pct=snapshot.get("ma_slope_pct"),
         is_buy=is_buy,
+        pe_high=pe_high,
+        pe_mid=pe_mid,
+        pe_extreme=pe_extreme,
     )
     is_sell = bool(sell_tiers)
 

@@ -26,7 +26,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 
-from config import CYB_INDEX, KC50_INDEX, ZZ1000_INDEX, INDICES
+from config import CYB_INDEX, KC50_INDEX, INDICES
 
 from cyb_data import fetch_cyb_pe_szse_official, fetch_cyb_price_history
 
@@ -57,8 +57,6 @@ from market_data import (
 
 
 BAOSTOCK_INDEX_MAP = {
-
-    ZZ1000_INDEX["code"]: ("sh.000852", "中证1000"),
 
     CYB_INDEX["code"]: ("sz.399006", "创业板指"),
 
@@ -528,8 +526,6 @@ def main(argv=None) -> int:
 
         (INDICES[0]["code"], INDICES[0]["name"]),
 
-        (ZZ1000_INDEX["code"], ZZ1000_INDEX["name"]),
-
         (KC50_INDEX["code"], KC50_INDEX["name"]),
 
     ]:
@@ -572,7 +568,7 @@ def main(argv=None) -> int:
 
     print("\n## 7. 美股 Forward PE 多源比对\n")
 
-    for key in ("spx", "ndx"):
+    for key in ("ndx",):
 
         r = compare_us_forward_pe_sources(key)
 

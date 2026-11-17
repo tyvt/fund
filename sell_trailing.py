@@ -195,18 +195,6 @@ def rebuy_allowed_after_take_profit(
     return current_gain <= max_gain_pct
 
 
-def valuation_sell_hit_cn_broad(snapshot, cfg):
-    """宽基估值卖点已移除（ablation 验证无组合影响）。"""
-    del snapshot, cfg
-    return False
-
-
-def valuation_sell_hit_dividend(snapshot, cfg):
-    """红利估值卖点已移除（ablation 验证无组合影响）。"""
-    del snapshot, cfg
-    return False
-
-
 def valuation_sell_hit_us_index(snapshot, cfg):
     """美股估值卖点：仅 TTM PE 分位 + 距低点涨幅（Forward PE 门槛已移除）。"""
     trail_pct = snapshot.get("trailing_pe_percentile")

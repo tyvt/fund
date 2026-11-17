@@ -92,17 +92,6 @@ def _cn_broad_index_defaults(**overrides):
 
 
 _CN_BROAD_PER_INDEX_DEFAULTS = {
-    # 中证1000：二次收紧（最严）
-    "000852": _cn_broad_index_defaults(
-        buy_spread_percentile_min=70,
-        buy_max_above_low_pct=0.05,
-        buy_min_drawdown_from_high_pct=0.16,
-        buy_max_year_range_pct=0.34,
-        buy_mid_range_max_above_low_pct=0.04,
-        sell_trailing_drawdown_pct=0.10,
-        sell_min_unrealized_gain_pct=0.40,
-        sell_trailing_min_hold_days=60,
-    ),
     # 科创50：夏普偏低但绝对收益高，轻度收紧
     "000688": _cn_broad_index_defaults(
         buy_spread_percentile_min=64,

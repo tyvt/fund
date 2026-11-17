@@ -26,7 +26,6 @@ from config import (
     BACKTEST_OUTPUT_DIR,
     BACKTEST_PRESENT_LABEL,
     PROJECT_DIR,
-    SPX_INDEX,
     US_INDEX_KEYS,
     format_backtest_amount_note,
     get_backtest_buy_amount,
@@ -664,10 +663,9 @@ def backtest_cn_broad(
     ]
 
 
-US_INDEX_META = {"ndx": NDX_INDEX, "spx": SPX_INDEX}
+US_INDEX_META = {"ndx": NDX_INDEX}
 US_INDEX_NOTES = {
     "ndx": "日频（10Y日更，Forward PE按月对齐）；QDII 限购下建议小额跟投",
-    "spx": "日频（10Y日更，Forward PE按季对齐）；QDII 限购下建议小额跟投",
 }
 
 
@@ -1575,7 +1573,7 @@ def main(argv=None):
 
         if args.daily_table:
             if not args.index_codes:
-                print("请使用 --index 指定指数代码，例如: --daily-table --index 000852")
+                print("请使用 --index 指定指数代码，例如: --daily-table --index 000688")
                 return 1
             panels = get_panels()
             print("正在加载数据（仅首次较慢，后续区间复用缓存）...")

@@ -47,7 +47,14 @@ def _resolve_cn_broad_signal_short(is_buy, is_sell):
 
 def evaluate_cn_broad_sell(snapshot):
     """估值减 1/3、破位再减 1/3、极端估值清仓。日报不记已减档。"""
-    from valuation_trend_sell import TIER_EXTREME, TIER_TREND, TIER_VALUATION, active_sell_tiers
+    from valuation_trend_sell import (
+        TIER_EXTREME,
+        TIER_PE_MID,
+        TIER_TREND,
+        TIER_VALUATION,
+        active_sell_tiers,
+        pe_sell_bounds,
+    )
 
     index_code = snapshot.get("code")
     if not cn_broad_sell_enabled(index_code):
@@ -57,14 +64,19 @@ def evaluate_cn_broad_sell(snapshot):
             "sell_summary": None,
         }
 
+    pe_high, pe_mid, pe_extreme = pe_sell_bounds(snapshot.get("code"))
     tiers = active_sell_tiers(
         pe_percentile=snapshot.get("pe_percentile"),
         spread_percentile=snapshot.get("spread_percentile"),
         below_ma=snapshot.get("below_ma"),
         ma_slope_pct=snapshot.get("ma_slope_pct"),
+        pe_high=pe_high,
+        pe_mid=pe_mid,
+        pe_extreme=pe_extreme,
     )
     labels = {
         TIER_VALUATION: "估值过高，减仓1/3",
+        TIER_PE_MID: "估值继续升高，再减仓1/3",
         TIER_TREND: "跌破MA200且斜率<-2%，再减仓1/3",
         TIER_EXTREME: "极端高估，清仓剩余",
     }

@@ -44,8 +44,6 @@ from buy_amount_config import resolve_simulate_amount
 from cyb_signal import evaluate_cyb_signal
 from sell_trailing import (
     simulate_trades_trailing,
-    valuation_sell_hit_cn_broad,
-    valuation_sell_hit_dividend,
     valuation_sell_hit_us_index,
 )
 from dividend_data import is_buy_signal_row
@@ -168,22 +166,26 @@ def _filter_panel(panel, start_date, end_date, date_col="date"):
     return work.loc[mask].dropna(subset=["close"])
 
 
-def _valuation_tier_fn(row):
+def _valuation_tier_fn(row, code=None):
     from sell_trailing import row_field
-    from valuation_trend_sell import active_sell_tiers
+    from valuation_trend_sell import active_sell_tiers, pe_sell_bounds
 
+    pe_high, pe_mid, pe_extreme = pe_sell_bounds(code or row_field(row, "code"))
     return active_sell_tiers(
         pe_percentile=row_field(row, "pe_percentile"),
         spread_percentile=row_field(row, "spread_percentile"),
         below_ma=row_field(row, "below_ma"),
         ma_slope_pct=row_field(row, "ma_slope_pct"),
+        pe_high=pe_high,
+        pe_mid=pe_mid,
+        pe_extreme=pe_extreme,
     )
 
 
 def _cn_broad_trailing_cfg(code):
     if not cn_broad_sell_enabled(code):
         return None
-    return {"tier_sell_fn": _valuation_tier_fn}
+    return {"tier_sell_fn": lambda row, c=code: _valuation_tier_fn(row, c)}
 
 
 def _cn_broad_valuation_sell_fn(code):
@@ -217,8 +219,6 @@ def _us_trailing_cfg(key):
     if cfg.get("sell_trailing_drawdown_pct") is None:
         return None
     min_gain = cfg.get("sell_min_unrealized_gain_pct")
-    if key.lower() == "spx":
-        min_gain = 0.0
     return {
         "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
         "min_unrealized_gain_pct": min_gain,
@@ -876,7 +876,7 @@ def backtest_all(
             cyb_buy,
             cyb_sell,
             True,
-            trailing_cfg={"tier_sell_fn": _valuation_tier_fn},
+            trailing_cfg={"tier_sell_fn": lambda row: _valuation_tier_fn(row, cyb_code)},
             date_col="date",
         )
         if stats:

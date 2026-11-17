@@ -14,11 +14,9 @@ from data_cache import offline_mode_enabled
 # 指数代码 -> 腾讯行情代码（无实时源的指数不在此表）
 TENCENT_SYMBOL_BY_INDEX: dict[str, str] = {
     "H30269": "csH30269",
-    "000852": "sh000852",
     "000688": "sh000688",
     "399006": "sz399006",
     "NDX": "usNDX",
-    "SPX": "usINX",
 }
 
 _INDEX_BY_TENCENT = {v: k for k, v in TENCENT_SYMBOL_BY_INDEX.items()}

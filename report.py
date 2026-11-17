@@ -21,7 +21,6 @@ MODULE_CHOICES = (
 )
 
 CN_BROAD_MODULE_BY_CODE = {
-    "000852": "zz1000",
     "000688": "kc50",
 }
 
@@ -116,8 +115,8 @@ def generate_us_index_report(key, expected_growth=None, live_quotes=None):
     from us_index_data import fetch_snapshot
     from us_index_signal import evaluate_signal, format_report, format_section
 
-    index_name = {"ndx": "纳斯达克100", "spx": "标普500"}[key]
-    code = {"ndx": "NDX", "spx": "SPX"}[key]
+    index_name = {"ndx": "纳斯达克100"}[key]
+    code = {"ndx": "NDX"}[key]
     log_fetch_start(index_name, code)
     snapshot = fetch_snapshot(key, expected_growth=expected_growth)
     snapshot = maybe_apply_live(snapshot, live_quotes)
@@ -242,7 +241,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="报告模块：dividend(红利)、cn_broad(A股宽基)、cyb(创业板)、us(纳指+标普)、all(全部，默认)",
+        help="报告模块：dividend(红利)、cn_broad(科创50)、cyb(创业板)、us(纳指)、all(全部，默认)",
     )
     parser.add_argument(
         "--index",
@@ -260,7 +259,7 @@ def main(argv=None):
         "--us-growth",
         type=float,
         default=None,
-        help="美股模块：预期盈利增速（小数，纳指/标普共用，默认由 TTM/Forward PE 隐含）",
+        help="美股模块：预期盈利增速（小数，纳指，默认由 TTM/Forward PE 隐含）",
     )
     args = parser.parse_args(argv)
 

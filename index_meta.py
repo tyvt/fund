@@ -8,8 +8,6 @@ from config import (
     INDICES,
     NDX_INDEX,
     NDX_MARKET_DATA_START,
-    SPX_INDEX,
-    SPX_MARKET_DATA_START,
     get_dividend_total_return_code,
 )
 
@@ -17,13 +15,10 @@ from config import (
 INDEX_BASE_DATES: dict[str, str] = {
     "H30269": "20081231",
     "H20269": "20081231",
-    "000300": "20050408",
     "000906": "20070115",
-    "000852": "20141017",
     "000688": "20200723",
     "399006": "20100601",
     "NDX": NDX_MARKET_DATA_START.replace("-", ""),
-    "SPX": SPX_MARKET_DATA_START.replace("-", ""),
 }
 
 
@@ -54,7 +49,7 @@ def iter_tracked_csindex_perf_codes() -> list[str]:
 
 
 # 策略回测用、不在 INDICES/CN_BROAD 内的中证 perf 指数
-EXTRA_CSINDEX_PERF_CODES = ("000300", "000906")
+EXTRA_CSINDEX_PERF_CODES = ("000906",)
 
 
 def iter_extra_csindex_perf_codes() -> list[str]:
@@ -77,5 +72,4 @@ def iter_tracked_index_labels() -> list[tuple[str, str]]:
     labels.extend((i["code"], i["name"]) for i in CN_BROAD_INDICES)
     labels.append((CYB_INDEX["code"], CYB_INDEX["name"]))
     labels.append((NDX_INDEX["code"], NDX_INDEX["name"]))
-    labels.append((SPX_INDEX["code"], SPX_INDEX["name"]))
     return labels

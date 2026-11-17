@@ -167,7 +167,9 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
             "panel": cyb_panel,
             "buy_fn": cyb_buy,
             "has_sell": True,
-            "trailing_cfg": {"tier_sell_fn": _valuation_tier_fn},
+            "trailing_cfg": {
+                "tier_sell_fn": lambda row: _valuation_tier_fn(row, cyb_code)
+            },
             "valuation_sell_fn": None,
             "valuation_price_col": None,
             "sim_amt": sim_amt,

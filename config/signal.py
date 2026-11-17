@@ -14,7 +14,7 @@ BUY_COOLDOWN_AMOUNT_LOOKBACK_DAYS = _env_int("BUY_COOLDOWN_AMOUNT_LOOKBACK_DAYS"
 # 冷却开启时，这些指数仍可单独豁免（历史兼容；默认关闭冷却后无效）
 BUY_COOLDOWN_DISABLED_CODES = frozenset(
     c.strip().upper()
-    for c in os.environ.get("BUY_COOLDOWN_DISABLED_CODES", "NDX,SPX").split(",")
+    for c in os.environ.get("BUY_COOLDOWN_DISABLED_CODES", "NDX").split(",")
     if c.strip()
 )
 SIGNAL_STRENGTH_STRONG_MIN = _env_int("SIGNAL_STRENGTH_STRONG_MIN", 60)

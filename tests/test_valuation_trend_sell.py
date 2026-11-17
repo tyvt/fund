@@ -57,6 +57,20 @@ def test_extreme_exits_remainder():
     assert sold == 60
 
 
+def test_progressive_pe_bands():
+    from valuation_trend_sell import TIER_PE_MID, pe_sell_bounds
+
+    assert pe_sell_bounds("000688") == (80.0, 85.0, 90.0)
+    assert pe_sell_bounds("399006") == (80.0, 85.0, 90.0)
+    assert active_sell_tiers(pe_percentile=82) == [TIER_VALUATION]
+    assert active_sell_tiers(pe_percentile=86) == [TIER_VALUATION, TIER_PE_MID]
+    sell, full, marked = units_for_new_tiers(
+        [TIER_VALUATION, TIER_PE_MID], set(), 90, 90
+    )
+    assert (sell, full) == (60, False)
+    assert set(marked) == {TIER_VALUATION, TIER_PE_MID}
+
+
 def test_dividend_spread_and_yield_tiers():
     assert dividend_sell_tiers(dividend_yield=0.046, spread=0.024) == [TIER_DIV_SPREAD]
     assert dividend_sell_tiers(dividend_yield=0.034, spread=0.024) == [

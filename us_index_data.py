@@ -21,8 +21,6 @@ from config import (
     NDX_FORWARD_PE_URL,
     NDX_INDEX,
     REQUEST_TIMEOUT,
-    SPX_FORWARD_PE_URL,
-    SPX_INDEX,
     US_INDEX_KEYS,
 )
 from data_cache import (
@@ -66,18 +64,6 @@ US_INDEX_SPECS: dict[str, dict[str, Any]] = {
         "hist_growth_min_months": lambda years: years * 6,
         "runtime_error": "无法构建纳斯达克 100 日频估值序列",
     },
-    "spx": {
-        "index": SPX_INDEX,
-        "forward_pe_url": SPX_FORWARD_PE_URL,
-        "pe_cache": "spx_forward_pe.json",
-        "fred_price_series": "SP500",
-        "akshare_symbol": ".INX",
-        "price_cache": "spx_price_akshare.csv",
-        "dividend_proxy": config.SPX_DIVIDEND_PROXY_SYMBOL,
-        "dividend_cache": "spx_spy_dividend_yield.json",
-        "hist_growth_min_months": lambda years: years * 3,
-        "runtime_error": "无法构建标普 500 日频估值序列",
-    },
 }
 
 
@@ -119,8 +105,7 @@ def trim_us_index_cache() -> list[str]:
 
     lines: list[str] = []
     ndx_cut = pd.Timestamp(get_index_base_date_iso(NDX_INDEX["code"]))
-    spx_cut = pd.Timestamp(get_index_base_date_iso(SPX_INDEX["code"]))
-    earliest_us = min(ndx_cut, spx_cut)
+    earliest_us = ndx_cut
 
     def _trim_csv(name: str, cutoff: pd.Timestamp, date_col: str | None = None):
         path = us_cache_path(name)
@@ -167,10 +152,6 @@ def trim_us_index_cache() -> list[str]:
     _trim_csv("fred_NASDAQ100.csv", ndx_cut, "observation_date")
     _trim_csv("ndx_price_akshare.csv", ndx_cut)
     _trim_pe_json("ndx_forward_pe.json", ndx_cut)
-
-    _trim_csv("fred_SP500.csv", spx_cut, "observation_date")
-    _trim_csv("spx_price_akshare.csv", spx_cut)
-    _trim_pe_json("spx_forward_pe.json", spx_cut)
 
     _trim_csv("fred_DGS10.csv", earliest_us, "observation_date")
     _trim_csv("us10y_akshare.csv", earliest_us)
@@ -368,33 +349,6 @@ def fetch_dividend_yield_proxy(key: str):
         data = get_or_fetch_us_json(spec["dividend_cache"], _fetch)
     except requests.RequestException:
         data = None
-
-    if key == "spx" and (not data or data.get("yield") is None):
-        if offline_mode_enabled():
-            return None
-        from bs4 import BeautifulSoup
-
-        ssga_url = "https://www.ssga.com/us/en/individual/etfs/state-street-spdr-sp-500-etf-trust-spy"
-        response = requests.get(
-            ssga_url,
-            headers=HEADERS,
-            timeout=_cfg(key, "FRED_NETWORK_TIMEOUT"),
-        )
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        for row in soup.find_all("tr"):
-            cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
-            if any("Fund Distribution Yield" in cell for cell in cells):
-                match = re.search(r"(\d+(?:\.\d+)?)%", cells[-1] if cells else "")
-                if match:
-                    data = {
-                        "yield": float(match.group(1)) / 100,
-                        "source": "SSGA SPY Fund Distribution Yield",
-                    }
-                    save_json(us_cache_path(spec["dividend_cache"]), data)
-                    break
-        if not data or data.get("yield") is None:
-            raise RuntimeError("SSGA SPY page does not contain Fund Distribution Yield")
 
     return data.get("yield") if data else None
 

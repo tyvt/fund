@@ -186,7 +186,7 @@ def _fetch_one_index_state(task: dict, live_quotes=None) -> dict | None:
             snapshot = fetch_snapshot(key, expected_growth=task.get("us_growth"))
             snapshot = maybe_apply_live(snapshot, live_quotes)
             signal_eval = evaluate_signal(key, snapshot)
-            name = {"ndx": "纳斯达克100", "spx": "标普500"}[key]
+            name = {"ndx": "纳斯达克100"}[key]
             return {"code": code, "name": name, "snapshot": snapshot, "signal_eval": signal_eval}
     except Exception:
         return None
@@ -203,7 +203,7 @@ def _build_index_tasks():
         tasks.append({"kind": "cn_broad", "code": item["code"]})
     tasks.append({"kind": "cyb", "code": "399006"})
     for key in US_INDEX_KEYS:
-        code = {"ndx": "NDX", "spx": "SPX"}[key]
+        code = {"ndx": "NDX"}[key]
         tasks.append({"kind": "us", "code": code, "us_key": key})
     return tasks
 

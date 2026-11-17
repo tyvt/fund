@@ -122,12 +122,11 @@ _CYB_MAPPINGS: dict[str, tuple[str, str, dict[str, str]]] = {
 
 _US_PRICE_FILES = {
     "ndx_price_akshare.csv": ("ndx", "akshare"),
-    "spx_price_akshare.csv": ("spx", "akshare"),
+    
 }
 
 _FRED_FILES = {
     "fred_NASDAQ100.csv": "NASDAQ100",
-    "fred_SP500.csv": "SP500",
     "fred_DGS10.csv": "DGS10",
 }
 
@@ -319,8 +318,8 @@ def sync_json_to_duckdb(key: str, payload, *, subdir: str = "", us: bool = False
             snapshot_key = f"{'us' if us else subdir or 'root'}:{key}"
             upsert_kv_snapshot(conn, snapshot_key, payload)
 
-            if us and key.endswith("_forward_pe.json"):
-                index_key = "ndx" if key.startswith("ndx") else "spx"
+            if us and key.endswith("_forward_pe.json") and key.startswith("ndx"):
+                index_key = "ndx"
                 for pe_kind, field_name in (
                     ("trailing", "trailing"),
                     ("forward", "forward"),

@@ -1,4 +1,4 @@
-"""A 股宽基指数（中证1000 / 科创50）估值序列构建。"""
+"""A 股宽基指数（科创50）估值序列构建。"""
 
 from datetime import date
 
@@ -7,7 +7,6 @@ import pandas as pd
 from config import (
     get_cn_broad_signal_config,
     KC50_INDEX,
-    ZZ1000_INDEX,
 )
 from market_data import (
     asof_datetime,
@@ -22,7 +21,6 @@ from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_bel
 from signal_format import merge_history_meta
 
 CN_BROAD_INDEX_BY_CODE = {
-    ZZ1000_INDEX["code"]: ZZ1000_INDEX,
     KC50_INDEX["code"]: KC50_INDEX,
 }
 

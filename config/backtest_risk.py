@@ -8,7 +8,7 @@ BACKTEST_RISK_FREE_RATE = _env_float("BACKTEST_RISK_FREE_RATE", 0.024)
 BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
 # --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
-CN_BROAD_SELL_ENABLED_CODES = frozenset({"000852", "000688"})
+CN_BROAD_SELL_ENABLED_CODES = frozenset({"000688"})
 DIVIDEND_SELL_ENABLED = _env_bool("DIVIDEND_SELL_ENABLED", True)
 US_INDEX_SELL_ENABLED = _env_bool("US_INDEX_SELL_ENABLED", True)
 # 分批/移动止盈触发后：持仓浮盈须回落至该阈值及以下才允许再买入（默认关，与无人为限频一致）
@@ -25,7 +25,7 @@ ROTATION_MARGINAL_HURDLE_ANN_PCT = _env_float(
 MARKET_REGIME_ENABLED = _env_bool("MARKET_REGIME_ENABLED", False)
 MARKET_REGIME_PROXY_CODES = tuple(
     c.strip()
-    for c in _env_str("MARKET_REGIME_PROXY_CODES", "000852,399006,NDX").split(",")
+    for c in _env_str("MARKET_REGIME_PROXY_CODES", "399006,NDX").split(",")
     if c.strip()
 )
 MARKET_REGIME_BULL_RANGE_MIN = _env_float("MARKET_REGIME_BULL_RANGE_MIN", 0.58)
@@ -98,7 +98,7 @@ def get_dividend_sell_config(index_code):
 
 
 def get_us_index_sell_config(key):
-    """美股指数移动止盈与估值卖点参数（key: ndx / spx）。"""
+    """美股指数移动止盈与估值卖点参数（key: ndx）。"""
     prefix = key.upper()
     return {
         "sell_trailing_pe_percentile_min": _env_float(
