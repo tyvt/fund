@@ -184,6 +184,8 @@ python push.py --quiet
 
 定时任务通过 `run_push.bat` 调用，日志写入 `logs/push.log`。
 
+**自动刷新面板**：每次通过 `backtest.py` 跑回测成功后，会自动刷新当日建议卡片到 `trade_inception_present.html`（等价于执行一次 `push.py` 的面板刷新），无需再单独运行 `push.py`。加 `--no-refresh-panel` 可跳过；面板刷新失败仅告警、不影响回测结果。独立手动刷新仍用 `python push.py`。
+
 ### 数据同步（`sync_market_duckdb.py`）
 
 推荐统一入口：公网行情 → CSV 缓存 → StockDB → DuckDB。
