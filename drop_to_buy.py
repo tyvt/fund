@@ -32,6 +32,55 @@ def rolling_percentile(series, idx, value, window, min_days):
     return compute_percentile(hist, value)
 
 
+def find_min_drop_to_buy(is_buy_at_drop, max_drop=0.35, precision=0.002):
+    """二分搜索最小跌幅 drop∈[0,1)，使买入条件成立。"""
+    try:
+        if is_buy_at_drop(0.0):
+            return 0.0
+        if not is_buy_at_drop(max_drop):
+            return None
+        lo, hi = 0.0, max_drop
+        while hi - lo > precision:
+            mid = (lo + hi) / 2.0
+            if is_buy_at_drop(mid):
+                hi = mid
+            else:
+                lo = mid
+        return hi
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def find_min_rise_breaks_buy(is_buy_at_rise, max_rise=0.35, precision=0.002):
+    """昨日已满足买入时，二分搜索当日最小涨幅使买入不再成立。"""
+    try:
+        if not is_buy_at_rise(0.0):
+            return None
+        if is_buy_at_rise(max_rise):
+            return None
+        lo, hi = 0.0, max_rise
+        while hi - lo > precision:
+            mid = (lo + hi) / 2.0
+            if is_buy_at_rise(mid):
+                lo = mid
+            else:
+                hi = mid
+        return hi
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _estimate_buy_trigger(check_factor, max_move=0.35, precision=0.002):
+    """返回 (再跌多少可买入, 已买入时当日涨多少将失效)。"""
+    drop = find_min_drop_to_buy(
+        lambda d: check_factor(1.0 - d), max_drop=max_move, precision=precision
+    )
+    rise_breaks = find_min_rise_breaks_buy(
+        lambda r: check_factor(1.0 + r), max_rise=max_move, precision=precision
+    )
+    return drop, rise_breaks
+
+
 def find_min_drop_breaks_condition(
     still_true_at_drop, max_drop=0.35, precision=0.002
 ):

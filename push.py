@@ -32,3 +32,7 @@ def main(argv=None):
 
     print(f"已刷新回测面板当日建议：{path}")
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
