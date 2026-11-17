@@ -1,86 +1,31 @@
-"""生成报告并推送微信（供定时任务使用）。"""
+"""生成当日买卖建议 HTML 面板（供定时任务使用；原微信推送已停用，改为生成面板）。"""
 
 import argparse
 import sys
 
-from config import load_config
-from notify import build_push_title, push_to_wechat
-from report import MODULE_ALL, MODULE_CHOICES, generate_reports, print_report
-from signal_format import filter_trade_signal_sections, join_index_sections
+from daily_panel import generate_panel
+from report import MODULE_CHOICES
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="投资信号微信推送")
+    parser = argparse.ArgumentParser(description="生成当日买卖建议 HTML 面板")
     parser.add_argument(
         "-m",
         "--module",
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="推送模块：dividend、cn_broad、cyb、us、all(全部，默认)",
-    )
-    parser.add_argument(
-        "--index",
-        action="append",
-        metavar="CODE",
-        help="红利模块：仅推送指定指数（可多次指定）",
-    )
-    parser.add_argument(
-        "--growth",
-        type=float,
-        default=None,
-        help="创业板模块：机构预期净利润增速（小数）",
-    )
-    parser.add_argument(
-        "--us-growth",
-        type=float,
-        default=None,
-        help="美股模块：预期盈利增速（小数，纳指/标普共用）",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="不打印报告正文（仅推送）",
+        help="生成模块：dividend、cn_broad、cyb、us、all(全部，默认)",
     )
     args = parser.parse_args(argv)
-    config = load_config()
 
     try:
-        report, sections = generate_reports(
-            modules=args.modules,
-            index_codes=args.index,
-            cyb_growth=args.growth,
-            us_growth=args.us_growth,
-        )
-    except (ValueError, RuntimeError) as exc:
-        print(exc)
+        path = generate_panel(modules=args.modules)
+    except Exception as exc:  # noqa: BLE001 - 定时任务需可观测失败
+        print(f"生成面板失败：{exc}")
         return 1
 
-    sections = filter_trade_signal_sections(sections)
-    if not sections:
-        print("今日无买卖信号，跳过推送。")
-        return 0
-
-    report = join_index_sections(sections)
-
-    if not args.quiet:
-        print_report(report)
-
-    modules = args.modules or [MODULE_ALL]
-    if MODULE_ALL in modules or len(modules) > 1:
-        title = build_push_title(sections)
-    else:
-        module = modules[0]
-        titles = {
-            "dividend": "红利信号",
-            "cn_broad": "A股宽基信号",
-            "cyb": "创业板信号",
-            "us": "美股信号",
-        }
-        title = f"{titles[module]} {sections[0]['signal_short']}"
-
-    if not push_to_wechat(title, report, config):
-        return 1
+    print(f"已生成当日建议面板：{path}")
     return 0
 
 
