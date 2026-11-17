@@ -26,6 +26,7 @@ from config import (
 )
 from data_cache import (
     get_or_fetch_us_dataframe,
+    offline_mode_enabled,
     get_or_fetch_us_json,
     is_fresh_today,
     load_json,
@@ -192,9 +193,11 @@ def _load_fred_csv_text(series_id: str, *, allow_network: bool = True) -> str:
     path = us_cache_path(cache_name)
     cached_text = load_text(path)
 
+    if offline_mode_enabled():
+        allow_network = False
     if not allow_network:
         if not cached_text:
-            raise RuntimeError(f"缺少 FRED {series_id} 本地缓存")
+            raise RuntimeError(f"FUND_OFFLINE=1: missing FRED {series_id} cache at {path}")
         return cached_text
 
     if is_fresh_today(path) and cached_text:
@@ -253,9 +256,14 @@ def fetch_us10y_history(*, key: str = "ndx"):
         history = fetch_fred_series(FRED_US10Y_SERIES, start_date=start)
         history["value"] = history["value"] / 100
         return history.rename(columns={"value": "us10y"})
-    except (requests.RequestException, RuntimeError):
-        out = _fetch_us10y_from_akshare()
-        return out[out["date"] >= pd.Timestamp(start)].reset_index(drop=True)
+    except (requests.RequestException, RuntimeError) as fred_error:
+        try:
+            out = _fetch_us10y_from_akshare()
+            return out[out["date"] >= pd.Timestamp(start)].reset_index(drop=True)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"FRED 10Y source: {fred_error}; AkShare fallback: {fallback_error}"
+            ) from fallback_error
 
 
 def fetch_pe_payload(key: str):
@@ -312,13 +320,14 @@ def fetch_price_history(key: str):
     spec = _spec(key)
     start = pd.Timestamp(_data_start(key))
     merged = None
+    source_errors = []
 
     try:
         fred = fetch_fred_series(spec["fred_price_series"], start_date=start)
         fred = fred.rename(columns={"value": "close"})
         merged = fred
-    except (requests.RequestException, RuntimeError):
-        pass
+    except (requests.RequestException, RuntimeError) as exc:
+        source_errors.append(str(exc))
 
     try:
         ak = _fetch_price_from_akshare(key)
@@ -329,11 +338,12 @@ def fetch_price_history(key: str):
                 if merged is not None and not merged.empty
                 else ak
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        source_errors.append(str(exc))
 
     if merged is None or merged.empty:
-        raise RuntimeError(f"无法获取{spec['index']['name']}价格历史")
+        details = "; ".join(source_errors) or "没有可用数据源"
+        raise RuntimeError(f"无法获取{spec['index']['name']}价格历史: {details}")
 
     out = merged.sort_values("date").reset_index(drop=True)
     out["date"] = pd.to_datetime(out["date"])

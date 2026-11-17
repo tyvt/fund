@@ -9,6 +9,7 @@ from typing import Iterable
 import requests
 
 from config import HEADERS, TENCENT_QUOTE_URL
+from data_cache import offline_mode_enabled
 
 # 指数代码 -> 腾讯行情代码（无实时源的指数不在此表）
 TENCENT_SYMBOL_BY_INDEX: dict[str, str] = {
@@ -79,6 +80,9 @@ def _parse_quote_line(line: str) -> LiveQuote | None:
 
 def fetch_live_quotes(index_codes: Iterable[str] | None = None) -> dict[str, LiveQuote]:
     """批量拉取实时行情，返回 {指数代码: LiveQuote}。"""
+    if offline_mode_enabled():
+        return {}
+
     if index_codes is None:
         symbols = list(TENCENT_SYMBOL_BY_INDEX.values())
     else:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from datetime import date, datetime
@@ -17,6 +18,22 @@ CACHE_DIR = DATA_CACHE_DIR
 US_CACHE_DIR = US_DATA_CACHE_DIR
 
 T = TypeVar("T")
+
+
+def offline_mode_enabled() -> bool:
+    """Return whether callers must use local caches without network access."""
+    return os.environ.get("FUND_OFFLINE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _raise_missing_offline_cache(kind: str, key: str, path: Path) -> None:
+    raise FileNotFoundError(
+        f"FUND_OFFLINE=1: missing {kind} cache '{key}' at {path}"
+    )
 
 # 单次报告/推送进程内的 snapshot 记忆，避免额度分配与报告重复构建
 _RUN_MEMO: dict[str, object] = {}
@@ -199,6 +216,11 @@ def get_or_fetch_dataframe(
     path = cache_path(key, ".csv", subdir=subdir)
     cached = load_dataframe(path, parse_dates=parse_dates)
 
+    if offline_mode_enabled():
+        if cached is None or cached.empty:
+            _raise_missing_offline_cache("dataframe", key, path)
+        return cached
+
     if not force and is_fresh_today(path) and cached is not None and not cached.empty:
         return cached
 
@@ -228,6 +250,12 @@ def get_or_fetch_json(
 ) -> T:
     path = cache_path(key, ".json", subdir=subdir)
     cached = load_json(path)
+    if offline_mode_enabled():
+        if cached is None and fallback_path and fallback_path.exists():
+            cached = load_json(fallback_path)
+        if cached is None:
+            _raise_missing_offline_cache("JSON", key, path)
+        return cached
     if not force and is_fresh_today(path) and cached is not None:
         return cached
 
@@ -256,6 +284,12 @@ def get_or_fetch_text(
 ) -> str:
     path = cache_path(key, ext, subdir=subdir)
     cached = load_text(path)
+    if offline_mode_enabled():
+        if not cached and fallback_path and fallback_path.exists():
+            cached = load_text(fallback_path)
+        if not cached:
+            _raise_missing_offline_cache("text", key, path)
+        return cached
     if not force and is_fresh_today(path) and cached:
         return cached
 
@@ -285,6 +319,11 @@ def get_or_fetch_us_dataframe(
     path = us_cache_path(name if name.endswith(".csv") else f"{name}.csv")
     cached = load_dataframe(path, parse_dates=parse_dates)
 
+    if offline_mode_enabled():
+        if cached is None or cached.empty:
+            _raise_missing_offline_cache("US dataframe", name, path)
+        return cached
+
     if not force and is_fresh_today(path) and cached is not None and not cached.empty:
         return cached
 
@@ -307,6 +346,10 @@ def get_or_fetch_us_dataframe(
 def get_or_fetch_us_json(name: str, fetch_fn: Callable[[], T], *, force: bool = False) -> T:
     path = us_cache_path(name)
     cached = load_json(path)
+    if offline_mode_enabled():
+        if cached is None:
+            _raise_missing_offline_cache("US JSON", name, path)
+        return cached
     if not force and is_fresh_today(path) and cached is not None:
         return cached
     try:
@@ -322,6 +365,10 @@ def get_or_fetch_us_json(name: str, fetch_fn: Callable[[], T], *, force: bool = 
 def get_or_fetch_us_text(name: str, fetch_fn: Callable[[], str], *, force: bool = False) -> str:
     path = us_cache_path(name)
     cached = load_text(path)
+    if offline_mode_enabled():
+        if not cached:
+            _raise_missing_offline_cache("US text", name, path)
+        return cached
     if not force and is_fresh_today(path) and cached:
         return cached
     try:
