@@ -22,6 +22,7 @@ from backtest_trade_signals import (
     _resolve_trade_amount,
     _us_trailing_cfg,
     _us_valuation_sell_fn,
+    _valuation_tier_fn,
     backtest_all,
 )
 from config import (
@@ -44,6 +45,8 @@ class _Position:
     initial_units: float = 0.0
     last_buy_dt: object = None
     stages_triggered: set = field(default_factory=set)
+    tiers_triggered: set = field(default_factory=set)
+    pending_tier_marks: list = field(default_factory=list)
 
 
 @dataclass
@@ -163,8 +166,8 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
             "name": CYB_INDEX["name"],
             "panel": cyb_panel,
             "buy_fn": cyb_buy,
-            "has_sell": False,
-            "trailing_cfg": None,
+            "has_sell": True,
+            "trailing_cfg": {"tier_sell_fn": _valuation_tier_fn},
             "valuation_sell_fn": None,
             "valuation_price_col": None,
             "sim_amt": sim_amt,
@@ -290,7 +293,31 @@ def _evaluate_sell(pos: _Position, meta, row, price, dt, allow_sell: bool):
     if partial_units <= 0 and not is_trailing and meta["valuation_sell_fn"]:
         is_valuation = bool(meta["valuation_sell_fn"](row))
 
-    full_sell = is_trailing or is_valuation
+    pos.pending_tier_marks = []
+    tier_fn = trail.get("tier_sell_fn")
+    if (
+        partial_units <= 0
+        and not is_trailing
+        and not is_valuation
+        and tier_fn
+    ):
+        from valuation_trend_sell import units_for_new_tiers
+
+        sell_units, full_exit, marked = units_for_new_tiers(
+            tier_fn(row) or [],
+            pos.tiers_triggered,
+            pos.units,
+            pos.initial_units,
+        )
+        if marked:
+            pos.pending_tier_marks = list(marked)
+            if full_exit:
+                is_valuation = True
+            elif sell_units > 0:
+                partial_units = sell_units
+                is_valuation = True
+
+    full_sell = is_trailing or (is_valuation and partial_units <= 0)
     return partial_units, full_sell, is_trailing, is_valuation
 
 
@@ -380,9 +407,15 @@ def simulate_portfolio(
                 pos.peak_since_buy = max(pos.peak_since_buy, price)
 
             partial, full, is_trail, is_val = _evaluate_sell(
-                pos, meta, row, price, dt, allow_sell and meta["has_sell"]
+                pos,
+                meta,
+                row,
+                price,
+                dt,
+                allow_sell and meta["has_sell"] and not item["is_buy"],
             )
             if partial <= 0 and not full:
+                pos.pending_tier_marks = []
                 continue
 
             avg_cost = pos.cost_basis / pos.units if pos.units > 0 else None
@@ -401,7 +434,12 @@ def simulate_portfolio(
                     else None
                 ),
             ):
+                pos.pending_tier_marks = []
                 continue
+
+            if pos.pending_tier_marks:
+                pos.tiers_triggered.update(pos.pending_tier_marks)
+                pos.pending_tier_marks = []
 
             if partial > 0:
                 stage_key = None
@@ -438,6 +476,7 @@ def simulate_portfolio(
                 pos.peak_since_buy = 0.0
                 pos.initial_units = 0.0
                 pos.stages_triggered.clear()
+                pos.tiers_triggered.clear()
 
         for code, meta in meta_by_code.items():
             if day not in meta["rows_by_day"]:
@@ -483,6 +522,7 @@ def simulate_portfolio(
                         if pos.units <= 0:
                             pos.initial_units = 0.0
                             pos.stages_triggered.clear()
+                            pos.tiers_triggered.clear()
                         pos.units += units_add
                         pos.initial_units += units_add
                         pos.cost_basis += buy_amount
