@@ -18,7 +18,7 @@
     python scripts/monte_carlo_permutation.py --mode trade
     python scripts/monte_carlo_permutation.py --mode rotation
     python scripts/monte_carlo_permutation.py --mode all
-    python scripts/monte_carlo_permutation.py --mode trade --index 000852 --permutations 500
+    python scripts/monte_carlo_permutation.py --mode trade --index 000688 --permutations 500
 """
 
 from __future__ import annotations

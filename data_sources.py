@@ -46,9 +46,6 @@ FRED_CSV_BASE_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FRED_NASDAQ100_SERIES = "NASDAQ100"
 """纳斯达克 100 价格指数日频序列（1986 年起）"""
 
-FRED_SP500_SERIES = "SP500"
-"""标普 500 价格指数日频序列"""
-
 FRED_US10Y_SERIES = "DGS10"
 """美国 10 年期国债收益率日频序列（1962 年起，百分比数值）"""
 
@@ -60,11 +57,6 @@ HISTORY_OF_MARKET_NDX_FORWARD_PE_URL = (
     "https://historyofmarket.com/api/ndx/forward-pe.json"
 )
 """纳斯达克 100 市值加权 TTM PE（日频）+ Bloomberg 一致预期 Forward PE（月频，2001 年起）"""
-
-HISTORY_OF_MARKET_SPX_FORWARD_PE_URL = (
-    "https://historyofmarket.com/api/sp500/forward-pe.json"
-)
-"""标普 500 市值加权 TTM PE（日频）+ Bloomberg 一致预期 Forward PE（月频）"""
 
 NASDAQ_ETF_SUMMARY_URL = (
     "https://api.nasdaq.com/api/quote/{symbol}/summary?assetclass=etf"
@@ -181,7 +173,7 @@ DATA_SOURCES = [
             "dividend_data",
             "cn_broad_data",
         ],
-        "indices": "H30269、000852 等",
+        "indices": "H30269、000688 等",
         "env_override": "CSINDEX_INDICATOR_BASE_URL",
         "notes": "直接读取 Excel，无需 API Key。",
     },
@@ -197,7 +189,7 @@ DATA_SOURCES = [
             "dividend_data.build_signal_history",
             "cn_broad_data.build_cn_broad_valuation_history",
         ],
-        "indices": "000001、000300、000852、H30269 等",
+        "indices": "000001、000300、000688、H30269 等",
         "env_override": "INDEX_PERF_URL",
         "notes": "A 股宽基与中证策略指数的主力日频来源。",
     },
@@ -271,30 +263,6 @@ DATA_SOURCES = [
         "used_by": ["美股宽基回测（纳斯达克 100，基日 1985-01-31）", "us_index_data.fetch_price_history"],
         "env_override": "FRED_CSV_BASE_URL / FRED_NASDAQ100_SERIES",
         "notes": "价格指数，不含分红再投资；FRED 首条数据为 1986-01-02。",
-    },
-    {
-        "id": "shiller_sp",
-        "name": "S&P Composite 月频价格",
-        "url": SHILLER_IE_DATA_URL,
-        "provider": "Yale / Robert Shiller",
-        "frequency": "月频",
-        "fields": "S&P Composite 收盘价（与标普 500 自 1957 年起高度一致）",
-        "used_by": ["美股宽基回测（标普 500，1957–2003 段）"],
-        "env_override": "SHILLER_IE_DATA_URL",
-        "notes": "月频数据；与新浪日频拼接用于标普 500 长期回测。",
-    },
-    {
-        "id": "sina_us_inx",
-        "name": "标普 500 指数（新浪）",
-        "url": sina_us_index_url(".INX"),
-        "provider": "新浪财经",
-        "frequency": "日频",
-        "fields": "标普 500 收盘价",
-        "used_by": [
-            "美股宽基回测（标普 500，2004–今 段）",
-        ],
-        "akshare": "ak.index_us_stock_sina(symbol='.INX')",
-        "notes": "经 akshare 封装；2004-01-02 起有完整日频。",
     },
     {
         "id": "sina_us_ndx",

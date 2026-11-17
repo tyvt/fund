@@ -61,7 +61,7 @@ flowchart LR
 | `csindex_perf` | 收盘价、滚动 PE、成交额 | `https://www.csindex.com.cn/csindex-home/perf/index-perf` | 日频 | `market_data.get_index_perf_history` |
 | `csindex_closeweight` | 成分股权重（预留） | `…/closeweight/{code}closeweight.xls` | 调仓日 | 未直接调用 |
 
-**覆盖指数示例**：H30269、000852、000688、000001、000300 等。
+**覆盖指数示例**：H30269、000688 等。
 
 **环境变量**：`CSINDEX_INDICATOR_BASE_URL`、`INDEX_PERF_URL`
 
@@ -79,21 +79,16 @@ flowchart LR
 
 ---
 
-## 三、美股指数（NDX / SPX）
+## 三、美股指数（NDX）
 
 | ID | 数据 | 地址 | 频率 | 调用入口 |
 |----|------|------|------|----------|
 | `hom_ndx_forward_pe` | 纳指 100 TTM / Forward PE | `https://historyofmarket.com/api/ndx/forward-pe.json` | TTM 日频 / Forward 月频 | `us_index_data.fetch_pe_payload` |
-| `hom_spx_forward_pe` | 标普 500 TTM / Forward PE | `https://historyofmarket.com/api/sp500/forward-pe.json` | 同上 | 同上（spx） |
 | `fred_nasdaq100` | 纳指 100 价格指数 | `…/fredgraph.csv?id=NASDAQ100` | 日频 | `us_index_data.fetch_price_history` |
-| `fred_sp500` | 标普 500 价格指数 | `…/fredgraph.csv?id=SP500` | 日频 | 同上（spx） |
-| `shiller_sp` | S&P Composite 月价（1871 起） | `http://www.econ.yale.edu/~shiller/data/ie_data.xls` | 月频 | 美股宽基回测 1957–2003 |
-| `sina_us_inx` | 标普 500 日 K | `https://finance.sina.com.cn/staticdata/us/.INX` | 日频 | `ak.index_us_stock_sina('.INX')` |
 | `sina_us_ndx` | 纳指 100 日 K | `…/staticdata/us/.NDX` | 日频 | 交叉校验 / 近期补齐 |
 | `nasdaq_qqq_summary` | QQQ 股息率代理 NDX | `https://api.nasdaq.com/api/quote/QQQ/summary?assetclass=etf` | 日频 | 辅助展示 |
-| `nasdaq_spy_summary` | SPY 股息率代理 SPX | `…/quote/SPY/summary?assetclass=etf` | 日频 | 辅助展示 |
 
-**环境变量**：`NDX_FORWARD_PE_URL`、`SPX_FORWARD_PE_URL`、`FRED_CSV_BASE_URL`
+**环境变量**：`NDX_FORWARD_PE_URL`、`FRED_CSV_BASE_URL`
 
 **本地缓存**：`cache/us/*_forward_pe.json`、`*_price_*.csv`
 
@@ -111,7 +106,7 @@ flowchart LR
 | `cache/cyb/cyb_price.csv` | `date`、`close` |
 | `cache/us/ndx_forward_pe.json`、`cache/us/spx_forward_pe.json` | `current`、`trailing`、`forward`；历史记录含 `date`、`value` |
 | `cache/us/ndx_price_akshare.csv`、`cache/us/spx_price_akshare.csv` | `date`、`close` |
-| `cache/us/fred_NASDAQ100.csv`、`cache/us/fred_SP500.csv`、`cache/us/fred_DGS10.csv` | FRED CSV 原始字段 `observation_date` 与对应序列值 |
+| `cache/us/fred_NASDAQ100.csv`、`cache/us/fred_DGS10.csv` | FRED CSV 原始字段 `observation_date` 与对应序列值 |
 | `cache/us/us10y_akshare.csv` | `date`、`us10y` |
 | `cache/us/ndx_qqq_dividend_yield.json`、`cache/us/spx_spy_dividend_yield.json` | NASDAQ QQQ/SPY 摘要接口原始 JSON |
 
@@ -136,7 +131,7 @@ flowchart LR
 
 | ID | 数据 | 地址 | 用途 |
 |----|------|------|------|
-| `tencent_quote` | 指数 / 个股实时价 | `https://qt.gtimg.cn/q={代码}`（批量逗号分隔） | `realtime_quote`（H30269、000852、399006、NDX、SPX 等） |
+| `tencent_quote` | 指数 / 个股实时价 | `https://qt.gtimg.cn/q={代码}`（批量逗号分隔） | `realtime_quote`（H30269、399006、NDX 等） |
 
 **环境变量**：`TENCENT_QUOTE_URL`
 
@@ -194,7 +189,7 @@ StockDB 本身从市场源采集数据；本项目将其作为 **A 股全市场 
 | `CSINDEX_INDICATOR_BASE_URL` | 中证指标 Excel |
 | `TENCENT_QUOTE_URL` | 腾讯行情 |
 | `FRED_CSV_BASE_URL` | FRED CSV |
-| `NDX_FORWARD_PE_URL` / `SPX_FORWARD_PE_URL` | History of Market |
+| `NDX_FORWARD_PE_URL` | History of Market |
 | `SERVERCHAN_API_URL` | Server 酱 |
 | `STOCKDB_HOST` / `STOCKDB_PORT` | 本地 StockDB |
 | `BOND_YIELD_TOKEN` | 东财国债 API 可选 token |

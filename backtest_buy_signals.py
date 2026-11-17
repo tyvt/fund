@@ -1291,7 +1291,7 @@ def _format_backtest_summary_markdown(rows, date_range, amounts=None):
 
     footnotes = [
         "",
-        "买入次/样本/占比：按交易日计次；纳指/标普 10Y 与价格日更，Forward PE 按月/按季对齐。",
+        "买入次/样本/占比：按交易日计次；纳指 10Y 与价格日更，Forward PE 按月/按季对齐。",
         "年内高/低为价格指数收盘极值；买入均价为信号日收盘价算术平均（无买入为 —）；纳指美元计价。",
     ]
     if amounts is not None:

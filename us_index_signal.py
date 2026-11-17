@@ -1,4 +1,4 @@
-"""美股指数（纳指 100 / 标普 500）估值信号与报告格式化。"""
+"""美股指数（纳指 100）估值信号与报告格式化。"""
 
 from buy_amount_config import enrich_signal_buy_amount
 import config
