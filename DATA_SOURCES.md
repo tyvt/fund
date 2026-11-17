@@ -44,6 +44,13 @@ flowchart LR
 | 2 | `duckdb_cache.py` | CSV → DuckDB |
 | 3 | `sync_stockdb_to_duckdb.py` | 本地 StockDB → DuckDB（收盘后） |
 
+## 指数定投本地缓存
+
+- 首次或日常联网更新运行 `python sync_data_cache.py`。同步会按数据项重试一次，继续处理其他指数，并在末尾列出失败项；有任何缺项时返回非零状态。
+- 运行 `python sync_data_cache.py --check-local` 可仅检查当前缓存，不访问网络。该命令通过报告/估值使用的相同数据读取函数检查中证、国债、创业板和美股数据。
+- 当 `FUND_OFFLINE=1` 时，缓存读取器只使用本地 CSV/JSON/文本缓存，不会尝试刷新过期缓存；缺失数据会报出数据键和预期路径。实时行情会跳过腾讯请求，报告回退到最近收盘价。
+- 手工补充数据时，将供应商数据按相同字段整理成相同 CSV/JSON 格式，并放到错误信息提示的 `cache/` 路径；完成后重新运行 `--check-local`。不要把未覆盖的数据项当作完整同步。
+
 ---
 
 ## 一、中证指数（A 股策略 / 宽基 / 红利）
@@ -90,6 +97,26 @@ flowchart LR
 
 **本地缓存**：`cache/us/*_forward_pe.json`、`*_price_*.csv`
 
+### 指数定投缓存文件与字段
+
+手工导入时使用以下文件名与字段；`--check-local` 会通过正式数据读取函数逐项校验，最终以命令列出的缺项为准。
+
+| 文件路径 | 主要字段 |
+|----------|----------|
+| `cache/cn/index_perf_<code>.csv` | `date`、`close`、`rolling_pe`、`trading_value` |
+| `cache/cn/indicator_<code>.csv` | `date`、`pe`、`dividend_yield`（全收益指数无此文件） |
+| `cache/cyb/cyb_pe_szse.csv` | `date`、`index_close`、`pe` |
+| `cache/cyb/cyb_pb.csv` | `date`、`pb`、`pb_equal`、`pb_median` |
+| `cache/cyb/cyb_dividend.csv` | `date`、`dividend_yield` |
+| `cache/cyb/cyb_price.csv` | `date`、`close` |
+| `cache/us/ndx_forward_pe.json`、`cache/us/spx_forward_pe.json` | `current`、`trailing`、`forward`；历史记录含 `date`、`value` |
+| `cache/us/ndx_price_akshare.csv`、`cache/us/spx_price_akshare.csv` | `date`、`close` |
+| `cache/us/fred_NASDAQ100.csv`、`cache/us/fred_SP500.csv`、`cache/us/fred_DGS10.csv` | FRED CSV 原始字段 `observation_date` 与对应序列值 |
+| `cache/us/us10y_akshare.csv` | `date`、`us10y` |
+| `cache/us/ndx_qqq_dividend_yield.json`、`cache/us/spx_spy_dividend_yield.json` | NASDAQ QQQ/SPY 摘要接口原始 JSON |
+
+中证 `code` 采用六位指数代码。不得仅创建空文件；缓存需包含对应数据行。创业板与美股文件由同步入口使用的函数读取，缺项时检查命令会给出路径。
+
 ---
 
 ## 四、创业板指（399006）
@@ -109,33 +136,13 @@ flowchart LR
 
 | ID | 数据 | 地址 | 用途 |
 |----|------|------|------|
-| `tencent_quote` | 指数 / 个股实时价 | `https://qt.gtimg.cn/q={代码}`（批量逗号分隔） | `realtime_quote`（H30269、000852、399006、NDX、SPX 等）；`dividend_lowvol_rotation.quotes`（个股动态股息率） |
+| `tencent_quote` | 指数 / 个股实时价 | `https://qt.gtimg.cn/q={代码}`（批量逗号分隔） | `realtime_quote`（H30269、000852、399006、NDX、SPX 等） |
 
 **环境变量**：`TENCENT_QUOTE_URL`
 
 ---
 
-## 六、红利低波轮动（dividend_lowvol_rotation）
-
-详见 [`dividend_lowvol_rotation/data_sources.md`](dividend_lowvol_rotation/data_sources.md)。
-
-| ID | 数据 | 来源 | akshare / 接口 | 用途 |
-|----|------|------|----------------|------|
-| `akshare_em_fhps` | 分红方案 | 东方财富 | `ak.stock_fhps_em` | TTM 分红、动态股息率分子 |
-| `akshare_em_financial_abstract` | 财务摘要 | 东方财富 | `ak.stock_financial_abstract` | ROE/负债/现金流质量、排雷 |
-| `akshare_em_profit_sheet` | 利润表 | 东方财富 | `ak.stock_profit_sheet_by_report_em` | 利息保障倍数回退 |
-| `akshare_sw_industry` | 申万一级行业 | 申万宏源 | `index_realtime_sw` + `index_component_sw` | 行业分散 |
-| `baostock_industry` | 证监会行业 | Baostock | `bs.query_stock_industry` | 行业降级 |
-| `stockdb` | A 股日 K、日历、流动性截面 | 本地 StockDB | `tcp://127.0.0.1:7899` | 回测 K 线、市值/成交额前 90%（与 RQAlpha 对比见 [`docs/stockdb_vs_rqalpha.md`](docs/stockdb_vs_rqalpha.md)） |
-| `tencent_quote` | 实时股价 | 腾讯财经 | 见上文 | 动态股息率分母 |
-
-**本地缓存**：`cache/dividend_lowvol/`；**DuckDB**：`data/market.duckdb`（优先于 CSV / StockDB 直查）
-
-**未接入**（文档曾提及但代码未调用）：`ak.stock_dividend_cninfo`、`ak.stock_history_dividend_detail` — 仅作备选方案说明。
-
----
-
-## 七、本地 StockDB
+## 六、本地 StockDB
 
 | 项 | 值 |
 |----|-----|
@@ -148,7 +155,7 @@ StockDB 本身从市场源采集数据；本项目将其作为 **A 股全市场 
 
 ---
 
-## 八、交叉校验 / 诊断（非生产主路径）
+## 七、交叉校验 / 诊断（非生产主路径）
 
 | ID | 数据 | 地址 | 脚本 |
 |----|------|------|------|
@@ -160,7 +167,7 @@ StockDB 本身从市场源采集数据；本项目将其作为 **A 股全市场 
 
 ---
 
-## 九、推送（非行情）
+## 八、推送（非行情）
 
 | ID | 数据 | 地址 | 用途 |
 |----|------|------|------|
@@ -170,7 +177,7 @@ StockDB 本身从市场源采集数据；本项目将其作为 **A 股全市场 
 
 ---
 
-## 十、前端 CDN（回测 HTML 图表）
+## 九、前端 CDN（回测 HTML 图表）
 
 | 资源 | 地址 | 用途 |
 |------|------|------|
@@ -199,5 +206,4 @@ StockDB 本身从市场源采集数据；本项目将其作为 **A 股全市场 
 ## 维护约定
 
 1. 新增或变更外部 URL → 更新 `data_sources.py` 常量 + `DATA_SOURCES` 注册表 + 本文件对应章节。
-2. 红利低波模块专用数据源 → 同时更新 `dividend_lowvol_rotation/data_sources.md`。
 3. DuckDB 域与 source 标签 → 见 [`docs/duckdb.md`](docs/duckdb.md)。

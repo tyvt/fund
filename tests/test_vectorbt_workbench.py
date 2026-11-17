@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from vbt.config import load_backtest_config, load_strategy_config
+from vbt.config import load_backtest_config
 from vbt.engine.engine import BacktestResults
 from vbt.engine.parameter_scan import ParameterScan
 from vbt.strategies.signal_generators import apply_industry_cap, compute_weight_by_factor
@@ -15,16 +15,8 @@ from vbt.strategies.signal_generators import apply_industry_cap, compute_weight_
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_config_defaults_use_root_cause_fixed_matrix_strategy():
-    strategy = load_strategy_config()
+def test_backtest_config_uses_stock_daily_baseline():
     backtest = load_backtest_config()
-    assert strategy["alignment_mode"] is False
-    assert strategy["rebalance_freq"] == "M"
-    assert strategy["holding_period"] == 20
-    assert strategy["min_holdings"] == 10
-    assert strategy["min_investment_pct"] == 1.0
-    assert "roe_min" not in strategy
-    assert "debt_ratio_max" not in strategy
     assert backtest["price_source"] == "stock_daily"
     assert Path(backtest["baseline_path"]).name.startswith("rqalpha_parquet_10y_")
 

@@ -36,7 +36,7 @@ from duckdb_store import (
 
 )
 
-from dividend_lowvol_rotation.symbols import normalize_stock_code
+from scripts.rqalpha_symbols import normalize_stock_code
 
 
 

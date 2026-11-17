@@ -29,16 +29,6 @@
 | `sync_meta` | 各数据集同步元信息（来源、最后同步时间、行数、日期范围） |
 | `kv_snapshot` | JSON 快照（股票列表、PE 序列原文、额度分配等） |
 
-### 策略侧独立表（`cache/dividend_lowvol` 导入）
-
-| 表名 | 说明 |
-|------|------|
-| `dlv_fhps` | 分红实施记录（fhps） |
-| `dlv_risk_hist` | 排雷指标历史（按 code + 报告年） |
-| `dlv_industry` | 申万/证监会行业分类 |
-| `dlv_liquidity` | 全市场流动性截面（按调仓日） |
-
----
 
 ## 数据域（domain）一览
 
@@ -183,7 +173,7 @@
 
 ## 同步与维护命令
 
-**推荐统一入口**（公网 + 策略 + StockDB + CSV 导入）：
+**推荐统一入口**（公网 + StockDB + CSV 导入）：
 
 ```bash
 # 日常全量同步（与定时任务 run_sync_market_duckdb.bat 相同）
@@ -194,7 +184,6 @@ python sync_market_duckdb.py --force
 
 # 分阶段
 python sync_market_duckdb.py --network-only    # 国债/中证/创业板/美股
-python sync_market_duckdb.py --strategy-only   # 分红/行业/000300·000906 + dlv 缓存
 python sync_market_duckdb.py --stockdb-only    # StockDB 不复权 + 前复权 close
 python sync_market_duckdb.py --import-only     # 仅 CSV → DuckDB
 
@@ -211,11 +200,8 @@ python sync_stockdb_to_duckdb.py --qfq-only    # 仅前复权 close
 | `setup_sync_stockdb_task.bat` | 17:30 | `sync_stockdb_to_duckdb.py` 个股增量 |
 
 ```bash
-# 从 cache/ 一次性导入 CSV/JSON（含 dividend_lowvol）
+# 从 cache/ 一次性导入 CSV/JSON
 python sync_market_duckdb.py --import-only
-
-# 仅策略侧
-python sync_strategy_to_duckdb.py
 
 # 全量重拉 StockDB（忽略已有数据）
 python sync_stockdb_to_duckdb.py --force

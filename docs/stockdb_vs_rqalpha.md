@@ -12,8 +12,6 @@
 |------|---------|----------------|
 | 形态 | 本地 TCP 服务 + K-V 存储（`rd`） | 离线 HDF5 / pickle 文件包 |
 | 主要用途 | 全市场行情批量读取、因子计算、板块映射、财务查询 | 回测引擎撮合、派息送股、涨跌停/停牌规则 |
-| 本项目入口 | `dividend_lowvol_rotation.prices._get_stockdb_client()` | `dividend_lowvol_rotation.rqalpha.rqalpha_bundle_prices` |
-| 文档 | `stockdb/调用方式/python/AI策略python开发接口文档.md` | `dividend_lowvol_rotation/rqalpha/README.md` |
 
 StockDB 实际是**三层**能力叠加：
 
@@ -380,7 +378,6 @@ flowchart TB
 | 场景 | 推荐数据源 | 原因 |
 |------|-----------|------|
 | RQAlpha 回测成交价 | RQAlpha bundle（bfq） | 与引擎 bar 同源，含涨跌停/停牌 |
-| 原生回测（`DLV_BACKTEST_PRICE_SOURCE=rqalpha`） | 同上 | 已与 RQ 路径 NAV 对齐 |
 | 波动率 / 动量因子 | StockDB（qfq） | 宽表批量、前复权方便 |
 | 流动性截面（市值、成交额） | StockDB | 含 `total_mv`、`amount` |
 | 现金分红 / 红利税 | RQAlpha | 完整派息日与 `round_lot` |
@@ -394,8 +391,6 @@ flowchart TB
 - StockDB 接口文档：`D:\repository\stockdb\调用方式\python\AI策略python开发接口文档.md`
 - StockDB MCP 财务表清单：`D:\repository\stockdb\调用方式\ai_mcp\stockdb_full_mcp.py` → `RUN_QUERY_TABLES`
 - 本项目数据源总览：[`DATA_SOURCES.md`](../DATA_SOURCES.md)
-- RQAlpha 迁移说明：[`dividend_lowvol_rotation/rqalpha/README.md`](../dividend_lowvol_rotation/rqalpha/README.md)
-- 行情读取代码：`dividend_lowvol_rotation/prices.py`、`dividend_lowvol_rotation/rqalpha/rqalpha_bundle_prices.py`
 
 ---
 

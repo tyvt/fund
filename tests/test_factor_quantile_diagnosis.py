@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from scripts.factor_quantile_diagnosis import (
     assign_quantile_returns,
     diagnose_concentration,
     summarize_quantiles,
 )
-from scripts.run_cost_ablation import _cost_backtest
 
 
 def test_quantile_returns_preserve_low_to_high_factor_order():
@@ -42,19 +39,3 @@ def test_factor_direction_treats_low_volatility_q1_as_preferred():
     conclusion = diagnose_concentration("volatility_60d", diagnostics)
     assert "最低波动率 Q1" in conclusion
     assert "因子方向有效" in conclusion
-
-
-def test_cost_variant_requires_all_three_cost_components():
-    config = {
-        "backtest": {"commission": 0.1, "slippage": 0.2, "stamp_duty": 0.3},
-        "full_no_cost": {"commission": 0.0, "slippage": 0.0, "stamp_duty": 0.0},
-    }
-    assert _cost_backtest(config, "full_no_cost")["stamp_duty"] == pytest.approx(0.0)
-    with pytest.raises(ValueError, match="stamp_duty"):
-        _cost_backtest(
-            {
-                **config,
-                "broken": {"commission": 0.0, "slippage": 0.0},
-            },
-            "broken",
-        )

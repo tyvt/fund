@@ -1,13 +1,6 @@
-# 指数定投策略与红利低波选股
+# 指数定投策略
 
-本项目以**指数定投策略**为主体：基于估值分位、股债利差、价格位置等指标，对 **6 只指数**（红利 1 + 宽基 2 + 创业板 1 + 美股 2）生成买入/观望/卖出信号，支持本地报告、微信定时推送和回测。这里的“定投”是估值与价格条件驱动的分批投入，不是固定日期无条件扣款。
-
-仓库还包含一套独立的 **A 股红利低波个股策略**（`dividend_lowvol_rotation/`），用于选股、组合构建以及原生/RQAlpha 双引擎回测，不接入券商自动交易。两套策略共享本地数据基础设施，但信号和持仓逻辑彼此独立。
-
-| 策略 | 标的 | 主要入口 | 定位 |
-|------|------|----------|------|
-| 指数定投（主体） | H30269、000852、000688、399006、NDX、SPX | `report.py` / `push.py` / `backtest.py` | 指数估值择时与分批投入 |
-| 红利低波选股（子项目） | A 股个股 | `python -m dividend_lowvol_rotation.report` | Top 10 红利低波组合评估与回测 |
+本项目基于估值分位、股债利差、价格位置等指标，对 **6 只指数**（红利 1 + 宽基 2 + 创业板 1 + 美股 2）生成买入/观望/卖出信号，支持本地报告、微信定时推送和回测。这里的“定投”是估值与价格条件驱动的分批投入，不是固定日期无条件扣款。
 
 ## 覆盖指数（6 只）
 
@@ -60,30 +53,34 @@ python push.py
 
 右键「以管理员身份运行」`setup_task.bat`，将在工作日 14:00 自动执行 `run_push.bat` 推送微信。
 
+### 5. 首次同步指数数据并离线运行
+
+先拉取六只指数及其估值所需历史数据到 `cache/`：
+
+```powershell
+python sync_data_cache.py
+```
+
+同步会尝试全部数据组，失败时列出缺项并返回非零状态。检查本地缓存是否足以运行报告/回测：
+
+```powershell
+python sync_data_cache.py --check-local
+```
+
+完整性检查通过后，可在当前 PowerShell 会话启用只读本地缓存模式：
+
+```powershell
+$env:FUND_OFFLINE = "1"
+python report.py
+```
+
+离线模式下，实时行情使用现有报告的最近收盘价降级；缺少历史缓存会报出对应缓存键。需要恢复联网同步时，在当前会话执行 `$env:FUND_OFFLINE = "0"`。
+
 ---
 
 ## VectorBT 向量化回测与 Jupyter 工作台
 
-这套工作台用于 **A 股红利低波个股策略**。默认快速模式读取冻结的 RQAlpha 同源订单基准，再由开源版 VectorBT 使用 `stock_daily` 行情重放组合；因此适合快速查看十年净值、持仓和对齐结果。参数研究走纯矩阵路径，最终参数仍以 RQAlpha 验证为准。它不修改 `dividend_lowvol_rotation/`，也不会写入 `data/parquet/`。
-
-### 现在就看回测结果
-
-在仓库根目录打开 PowerShell：
-
-```powershell
-# 运行十年对齐回测，完成后自动打开浏览器报告
-.\.venv-vectorbt\Scripts\python.exe scripts\run_vectorbt_pipeline.py --mode quick --open
-```
-
-不想重新运行，只打开最近一次已经生成的报告：
-
-```powershell
-$reportDir = Get-Content output\vectorbt\LATEST.txt
-$report = Join-Path (Resolve-Path output\vectorbt).Path "$reportDir/report.html"
-Start-Process $report
-```
-
-HTML 首页包含净值曲线、回撤图、核心指标和期末持仓。命令行也会打印本次实际文件路径。当前已验收的十年同源结果（2016-08-19 至 2026-07-31，初始资金 10 万元）为：期末资产 **214,243.17 元**、累计收益 **114.24%**、年化收益 **8.28%**、最大回撤 **-30.13%**；正式对齐报告见 `output/vectorbt/reports/validation_report.md`。
+VectorBT 是用于向量化回测和参数研究的开源工具，可结合历史行情生成净值、回撤和持仓等分析结果。具体运行方式取决于各研究脚本与数据配置。
 
 ### 首次安装或重建独立环境
 
@@ -142,50 +139,12 @@ display(nav.tail(), trades.tail(), holdings)
 
 | Notebook | 用途 |
 |----------|------|
-| `00_Quick_Start.ipynb` | 环境检查、短区间完整规则回测、图表和一键归档 |
 | `01_Data_Exploration.ipynb` | 因子覆盖率、分布、相关性和缺失模式 |
-| `02_Single_Backtest.ipynb` | 十年严格对齐回测、净值/回撤/持仓热力图、报告导出 |
-| `03_Parameter_Scan.ipynb` | 多参数扫描、热力图、平行坐标和最佳参数 |
 | `04_Factor_Combination.ipynb` | Rank IC、ICIR、因子相关性和组合排名 |
-| `05_Compare_with_RQAlpha.ipynb` | 自动执行 VectorBT 与 RQAlpha 对齐验收 |
+| `05_Compare_with_RQAlpha.ipynb` | VectorBT 与 RQAlpha 通用结果对比 |
+| `06_Factor_Diagnosis.ipynb` | 因子诊断与报告 |
 | `templates/backtest_template.ipynb` | 新研究实验模板 |
 
-无需进入 Jupyter，也可执行并导出 HTML：
-
-```powershell
-.\.venv-vectorbt\Scripts\python.exe -m jupyter nbconvert --to html --execute notebooks\02_Single_Backtest.ipynb --output-dir output\vectorbt\notebooks --ExecutePreprocessor.timeout=300
-```
-
-### 参数扫描与对齐验收
-
-```powershell
-# 读取 config/vectorbt/scan_params.yaml；默认 48 组十年矩阵扫描
-.\.venv-vectorbt\Scripts\python.exe scripts\run_vectorbt_pipeline.py --mode scan
-
-# 正式性能验收：固定 1000 组，记录端到端耗时和峰值内存
-.\.venv-vectorbt\Scripts\python.exe scripts\benchmark_vectorbt_scan.py
-
-# 正式十年对齐：年化差 <0.5%、最大回撤差 <1%、Top10 重合率 >80%
-.\.venv-vectorbt\Scripts\python.exe scripts\verify_vectorbt_vs_rqalpha.py --years 10 --capital 100000
-```
-
-本机正式实测 1000 组十年参数扫描：零失败，数据加载 **39.41 秒**、扫描 **185.52 秒**、端到端 **224.92 秒**，峰值进程内存 **4.49 GiB**，通过“<5 分钟、<8 GB”验收；默认 48 组扫描本体约 **7.7 秒**（首次数据加载另约 40–47 秒）。十年冻结订单重放约 **2 秒**。最近一次正式对齐验收为：2,414 个共同交易日逐日净值平均绝对差 **0.0000**、年化收益差 **0.0036%**、最大回撤差 **0%**、期末 Top 10 重合率 **100%**。
-
-扫描是快速研究口径（`alignment_mode=false`）：因子矩阵保留源单位，ROE/负债率/ROE 波动率在应用 YAML 阈值时由小数换算为百分点；`close`、`total_mv`、`is_st` 从 `stock_daily` 加载，行业取现有申万一级缓存。扫描出的最佳参数必须再生成新的 RQAlpha 基准并运行正式验收。
-
-### 配置与两种运行口径
-
-| 文件 | 作用 |
-|------|------|
-| `config/vectorbt/strategy_params.yaml` | 因子阈值、Top N、权重、约束和调仓频率 |
-| `config/vectorbt/backtest_config.yaml` | 区间、资金、费用、数据源、基准和输出目录 |
-| `config/vectorbt/scan_params.yaml` | 参数网格、优化指标、并行数和 Top K |
-
-- 默认 `--mode quick`：正式验证口径。读取 `backtest_config.yaml` 指定的冻结 RQAlpha/Parquet 基准订单，VectorBT 在 `stock_daily` 上重放，并恢复同源现金流和送股变化；这是 README 中十年结果的来源。
-- 自定义 `--start/--end`：重新编译现有完整规则后运行，适合开发诊断，冷启动耗时较长。例：`.\.venv-vectorbt\Scripts\python.exe scripts\run_vectorbt_pipeline.py --mode quick --start 2025-01-01 --end 2025-06-30`。
-- `--compile-rules`：即使使用默认日期也强制重新编译规则；不复用冻结订单，主要用于维护者检查适配器变化。
-
-基准文件单独保存在 `output/vectorbt/baselines/`，不会覆盖原有 RQAlpha 输出。当前正式基准为 `rqalpha_parquet_10y_20160819_20260819.pkl`；它由现有 `rqalpha_env` 生成，VectorBT 环境只做只读转换与重放。
 
 ---
 
@@ -494,15 +453,13 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 ### 研究 / 验证脚本（`scripts/`）
 
-非日常入口，用于回测研究、因子消融、数据校验等：
+非日常入口，用于数据分析与校验：
 
 | 文件 | 作用 |
 |------|------|
 | `scripts/monte_carlo_permutation.py` | 蒙特卡洛置换检验（判断回测是否显著优于运气） |
 | `scripts/validate_data_baostock.py` | 数据源交叉验证（baostock / 国债 / ETF / 美股 PE） |
 | `scripts/verify_duckdb.py` | DuckDB 数据完整性检查 |
-| `scripts/monthly_rolling_backtest.py` | 红利低波策略滚动窗口回测 |
-| `scripts/factor_ablation.py` | 因子消融实验 |
 | `scripts/factor_builder.py` | 从本地 Parquet 数据湖构建长表因子集市 |
 | `scripts/factor_loader.py` / `factor_loader.py` | 查询单因子或合并后的多因子长表 |
 | `scripts/factor_snapshot_builder.py` | 按年并行构建、增量更新横截面因子宽表 |
@@ -689,7 +646,6 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 ├── notify.py
 ├── factor_loader.py / factor_snapshot_loader.py  # 因子查询兼容入口
 ├── scripts/               # 研究、验证与因子集市工具
-├── dividend_lowvol_rotation/  # 红利低波轮动策略子模块
 ├── run_report.bat / run_push.bat / run_sync_market_duckdb.bat
 ├── setup_task.bat / setup_sync_task.bat
 ├── push.example.env
@@ -851,163 +807,8 @@ PEG 买入判定：
 
 ---
 
-## 红利低波个股策略（`dividend_lowvol_rotation/`）
 
-该子项目在全市场分红股中构建个人版红利低波组合，对标 H30269 的股息率与低波思路，并加入财务质量、行业、Beta 和市值约束。它只生成评估报告和回测结果，**不连接 QMT 或券商下单接口**，也不复用根目录 H30269 指数定投信号。
 
-### 快速运行
-
-```bash
-# 实盘评估报告：候选池、风险项、目标组合和参考买入区间
-python -m dividend_lowvol_rotation.report --capital 800000
-
-# 原生 10 年回测
-python -m dividend_lowvol_rotation.backtest --years 10
-
-# 与 H30269 全收益指数对比，并可运行 WFA / 蒙特卡洛
-python -m dividend_lowvol_rotation.backtest_validate --benchmark H30269 --years 10
-
-# Windows：自动选择 rqalpha_env 或系统 Python
-run_dividend_lowvol_backtest.bat --years 10
-
-# RQAlpha 引擎回测及原生基准对比
-run_rqalpha_backtest.bat --years 10 --capital 100000
-python -m dividend_lowvol_rotation.rqalpha.compare_baseline --years 10
-```
-
-报告缓存位于 `cache/dividend_lowvol/`，输出统一写入 `output/dividend_lowvol/`。免费数据源和字段口径见 [`dividend_lowvol_rotation/data_sources.md`](dividend_lowvol_rotation/data_sources.md)。
-
-### 当前默认策略
-
-1. **样本池**：全市场有分红记录的 A 股，剔除 ST；股息率默认使用 `auto` 口径，在最近一次派息过旧时切换为近 365 天 TTM。
-2. **基础硬过滤**：股息率默认不低于 3.09%，最近一次除息不超过 3 年；使用动态低波上限，并保留 ROE ≥ 8%、资产负债率 ≤ 70% 的绝对质量底线。
-3. **风险评分**：ROE 波动、近 5 年分红连续性、30%–70% 支付率、行业中性负债率和利息保障倍数默认采用**软评分扣减**（`DLV_SOFT_RISK_SCORING_ENABLED=true`），不是全部硬剔除；诊断和留存规则可显式使用硬判定。
-4. **排序与组合约束**：股息率优先、低波辅助；保留行业分散、Beta 分散和市值分层三类结构性约束。
-5. **权重**：股息率加权，单股目标权重上限 8%；波动率超过目标时允许降低总仓位并保留现金。
-6. **调仓**：实盘报告默认 `entry_anniversary`（建仓周年），原生与 RQAlpha 回测默认 `index_annual`（1 月 15 日后首个交易日）。
-7. **调出**：默认 `index_rules`，股息率低于 0.5% 或留存硬条件不满足时调出；止盈、止损、紧急卖出和市场状态开关默认关闭。
-
-默认结构性约束如下：
-
-| 约束 | 默认值 |
-|------|--------|
-| 市值分层 | 大盘门槛 200 亿元；中小盘合计权重 ≤ 40% |
-| 行业分散 | 单行业 ≤ 20%；防御行业合计 ≤ 45%；前三行业合计 ≤ 50% |
-| Beta 分散 | 低 Beta（≤ 0.68）合计 ≥ 45%；高 Beta 合计 ≤ 81% |
-| 持仓与权重 | Top 10；单股目标权重 ≤ 8% |
-| 波动控制 | 组合年化波动目标 20%，默认启用 |
-
-旧文档曾将所有排雷项描述为硬过滤，并称若干软因子已从代码删除；这与当前实现不符。当前准确口径以 `dividend_lowvol_rotation/config.py`、`scoring.py` 和 `risk_screening.py` 为准。
-
-### 原生回测口径
-
-| 维度 | 默认行为 |
-|------|----------|
-| 行情源 | RQAlpha bundle（`DLV_BACKTEST_PRICE_SOURCE=rqalpha`） |
-| K 线 | 不复权；现金分红单独入账，避免与前复权重复计算 |
-| 分红/送转 | bundle 派息日与送股事件；派息日预扣红利税 |
-| 成交 | bundle 收盘价，`DLV_EXECUTION_AT_CLOSE=true` 时不加滑点 |
-| 成本 | 佣金万 0.854、最低 5 元；卖侧印花税按历史日期切换 |
-| NAV | 现金保留全精度，输出时按分计；调仓后持仓加现金计值 |
-
-需要与旧 DuckDB 行情路径对照时：
-
-```bat
-set DLV_BACKTEST_PRICE_SOURCE=duckdb
-python -m dividend_lowvol_rotation.backtest --years 10
-```
-
-### RQAlpha 双引擎验证
-
-RQAlpha 适配层复用原生策略的选股、排雷、组合约束和调仓计划；RQAlpha 引擎负责 T+1、停牌、涨跌停、佣金和印花税，独立原生台账负责与 `backtest.py` 对齐现金、股数和逐日 NAV。
-
-```text
-选股/风险评分/组合约束
-          │
-          ▼
-compute_rebalance_plan
-     ┌────┴─────────────┐
-     ▼                  ▼
-原生 backtest       RQAlpha 执行引擎
-     │                  │
-     └────逐日 NAV/成交对比────┘
-```
-
-环境搭建与执行：
-
-```bat
-scripts\setup_rqalpha_env.bat
-set RQALPHA_BUNDLE_PATH=D:\rqalpha\bundle
-run_rqalpha_backtest.bat --years 10 --capital 100000
-python -m dividend_lowvol_rotation.rqalpha.compare_baseline --years 10
-```
-
-`scripts/setup_rqalpha_env.bat` 创建 `rqalpha_env` 并下载约 3 GB 的 bundle；也可手动安装 `rqalpha pandas numpy`。主要输出：
-
-| 文件 | 说明 |
-|------|------|
-| `output/dividend_lowvol/rqalpha_result.pkl` | RQAlpha `sys_analyser` 结果 |
-| `output/dividend_lowvol/rqalpha_native_nav.csv` | 原生口径逐日 NAV |
-| `output/dividend_lowvol/rqalpha_backtest.md/html` | RQAlpha 回测报告 |
-| `output/dividend_lowvol/rqalpha_vs_native.md` | 共有交易日指标、逐日 NAV 与调仓成交差异 |
-
-当前对齐目标是共有交易日 `max_daily_nav_gap = 0`，并要求调仓日 signed delta 一致。对比指标只在两边共有交易日上计算，避免序列起止日不同造成 CAGR 虚差。
-
-### 红利策略验证工具
-
-```bash
-# 暴雷事件前是否已经出现风险标记，检查未来信息
-python scripts/verify_risk_lookahead.py
-
-# 三类结构性约束消融与参数扫描
-python scripts/constraint_ablation.py --sample-windows 12
-python scripts/constraint_param_sweep.py --sample-windows 12
-
-# 月度滚动窗口与 Parquet / bundle 引擎一致性
-python scripts/monthly_rolling_backtest.py
-python scripts/verify_parquet_backtest.py --years 10 --capital 100000
-```
-
-主要配置集中在 `dividend_lowvol_rotation/config.py`：
-
-| 环境变量 | 默认 | 说明 |
-|----------|------|------|
-| `DLV_TOP_N_BUY` | `10` | 持仓数量上限 |
-| `DLV_BACKTEST_REBALANCE_MODE` | `index_annual` | 回测调仓日程 |
-| `DLV_LIVE_REBALANCE_MODE` | `entry_anniversary` | 实盘报告调仓日程 |
-| `DLV_SELL_MODE` | `index_rules` | 留存硬规则调出 |
-| `DLV_MV_TIER_SMALL_MAX_WEIGHT` | `0.40` | 中小盘合计权重上限 |
-| `DLV_BETA_MIN_LOW_FRAC` | `0.45` | 低 Beta 合计下限 |
-| `DLV_VOL_TARGET_ENABLED` | `true` | 启用组合波动目标 |
-| `DLV_BACKTEST_PRICE_SOURCE` | `rqalpha` | 原生回测行情源 |
-| `RQALPHA_BUNDLE_PATH` | `D:\rqalpha\bundle` | bundle 目录 |
-| `DLV_BACKTEST_DIVIDEND_CASH` | `true` | 现金分红模式 |
-| `DLV_EXECUTION_AT_CLOSE` | `true` | 收盘价成交 |
-| `DLV_DIVIDEND_TAX_ENABLED` | `true` | 启用红利税 |
-| `DLV_BACKTEST_INITIAL_CAPITAL` | `100000` | 回测初始资金 |
-
-### 红利策略目录
-
-| 路径 | 作用 |
-|------|------|
-| `strategy.py` / `scoring.py` | 实盘流水线、筛选排序与组合约束 |
-| `risk_screening.py` | 风险因子、软评分扣减和硬判定 |
-| `index_retention.py` / `index_portfolio.py` | 指数式调出与目标权重 |
-| `corporate_actions.py` / `dividend_tax.py` | 送转与红利税 |
-| `prices.py` / `costs.py` | 行情源、成交价与交易成本 |
-| `backtest.py` / `backtest_validate.py` | 原生回测、WFA、蒙特卡洛和基准对比 |
-| `report.py` | 实盘评估报告 |
-| `rqalpha/` | RQAlpha 策略、原生台账及对比工具 |
-
-### 红利个股策略风险
-
-- 高股息可能来自股价暴跌、周期顶部或不可持续派息；软评分降低风险，不代表排除财务造假。
-- Top 10 组合集中度高，行业和 Beta 上限只能缓解，不能消除个股尾部风险。
-- 默认单股 8% 上限和波动目标可能使组合长期保留现金，不能把未满仓误判为构建失败。
-- RQAlpha bundle、StockDB、财报与行业数据发布时间不同；未来信息验证通过不等于所有数据源都没有修订偏差。
-- 回测按历史成交与税费模型估算，不代表实盘可按相同价格、容量和流动性成交。
-
----
 
 ## 共享 Parquet 数据基础设施（`data/parquet/`）
 
@@ -1093,13 +894,9 @@ WHERE symbol = '600000'
 ORDER BY trade_date;
 ```
 
-### 数据湖验证与 RQAlpha 数据源
+### RQAlpha 数据源
 
-```bash
-python scripts/verify_parquet_backtest.py --years 10 --capital 100000
-```
-
-该命令比较 bundle 与 `ParquetDataSource` 的红利策略逐日 NAV，报告写入 `output/verify_parquet_vs_bundle.md`。相关入口：
+相关入口：
 
 | 路径 | 作用 |
 |------|------|
@@ -1108,14 +905,10 @@ python scripts/verify_parquet_backtest.py --years 10 --capital 100000
 | `data/parquet_constants.py` | 路径与 Schema 常量 |
 | `data/parquet_loader.py` | 按 symbol 查询，不回退 StockDB |
 | `data/parquet_data_source/` | RQAlpha `ParquetDataSource` |
-| `dividend_lowvol_rotation/rqalpha/mod_parquet_data.py` | 将数据源注入 RQAlpha |
 
 | 环境变量 | 说明 |
 |----------|------|
 | `DLV_PARQUET_ROOT` | 覆盖 Parquet 根目录 |
-| `DLV_RQALPHA_DATA_SOURCE` | RQAlpha 引擎数据源：`bundle` 或 `parquet` |
-| `DLV_RQALPHA_NATIVE_NAV_PATH` | 自定义原生口径 NAV 输出路径 |
-| `DLV_BACKTEST_PRICE_SOURCE` | 策略台账 K 线来源；与引擎数据源是独立开关 |
 
 数据湖当前不包含分钟线、期货或期权；bundle 的 `instruments.pkl` 也不覆盖 StockDB 的全部 ETF 等代码。
 
@@ -1134,8 +927,6 @@ python scripts/verify_parquet_backtest.py --years 10 --capital 100000
 .\.venv-vectorbt\Scripts\python.exe scripts\verify_factor_diagnosis.py
 .\.venv-vectorbt\Scripts\python.exe scripts\verify_factor_diagnosis.py --full
 
-# 要求 VectorBT 在批准清单存在后才运行
-.\.venv-vectorbt\Scripts\python.exe scripts\run_vectorbt_pipeline.py --require-diagnosis
 ```
 
 默认采用与官方 AlphaPurify 默认口径一致的 Spearman Rank IC。`--official` 会额外运行官方 AlphaPurify 抽检，计算开销较高。因子方向、阈值与预测期位于 `config/alphapurify/`；稳定交接文件为 `output/alphapurify/approved_factors.json`。

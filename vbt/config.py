@@ -40,11 +40,6 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return value
 
 
-def load_strategy_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    raw = load_yaml(CONFIG_ROOT / "strategy_params.yaml")
-    return deep_merge(raw.get("dividend_lowvol", {}), overrides)
-
-
 def load_backtest_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     raw = load_yaml(CONFIG_ROOT / "backtest_config.yaml")
     return deep_merge(raw.get("backtest", {}), overrides)

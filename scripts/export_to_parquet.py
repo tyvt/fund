@@ -68,10 +68,15 @@ from data.parquet_constants import (
     SUSPENDED_COLUMNS,
     ST_COLUMNS,
 )
-from dividend_lowvol_rotation.config import RQALPHA_BUNDLE_PATH
-from dividend_lowvol_rotation.rqalpha.symbols_rq import from_rqalpha_id, to_rqalpha_id
-from dividend_lowvol_rotation.symbols import normalize_stock_code
+from scripts.rqalpha_paths import (
+    DEFAULT_RQALPHA_BUNDLE_PATH,
+    resolve_rqalpha_bundle_path,
+)
+from scripts.rqalpha_symbols import from_rqalpha_id, normalize_stock_code, to_rqalpha_id
 from market_data import configure_stdout_utf8
+
+
+RQALPHA_BUNDLE_PATH = resolve_rqalpha_bundle_path()
 
 
 def _setup_logging() -> logging.Logger:

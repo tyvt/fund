@@ -59,9 +59,6 @@ def main(argv=None) -> int:
     qfq_n = conn.execute(
         "SELECT COUNT(DISTINCT entity_key) FROM ts_series WHERE domain='stock_daily_qfq'"
     ).fetchone()[0]
-    fhps_n = conn.execute("SELECT count(*) FROM dlv_fhps").fetchone()[0]
-    risk_n = conn.execute("SELECT count(*) FROM dlv_risk_hist").fetchone()[0]
-    ind_n = conn.execute("SELECT count(*) FROM dlv_industry").fetchone()[0]
 
     print(f"\n时点总数: {total:,}")
     print(f"stock_daily: {stock_pts:,} 点 / {stock_n} 只")
@@ -71,7 +68,6 @@ def main(argv=None) -> int:
     print(f"kv_snapshot: {kv} 条")
     print(f"cn_index_perf: {cn_idx} 个实体")
     print(f"stock_daily_qfq: {qfq_n} 只")
-    print(f"dlv_fhps: {fhps_n:,} 行 | dlv_risk_hist: {risk_n:,} 行 | dlv_industry: {ind_n:,} 行")
 
     snap = load_kv_snapshot(conn, STOCK_CODES_SNAPSHOT)
     if isinstance(snap, dict):
