@@ -19,10 +19,8 @@ from price_position import (
     is_near_year_low,
     make_drawdown_from_high_criterion,
     make_price_position_criterion,
-    make_trend_criterion,
     make_year_range_criterion,
     price_position_ok,
-    trend_filter_ok,
     year_range_ok,
 )
 from signal_format import (
@@ -169,16 +167,6 @@ def evaluate_cn_broad_buy(snapshot, *, buy_only=False):
     )
     if year_range_criterion is not None:
         criteria.append(year_range_criterion)
-    trend_criterion = make_trend_criterion(
-        snapshot.get("ma_slope_pct"),
-        year_range,
-        cfg.get("buy_trend_min_ma_slope_pct"),
-        cfg.get("buy_trend_downtrend_max_range_pct"),
-        cfg.get("buy_trend_ma_days"),
-        cfg.get("buy_trend_slope_lookback_days"),
-    )
-    if trend_criterion is not None:
-        criteria.append(trend_criterion)
 
     applicable = [c for c in criteria if c["applicable"]]
     score = sum(1 for c in applicable if c["passed"])
@@ -197,12 +185,7 @@ def evaluate_cn_broad_buy(snapshot, *, buy_only=False):
     ) and drawdown_from_high_ok(
         snapshot.get("pct_below_high"),
         min_drawdown,
-    ) and year_range_ok(year_range, cfg.get("buy_max_year_range_pct")    ) and trend_filter_ok(
-        snapshot.get("ma_slope_pct"),
-        year_range,
-        cfg.get("buy_trend_min_ma_slope_pct"),
-        cfg.get("buy_trend_downtrend_max_range_pct"),
-    )
+    ) and year_range_ok(year_range, cfg.get("buy_max_year_range_pct"))
 
     if is_buy and not buy_only:
         from config import SELL_REBUY_GATE_ENABLED, SELL_REBUY_MAX_GAIN_PCT
@@ -271,7 +254,6 @@ def vectorized_cn_broad_buy_mask(panel, index_code):
     year_range = _col("year_range_position")
     pct_above_low = _col("pct_above_low")
     pct_below_high = _col("pct_below_high")
-    ma_slope_pct = _col("ma_slope_pct")
 
     near_thr = cfg.get("buy_near_year_low_range_pct", 0.15)
     near_low = year_range.notna() & (year_range <= near_thr)
@@ -326,20 +308,11 @@ def vectorized_cn_broad_buy_mask(panel, index_code):
         yr_ok = pd.Series(True, index=panel.index)
         yr_applicable = pd.Series(False, index=panel.index)
 
-    min_slope = cfg.get("buy_trend_min_ma_slope_pct", -0.025)
-    downtrend_max = cfg.get("buy_trend_downtrend_max_range_pct", 0.12)
-    slope_known = ma_slope_pct.notna()
-    trend_ok = (~slope_known) | (ma_slope_pct >= min_slope) | (
-        year_range.notna() & (year_range <= downtrend_max)
-    )
-    trend_applicable = slope_known
-
     criteria = [
         (spread_ok, spread_pct.notna()),
         (price_ok, price_applicable),
         (dd_ok, dd_applicable),
         (yr_ok, yr_applicable),
-        (trend_ok, trend_applicable),
     ]
     applicable_count = sum(app.astype(int) for _, app in criteria)
     score = sum(ok.astype(int) for ok, _ in criteria)
@@ -356,7 +329,7 @@ def vectorized_cn_broad_buy_mask(panel, index_code):
         & (total.to_numpy() >= cfg["buy_min_applicable_criteria"])
     )
     return pd.Series(
-        base_buy & price_ok.to_numpy() & dd_ok.to_numpy() & yr_ok.to_numpy() & trend_ok.to_numpy(),
+        base_buy & price_ok.to_numpy() & dd_ok.to_numpy() & yr_ok.to_numpy(),
         index=panel.index,
     )
 

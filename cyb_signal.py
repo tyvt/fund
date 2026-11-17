@@ -10,10 +10,6 @@ from config import (
     CYB_BUY_MID_RANGE_POSITION_PCT,
     CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     CYB_BUY_PEG_HIST_MAX,
-    CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
-    CYB_BUY_TREND_MA_DAYS,
-    CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
-    CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     CYB_SELL_COMBO_PB_PERCENTILE_MIN,
     CYB_SELL_COMBO_PE_PERCENTILE_MIN,
     CYB_SELL_ENABLED,
@@ -36,9 +32,7 @@ from price_position import (
     build_buy_price_ceilings,
     effective_max_above_low_pct,
     make_price_position_criterion,
-    make_trend_criterion,
     price_position_ok,
-    trend_filter_ok,
 )
 from sell_trailing import rebuy_allowed_after_take_profit, trailing_sell_hit
 from signal_format import (
@@ -174,28 +168,12 @@ def evaluate_cyb_signal(snapshot):
     )
     if price_criterion is not None:
         buy_criteria.append(price_criterion)
-    trend_criterion = make_trend_criterion(
-        snapshot.get("ma_slope_pct"),
-        year_range,
-        CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
-        CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
-        CYB_BUY_TREND_MA_DAYS,
-        CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-    )
-    if trend_criterion is not None:
-        buy_criteria.append(trend_criterion)
 
     criteria = [c for c in buy_criteria if c["applicable"]]
     score = sum(1 for c in criteria if c["passed"])
     is_buy = (
         peg_hist_ok
         and price_position_ok(snapshot.get("pct_above_low"), max_above_low)
-        and trend_filter_ok(
-            snapshot.get("ma_slope_pct"),
-            year_range,
-            CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
-            CYB_BUY_TREND_DOWNTREND_MAX_RANGE_PCT,
-        )
     )
 
     if is_buy and not rebuy_allowed_after_take_profit(

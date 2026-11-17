@@ -7,9 +7,7 @@ from drop_to_buy import format_buy_trigger_line, us_index_drop_to_buy
 from price_position import (
     build_buy_price_ceilings,
     is_near_year_low,
-    make_trend_criterion,
     make_year_range_criterion,
-    trend_filter_ok,
     year_range_ok,
 )
 from signal_format import (
@@ -106,28 +104,12 @@ def evaluate_signal(key: str, snapshot):
     )
     if year_range_criterion is not None:
         buy_criteria.append(year_range_criterion)
-    trend_criterion = make_trend_criterion(
-        snapshot.get("ma_slope_pct"),
-        year_range,
-        _cfg(key, "BUY_TREND_MIN_MA_SLOPE_PCT"),
-        _cfg(key, "BUY_TREND_DOWNTREND_MAX_RANGE_PCT"),
-        _cfg(key, "BUY_TREND_MA_DAYS"),
-        _cfg(key, "BUY_TREND_SLOPE_LOOKBACK_DAYS"),
-    )
-    if trend_criterion is not None:
-        buy_criteria.append(trend_criterion)
 
     is_buy = (
         pe_ok
         and rate_ok
         and slope_ok
         and year_range_ok(year_range, _cfg(key, "BUY_MAX_YEAR_RANGE_PCT"))
-        and trend_filter_ok(
-            snapshot.get("ma_slope_pct"),
-            year_range,
-            _cfg(key, "BUY_TREND_MIN_MA_SLOPE_PCT"),
-            _cfg(key, "BUY_TREND_DOWNTREND_MAX_RANGE_PCT"),
-        )
     )
 
     signal_short = SIGNAL_BUY if is_buy else SIGNAL_HOLD

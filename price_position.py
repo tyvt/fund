@@ -132,51 +132,6 @@ def attach_ma_trend(panel, ma_days=200, slope_lookback=60, close_col="close"):
     return out
 
 
-def trend_filter_ok(
-    ma_slope_pct,
-    year_range_position,
-    min_ma_slope_pct=-0.025,
-    downtrend_max_range_pct=0.12,
-):
-    """MA 企稳/向上可买；深度下行中仅允许近1年极低位买入。"""
-    if ma_slope_pct is None or pd.isna(ma_slope_pct):
-        return True
-    if ma_slope_pct >= min_ma_slope_pct:
-        return True
-    if year_range_position is not None and not pd.isna(year_range_position):
-        return year_range_position <= downtrend_max_range_pct
-    return False
-
-
-def make_trend_criterion(
-    ma_slope_pct,
-    year_range_position,
-    min_ma_slope_pct,
-    downtrend_max_range_pct,
-    ma_days=200,
-    slope_lookback=60,
-):
-    """生成报告用均线趋势判定行。"""
-    ok = trend_filter_ok(
-        ma_slope_pct, year_range_position, min_ma_slope_pct, downtrend_max_range_pct
-    )
-    slope_text = (
-        f"{ma_slope_pct * 100:.1f}%"
-        if ma_slope_pct is not None and not pd.isna(ma_slope_pct)
-        else "—"
-    )
-    return make_criterion(
-        f"MA{ma_days}趋势",
-        ok,
-        (
-            f"斜率{slope_text}（需≥{min_ma_slope_pct * 100:.1f}%，"
-            f"否则区间需≤{downtrend_max_range_pct * 100:.0f}%）"
-        ),
-        "中长期均线仍下行，非极低位不买入",
-        applicable=ma_slope_pct is not None and not pd.isna(ma_slope_pct),
-    )
-
-
 def ma_slope_for_simulated_close(
     panel, idx, new_close, ma_days, slope_lookback, close_col="close"
 ):
