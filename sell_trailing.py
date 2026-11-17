@@ -263,7 +263,6 @@ def simulate_trades_trailing(
     latest_date = latest["_dt"]
 
     units = 0.0
-    buy_only_units = 0.0
     total_bought = 0.0
     total_sold = 0.0
     cost_basis = 0.0
@@ -295,7 +294,6 @@ def simulate_trades_trailing(
     from backtest_metrics import CapitalTracker, merge_capital_metrics_pair
 
     trade_capital = CapitalTracker()
-    buy_only_capital = CapitalTracker()
 
     cols = sample.columns.tolist()
     for tup in sample.itertuples(index=False, name=None):
@@ -387,7 +385,6 @@ def simulate_trades_trailing(
                 tiers_triggered.clear()
             units += new_units
             initial_units_at_position += new_units
-            buy_only_units += new_units
             total_bought += buy_amount
             cost_basis += buy_amount
             buy_count += 1
@@ -395,7 +392,6 @@ def simulate_trades_trailing(
             last_buy_dt = dt
             peak_since_buy = price
             trade_capital.record_buy(dt, buy_amount)
-            buy_only_capital.record_buy(dt, buy_amount)
         elif partial_sell_units > 0 and units > 0:
             sold = partial_sell_units
             proceeds = sold * price
@@ -425,31 +421,20 @@ def simulate_trades_trailing(
             sell_dates.append(day)
 
         trade_capital.record_day(units * price)
-        buy_only_capital.record_day(buy_only_units * price)
 
     final_value = total_sold + units * latest_price
     profit = final_value - total_bought
     return_pct = profit / total_bought * 100 if total_bought > 0 else None
 
-    buy_only_value = buy_only_units * latest_price
-    buy_only_profit = buy_only_value - total_bought
-    buy_only_return_pct = (
-        buy_only_profit / total_bought * 100 if total_bought > 0 else None
-    )
+    buy_only_value = final_value
+    buy_only_profit = profit
+    buy_only_return_pct = return_pct
 
     trading_days = len(sample)
-    capital = merge_capital_metrics_pair(
-        trade_capital.finalize(
-            latest_date, final_value, trading_days, profit, total_bought
-        ),
-        buy_only_capital.finalize(
-            latest_date,
-            buy_only_value,
-            trading_days,
-            buy_only_profit,
-            total_bought,
-        ),
+    trade_metrics = trade_capital.finalize(
+        latest_date, final_value, trading_days, profit, total_bought
     )
+    capital = merge_capital_metrics_pair(trade_metrics, trade_metrics)
 
     return {
         "buy_count": buy_count,

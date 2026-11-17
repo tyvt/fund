@@ -511,7 +511,6 @@ def simulate_trades(
     latest_date = latest["_dt"]
 
     units = 0.0
-    buy_only_units = 0.0
     total_bought = 0.0
     total_sold = 0.0
     buy_count = 0
@@ -522,7 +521,6 @@ def simulate_trades(
     from backtest_metrics import CapitalTracker
 
     trade_capital = CapitalTracker()
-    buy_only_capital = CapitalTracker()
 
     cols = sample.columns.tolist()
     for tup in sample.itertuples(index=False, name=None):
@@ -536,12 +534,10 @@ def simulate_trades(
         buy_amount = _resolve_buy_amount(amount, row) if is_buy else 0.0
         if is_buy and buy_amount > 0:
             units += buy_amount / price
-            buy_only_units += buy_amount / price
             total_bought += buy_amount
             buy_count += 1
             buy_dates.append(day)
             trade_capital.record_buy(dt, buy_amount)
-            buy_only_capital.record_buy(dt, buy_amount)
         elif is_sell and units > 0:
             proceeds = units * price
             total_sold += proceeds
@@ -551,31 +547,20 @@ def simulate_trades(
             sell_dates.append(day)
 
         trade_capital.record_day(units * price)
-        buy_only_capital.record_day(buy_only_units * price)
 
     final_value = total_sold + units * latest_price
     profit = final_value - total_bought
     return_pct = profit / total_bought * 100 if total_bought > 0 else None
 
-    buy_only_value = buy_only_units * latest_price
-    buy_only_profit = buy_only_value - total_bought
-    buy_only_return_pct = (
-        buy_only_profit / total_bought * 100 if total_bought > 0 else None
-    )
+    buy_only_value = final_value
+    buy_only_profit = profit
+    buy_only_return_pct = return_pct
 
     trading_days = len(sample)
-    capital = merge_capital_metrics_pair(
-        trade_capital.finalize(
-            latest_date, final_value, trading_days, profit, total_bought
-        ),
-        buy_only_capital.finalize(
-            latest_date,
-            buy_only_value,
-            trading_days,
-            buy_only_profit,
-            total_bought,
-        ),
+    trade_metrics = trade_capital.finalize(
+        latest_date, final_value, trading_days, profit, total_bought
     )
+    capital = merge_capital_metrics_pair(trade_metrics, trade_metrics)
 
     return {
         "buy_count": buy_count,
@@ -1570,44 +1555,9 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
 
     lines.extend([
         "",
-        "## 收益对比（智能轮动 vs 仅买入持有）",
-        "",
-        "| 指数 | 代码 | 买卖市值 | 买卖盈亏 | 买卖收益率 | "
-        "仅买市值 | 仅买盈亏 | 仅买收益率 | 备注 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-    ])
-    for r in results:
-        if r.has_sell:
-            trade_val = r.final_value
-            trade_profit = r.profit
-            trade_ret = r.return_pct
-        else:
-            trade_val = r.buy_only_value
-            trade_profit = r.buy_only_profit
-            trade_ret = r.buy_only_return_pct
-        lines.append(
-            f"| {r.name} | {r.code} | {_md_money(trade_val)} | "
-            f"{trade_profit:+.0f} | {_md_pct(trade_ret)} | "
-            f"{_md_money(r.buy_only_value)} | {r.buy_only_profit:+.0f} | "
-            f"{_md_pct(r.buy_only_return_pct)} | {r.note} |"
-        )
-    totals = _trade_totals(results, portfolio)
-    lines.append(
-        f"| **合计** | — | {_md_money(totals['trade_value'])} | "
-        f"{totals['trade_profit']:+.0f} | {_md_pct(totals['trade_ret'])} | "
-        f"{_md_money(totals['buy_only_value'])} | {totals['buy_only_profit']:+.0f} | "
-        f"{_md_pct(totals['buy_only_ret'])} | — |"
-    )
-
-    lines.extend(_format_capital_efficiency_section(results))
-
-    lines.extend([
-        "",
         "**说明**",
         "",
-        "- **智能轮动**：按指标买入，轮动门控下触发卖点时卖出，释放资金优先投入其他买点。",
-        "- **仅买入持有**：同期所有买入信号均执行，不因卖点卖出（对照组）。",
-        "- 有卖点指数的「轮动收益率」与「仅买收益率」差异反映轮动策略效果；单指数市值不含池内未分配现金。",
+        "- 每只指数独立按自身买入与卖出规则执行，不再单独记一本只买不卖的对照账。",
         "",
         "## 风险调整收益（夏普比率）",
         "",
@@ -1671,7 +1621,7 @@ def print_table(results, start_date, end_date, amounts, portfolio=None):
     val_dates = [r.final_date for r in results if r.final_date is not None]
     val_date = max(val_dates).strftime("%Y-%m-%d") if val_dates else "—"
     print(
-        f"\n=== {start_date} 至 {end_label} 智能轮动回测 "
+        f"\n=== {start_date} 至 {end_label} 分指数买卖回测 "
         f"（{format_backtest_amount_note(amounts)}，截至 {val_date}） ==="
     )
     if portfolio is not None:
@@ -1688,7 +1638,7 @@ def print_table(results, start_date, end_date, amounts, portfolio=None):
     )
     print("-" * 88)
     for r in results:
-        strategy = "轮动" if r.has_sell else "仅买"
+        strategy = "买卖" if r.has_sell else "仅买"
         trade_ret = _effective_return(r)
         trade_text = f"{trade_ret:+.1f}%" if trade_ret is not None else "   —"
         sharpe_text = f"{r.sharpe_ratio:.2f}" if r.sharpe_ratio is not None else "   —"
@@ -1712,20 +1662,12 @@ def print_table(results, start_date, end_date, amounts, portfolio=None):
         f"{totals['total_bought']:>8.0f} {trade_text:>8} {'—':>6} {'—':>8}"
     )
     print("-" * 88)
-    print(
-        f"{'指数':<14} {'代码':<8} {'轮动XIRR':>9} {'持有XIRR':>9} "
-        f"{'结论':<8}"
-    )
+    print(f"{'指数':<14} {'代码':<8} {'XIRR':>9}")
     print("-" * 88)
     for r in results:
         trade_xirr = _effective_xirr(r)
-        hold_xirr = r.buy_only_xirr_pct
         tx = f"{trade_xirr:+.1f}%" if trade_xirr is not None else "   —"
-        hx = f"{hold_xirr:+.1f}%" if hold_xirr is not None else "   —"
-        print(
-            f"{r.name:<14} {r.code:<8} {tx:>9} {hx:>9} "
-            f"{_capital_efficiency_verdict(r):<8}"
-        )
+        print(f"{r.name:<14} {r.code:<8} {tx:>9}")
     print("-" * 88)
 
 
@@ -1810,7 +1752,11 @@ def main(argv=None):
 
     try:
         results, portfolio = backtest_all(
-            args.start, args.end, amounts=amounts, panels=panels
+            args.start,
+            args.end,
+            amounts=amounts,
+            panels=panels,
+            rotation=False,
         )
         print_table(results, args.start, args.end, amounts, portfolio=portfolio)
         daily_tables = collect_trade_chart_tables(
