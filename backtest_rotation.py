@@ -106,7 +106,7 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
         panel = panels.cn_broad_panel(code)
         amt = get_backtest_buy_amount(code, amounts)
         sell_on = cn_broad_sell_enabled(code)
-        buy_fn, _ = _cn_broad_signal_fns(code, buy_only=not sell_on)
+        buy_fn, _ = _cn_broad_signal_fns(code)
         if amt <= 0:
             continue
         sim_amt = _resolve_trade_amount(
@@ -128,7 +128,7 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
     cyb_code = CYB_INDEX["code"]
     cyb_amt = get_backtest_buy_amount(cyb_code, amounts)
     if cyb_amt > 0:
-        cyb_buy, _ = _cyb_signal_fns(buy_only=False)
+        cyb_buy, _ = _cyb_signal_fns()
         sim_amt = _resolve_trade_amount(
             cyb_code, cyb_amt, amounts, cyb_panel, start_date, end_date, cyb_buy
         )
@@ -560,31 +560,25 @@ def simulate_portfolio(
     )
 
 
-def _baseline_from_backtest(results, *, hold: bool):
+def _baseline_from_backtest(results):
+    """从逐指数买卖回测汇总出「当前卖点（资金不复用）」基线。
+
+    仅买入（全持有）基线改由 `simulate_portfolio(..., mode="hold")` 产生，
+    不再依赖逐指数 buy_only_* 字段（仅买入口径已下线）。
+    """
     total_bought = sum(r.total_bought for r in results)
-    if hold:
-        profit = sum(r.buy_only_profit for r in results)
-        value = sum(r.buy_only_value for r in results)
-        xirr_vals = [r.buy_only_xirr_pct for r in results if r.buy_only_xirr_pct is not None]
-    else:
-        profit = 0.0
-        value = 0.0
-        xirr_vals = []
-        for r in results:
-            if r.has_sell:
-                profit += r.profit
-                value += r.final_value
-                if r.xirr_pct is not None:
-                    xirr_vals.append(r.xirr_pct)
-            else:
-                profit += r.buy_only_profit
-                value += r.buy_only_value
-                if r.buy_only_xirr_pct is not None:
-                    xirr_vals.append(r.buy_only_xirr_pct)
+    profit = 0.0
+    value = 0.0
+    xirr_vals = []
+    for r in results:
+        profit += r.profit
+        value += r.final_value
+        if r.xirr_pct is not None:
+            xirr_vals.append(r.xirr_pct)
     ret = profit / total_bought * 100 if total_bought > 0 else None
     avg_xirr = sum(xirr_vals) / len(xirr_vals) if xirr_vals else None
     return PortfolioResult(
-        mode="hold" if hold else "sell",
+        mode="sell",
         total_new_money=total_bought,
         final_value=value,
         profit=profit,
@@ -714,8 +708,11 @@ def run_comparison(start_date, end_date, amounts, panels):
         panels=panels,
         rotation=False,
     )
-    hold_base = _baseline_from_backtest(trade_results, hold=True)
-    sell_base = _baseline_from_backtest(trade_results, hold=False)
+    # 全持有基线：用同一批指数在「不允许卖出」模式下模拟，口径与买卖策略一致
+    hold_base = simulate_portfolio(
+        indices, "hold", use_pool=False, rotation_gate=False
+    )
+    sell_base = _baseline_from_backtest(trade_results)
 
     rotation = simulate_portfolio(
         indices, "rotation", use_pool=True, rotation_gate=True

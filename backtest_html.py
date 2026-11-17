@@ -251,8 +251,7 @@ def resolve_return_pct_by_code(amounts=None, rows=None) -> dict[str, float | Non
         if isinstance(row, dict):
             out[row["code"]] = row.get("return_pct")
         else:
-            ret = row.return_pct if row.has_sell else row.buy_only_return_pct
-            out[row.code] = ret
+            out[row.code] = row.return_pct
     return out
 
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from backtest_metrics import compute_strategy_metrics, merge_capital_metrics_pair
+from backtest_metrics import compute_strategy_metrics
 from backtest_buy_signals import (
     BACKTEST_RETURN_FOOTNOTE,
     CN_BROAD_BACKTEST_INDICES,
@@ -22,6 +22,11 @@ from config import (
     CYB_BUY_MAX_ABOVE_LOW_PCT,
     CYB_BUY_PEG_HIST_MAX,
     CYB_INDEX,
+    CYB_SELL_ENABLED,
+    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+    CYB_SELL_STAGES,
+    CYB_SELL_TRAILING_DRAWDOWN_PCT,
+    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     cn_broad_sell_enabled,
     format_backtest_amount_note,
     get_backtest_buy_amount,
@@ -36,7 +41,7 @@ from config import (
     us_index_sell_enabled,
 )
 from buy_amount_config import resolve_simulate_amount
-from cyb_signal import evaluate_cyb_signal
+from cyb_signal import cyb_valuation_sell_fn, evaluate_cyb_signal
 from sell_trailing import (
     simulate_trades_trailing,
     valuation_sell_hit_us_index,
@@ -68,21 +73,14 @@ class TradeResult:
     final_value: float = 0.0
     profit: float = 0.0
     return_pct: float | None = None
-    buy_only_value: float = 0.0
-    buy_only_profit: float = 0.0
-    buy_only_return_pct: float | None = None
     sharpe_ratio: float | None = None
     benchmark_sharpe: float | None = None
     max_drawdown_pct: float | None = None
     annualized_return_pct: float | None = None
     xirr_pct: float | None = None
-    buy_only_xirr_pct: float | None = None
     deployed_annualized_return_pct: float | None = None
-    buy_only_deployed_annualized_return_pct: float | None = None
     capital_utilization_pct: float | None = None
-    buy_only_capital_utilization_pct: float | None = None
     time_in_market_pct: float | None = None
-    buy_only_time_in_market_pct: float | None = None
     note: str = "日频，每交易日评估"
     buy_dates: list = field(default_factory=list)
     sell_dates: list = field(default_factory=list)
@@ -184,6 +182,22 @@ def _cn_broad_trailing_cfg(code):
 
 def _cn_broad_valuation_sell_fn(code):
     return None
+
+
+def _cyb_trailing_cfg():
+    """创业板移动止盈/分批止盈配置（历史 CYB_SELL_* 口径）。"""
+    if not CYB_SELL_ENABLED or (
+        CYB_SELL_TRAILING_DRAWDOWN_PCT is None and not CYB_SELL_STAGES
+    ):
+        return None
+    trail = {
+        "trailing_drawdown_pct": CYB_SELL_TRAILING_DRAWDOWN_PCT,
+        "min_unrealized_gain_pct": CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+        "min_hold_days": CYB_SELL_TRAILING_MIN_HOLD_DAYS,
+    }
+    if CYB_SELL_STAGES:
+        trail["stages"] = CYB_SELL_STAGES
+    return trail
 
 
 def _us_trailing_cfg(key):
@@ -366,14 +380,7 @@ def _cn_broad_signals(row, index_code):
     return ev["is_buy"], ev.get("is_sell", False)
 
 
-def _cn_broad_signal_fns(index_code, *, buy_only=False):
-    if buy_only:
-        def buy_fn(row, c=index_code):
-            return evaluate_cn_broad_buy(
-                _cn_broad_row_snapshot(row, c), buy_only=True
-            )["is_buy"]
-
-        return buy_fn, None
+def _cn_broad_signal_fns(index_code):
     return _cached_signal_pair(lambda row, c=index_code: _cn_broad_signals(row, c))
 
 
@@ -395,17 +402,13 @@ def _cyb_signals(row):
             "close": row_field(row, "close"),
             "recent_signal_buy_avg": row_field(row, "recent_signal_buy_avg"),
             "peak_since_last_buy": row_field(row, "peak_since_last_buy"),
+            "days_since_last_buy": row_field(row, "days_since_last_buy"),
         }
     )
     return ev["is_buy"], ev.get("is_sell", False)
 
 
-def _cyb_signal_fns(*, buy_only=False):
-    if buy_only:
-        def buy_fn(row):
-            return _cyb_signals(row)[0]
-
-        return buy_fn, None
+def _cyb_signal_fns():
     return _cached_signal_pair(_cyb_signals)
 
 
@@ -526,15 +529,11 @@ def simulate_trades(
     profit = final_value - total_bought
     return_pct = profit / total_bought * 100 if total_bought > 0 else None
 
-    buy_only_value = final_value
-    buy_only_profit = profit
-    buy_only_return_pct = return_pct
-
     trading_days = len(sample)
     trade_metrics = trade_capital.finalize(
         latest_date, final_value, trading_days, profit, total_bought
     )
-    capital = merge_capital_metrics_pair(trade_metrics, trade_metrics)
+    capital = trade_metrics
 
     return {
         "buy_count": buy_count,
@@ -547,9 +546,6 @@ def simulate_trades(
         "final_value": final_value,
         "profit": profit,
         "return_pct": return_pct,
-        "buy_only_value": buy_only_value,
-        "buy_only_profit": buy_only_profit,
-        "buy_only_return_pct": buy_only_return_pct,
         "buy_dates": buy_dates,
         "sell_dates": sell_dates,
         **capital,
@@ -600,21 +596,14 @@ def _merge_rotation_results(hold_results, rotation_portfolio) -> list[TradeResul
                 final_value=rot.final_value,
                 profit=rot.profit,
                 return_pct=rot.return_pct,
-                buy_only_value=hold.buy_only_value,
-                buy_only_profit=hold.buy_only_profit,
-                buy_only_return_pct=hold.buy_only_return_pct,
                 sharpe_ratio=hold.sharpe_ratio,
                 benchmark_sharpe=hold.benchmark_sharpe,
                 max_drawdown_pct=hold.max_drawdown_pct,
                 annualized_return_pct=hold.annualized_return_pct,
                 xirr_pct=None,
-                buy_only_xirr_pct=hold.buy_only_xirr_pct,
                 deployed_annualized_return_pct=None,
-                buy_only_deployed_annualized_return_pct=hold.buy_only_deployed_annualized_return_pct,
                 capital_utilization_pct=None,
-                buy_only_capital_utilization_pct=hold.buy_only_capital_utilization_pct,
                 time_in_market_pct=None,
-                buy_only_time_in_market_pct=hold.buy_only_time_in_market_pct,
                 note=note,
                 buy_dates=list(rot.buy_dates),
                 sell_dates=list(rot.sell_dates),
@@ -637,7 +626,6 @@ def backtest_all(
     panels=None,
     *,
     rotation: bool | None = None,
-    buy_only: bool = False,
 ):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -650,7 +638,7 @@ def backtest_all(
     _preload_ranking_panels(panels)
 
     if rotation is None:
-        rotation = ROTATION_SELL_ENABLED and not buy_only
+        rotation = ROTATION_SELL_ENABLED
 
     if rotation:
         hold_results, _ = backtest_all(
@@ -659,7 +647,6 @@ def backtest_all(
             amounts=amounts,
             panels=panels,
             rotation=False,
-            buy_only=True,
         )
         from backtest_rotation import run_portfolio_rotation
         from config import MARKET_REGIME_ENABLED
@@ -697,9 +684,9 @@ def backtest_all(
         panel = panels.cn_broad_panel(item["code"])
         code = item["code"]
         amt = get_backtest_buy_amount(code, amounts)
-        sell_on = False if buy_only else cn_broad_sell_enabled(code)
+        sell_on = cn_broad_sell_enabled(code)
         trail_cfg = _cn_broad_trailing_cfg(code) if sell_on else None
-        buy_fn, sell_fn = _cn_broad_signal_fns(code, buy_only=not sell_on)
+        buy_fn, sell_fn = _cn_broad_signal_fns(code)
         excluded = _skip_or_excluded_trade(
             amt,
             amounts,
@@ -731,7 +718,7 @@ def backtest_all(
         )
         if not stats:
             return []
-        ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
+        ret = stats.get("return_pct")
         metrics = _attach_risk_metrics(
             panel,
             start_date,
@@ -760,7 +747,7 @@ def backtest_all(
     cyb_panel = panels.cyb_panel()
     cyb_code = CYB_INDEX["code"]
     cyb_amt = get_backtest_buy_amount(cyb_code, amounts)
-    cyb_buy, cyb_sell = _cyb_signal_fns(buy_only=buy_only)
+    cyb_buy, cyb_sell = _cyb_signal_fns()
     excluded = _skip_or_excluded_trade(
         cyb_amt,
         amounts,
@@ -770,7 +757,7 @@ def backtest_all(
         end_date,
         cyb_buy,
         CYB_INDEX["name"],
-        has_sell=False,
+        has_sell=CYB_SELL_ENABLED,
         date_col="date",
     )
     if excluded is not None:
@@ -787,8 +774,9 @@ def backtest_all(
             sim_amt,
             cyb_buy,
             cyb_sell,
-            True,
-            trailing_cfg={"tier_sell_fn": lambda row: _valuation_tier_fn(row, cyb_code)},
+            CYB_SELL_ENABLED,
+            trailing_cfg=_cyb_trailing_cfg(),
+            valuation_sell_fn=cyb_valuation_sell_fn if CYB_SELL_ENABLED else None,
             date_col="date",
         )
         if stats:
@@ -800,7 +788,7 @@ def backtest_all(
                 cyb_amt,
                 cyb_buy,
                 cyb_sell,
-                True,
+                CYB_SELL_ENABLED,
                 ret,
             )
             metrics.pop("trading_days", None)
@@ -809,7 +797,7 @@ def backtest_all(
                 TradeResult(
                     code=CYB_INDEX["code"],
                     name=CYB_INDEX["name"],
-                    has_sell=True,
+                    has_sell=CYB_SELL_ENABLED,
                     **_trade_result_fields(stats),
                 )
             )
@@ -836,7 +824,7 @@ def backtest_all(
         sim_amt = _resolve_trade_amount(
             meta["code"], us_amt, amounts, daily, start_date, end_date, us_buy
         )
-        sell_on = False if buy_only else us_index_sell_enabled(key)
+        sell_on = us_index_sell_enabled(key)
         trail_cfg = _us_trailing_cfg(key) if sell_on else None
         val_sell_fn = _us_valuation_sell_fn(key, growth) if sell_on else None
         stats = _run_index_trades(
@@ -852,7 +840,7 @@ def backtest_all(
             valuation_sell_fn=val_sell_fn,
         )
         if stats:
-            ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
+            ret = stats.get("return_pct")
             metrics = _attach_risk_metrics(
                 daily,
                 start_date,
@@ -1068,7 +1056,7 @@ def collect_trade_chart_tables(
         code = item["code"]
         panel = panels.cn_broad_panel(code)
         sell_on = cn_broad_sell_enabled(code)
-        buy_fn, _ = _cn_broad_signal_fns(code, buy_only=not sell_on)
+        buy_fn, _ = _cn_broad_signal_fns(code)
 
         def _cn_sell_dates(c=code, p=panel, bf=buy_fn, enabled=sell_on):
             if not enabled:
@@ -1086,7 +1074,7 @@ def collect_trade_chart_tables(
         )
 
     cyb_panel = panels.cyb_panel()
-    cyb_buy, _ = _cyb_signal_fns(buy_only=False)
+    cyb_buy, _ = _cyb_signal_fns()
 
     def _cyb_sell_dates(c=CYB_INDEX["code"], p=cyb_panel, bf=cyb_buy):
         return resolve_chart_sell_dates(c, p, start_date, end_date, amounts, bf)
@@ -1138,16 +1126,9 @@ def _md_sharpe(value):
     return f"{value:.2f}"
 
 
-def _effective_return(r: TradeResult):
-    if r.has_sell:
-        return r.return_pct
-    return r.buy_only_return_pct
-
-
 def _trade_totals(results, portfolio=None):
     if portfolio is not None:
         rot = portfolio.rotation
-        hold = portfolio.hold
         return {
             "buy_count": rot.buy_count,
             "sell_count": rot.sell_count,
@@ -1155,29 +1136,13 @@ def _trade_totals(results, portfolio=None):
             "trade_value": rot.final_value,
             "trade_profit": rot.profit,
             "trade_ret": rot.return_pct,
-            "buy_only_value": hold.final_value,
-            "buy_only_profit": hold.profit,
-            "buy_only_ret": hold.return_pct,
             "rotation_xirr": rot.xirr_pct,
-            "hold_xirr": hold.xirr_pct,
             "pool_reused": rot.pool_reused,
         }
     total_bought = sum(r.total_bought for r in results)
-    trade_value = 0.0
-    trade_profit = 0.0
-    buy_only_value = 0.0
-    buy_only_profit = 0.0
-    for r in results:
-        if r.has_sell:
-            trade_value += r.final_value
-            trade_profit += r.profit
-        else:
-            trade_value += r.buy_only_value
-            trade_profit += r.buy_only_profit
-        buy_only_value += r.buy_only_value
-        buy_only_profit += r.buy_only_profit
+    trade_value = sum(r.final_value for r in results)
+    trade_profit = sum(r.profit for r in results)
     trade_ret = trade_profit / total_bought * 100 if total_bought > 0 else None
-    buy_only_ret = buy_only_profit / total_bought * 100 if total_bought > 0 else None
     return {
         "buy_count": sum(r.buy_count for r in results),
         "sell_count": sum(r.sell_count for r in results),
@@ -1185,9 +1150,6 @@ def _trade_totals(results, portfolio=None):
         "trade_value": trade_value,
         "trade_profit": trade_profit,
         "trade_ret": trade_ret,
-        "buy_only_value": buy_only_value,
-        "buy_only_profit": buy_only_profit,
-        "buy_only_ret": buy_only_ret,
     }
 
 
@@ -1210,7 +1172,8 @@ def _format_config_snapshot():
     lines.extend([
         f"| 创业板指 | {CYB_INDEX['code']} | — | "
         f"PEG≤{CYB_BUY_PEG_HIST_MAX:.1f} | "
-        f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | — | 估值+均线 |",
+        f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | — | "
+        f"估值分位(PE/PB≥78%)+PEG≥3.0+移动止盈12% |",
     ])
     for key in US_INDEX_KEYS:
         meta = US_INDEX_META[key]
@@ -1229,89 +1192,6 @@ def _format_config_snapshot():
         "完整阈值见 `config.py` / `README.md`。",
         "",
     ])
-    return lines
-
-
-def _effective_xirr(r: TradeResult) -> float | None:
-    if r.has_sell:
-        return r.xirr_pct
-    return r.buy_only_xirr_pct
-
-
-def _capital_efficiency_verdict(r: TradeResult) -> str:
-    trade_xirr = _effective_xirr(r)
-    hold_xirr = r.buy_only_xirr_pct
-    if trade_xirr is None or hold_xirr is None:
-        return "—"
-    diff = trade_xirr - hold_xirr
-    if diff >= 1.0:
-        return "轮动更优"
-    if diff <= -1.0:
-        return "持有更优"
-    return "接近"
-
-
-def _format_capital_efficiency_section(results):
-    lines = [
-        "",
-        "## 资金时间利用效率（轮动 vs 持有）",
-        "",
-        "> **XIRR**：货币加权年化收益率，考虑每次买卖的时间点；"
-        "半年赚 100% 与一年赚 110% 在 XIRR 上可区分。",
-        "> **持仓年化**：利润 ÷ 日均持仓市值，再按回测区间年化；"
-        "反映单位在仓资金的时间产出。",
-        "> **资金占用率**：日均持仓市值 ÷ 累计投入；越低说明卖出后闲置现金越多。",
-        "> **在仓占比**：有持仓的交易日占区间比例。",
-        "",
-        "| 指数 | 代码 | 轮动XIRR | 持有XIRR | 差值 | 轮动持仓年化 | 持有持仓年化 | "
-        "轮动占用率 | 持有占用率 | 在仓占比(轮/持) | 结论 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-    ]
-    trade_xirr_sum = 0.0
-    hold_xirr_sum = 0.0
-    n = 0
-    band_wins = 0
-    hold_wins = 0
-    for r in results:
-        trade_xirr = _effective_xirr(r)
-        hold_xirr = r.buy_only_xirr_pct
-        if trade_xirr is not None and hold_xirr is not None:
-            n += 1
-            trade_xirr_sum += trade_xirr
-            hold_xirr_sum += hold_xirr
-            diff = trade_xirr - hold_xirr
-            if diff >= 1.0:
-                band_wins += 1
-            elif diff <= -1.0:
-                hold_wins += 1
-            diff_text = f"{diff:+.1f}%"
-        else:
-            diff_text = "—"
-        time_text = "—"
-        if r.time_in_market_pct is not None and r.buy_only_time_in_market_pct is not None:
-            time_text = (
-                f"{r.time_in_market_pct:.0f}%/"
-                f"{r.buy_only_time_in_market_pct:.0f}%"
-            )
-        lines.append(
-            f"| {r.name} | {r.code} | {_md_pct(trade_xirr)} | {_md_pct(hold_xirr)} | "
-            f"{diff_text} | {_md_pct(r.deployed_annualized_return_pct)} | "
-            f"{_md_pct(r.buy_only_deployed_annualized_return_pct)} | "
-            f"{_md_pct(r.capital_utilization_pct, 0)} | "
-            f"{_md_pct(r.buy_only_capital_utilization_pct, 0)} | "
-            f"{time_text} | {_capital_efficiency_verdict(r)} |"
-        )
-    if n:
-        lines.extend([
-            "",
-            f"**汇总**：{n} 个指数中，按 XIRR 轮动更优 **{band_wins}** 个、"
-            f"持有更优 **{hold_wins}** 个、接近 **{n - band_wins - hold_wins}** 个；"
-            f"平均 XIRR 轮动 {trade_xirr_sum / n:+.1f}%、"
-            f"持有 {hold_xirr_sum / n:+.1f}%。",
-            "",
-            "**解读**：组合级 XIRR 见上文「组合收益」；单指数 XIRR 在共享资金池下不单独计算。",
-            "若轮动总收益高于持有且 XIRR 接近，说明资金池复用有效。",
-        ])
     return lines
 
 
@@ -1391,12 +1271,12 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
         f"# {start_date} 至 {end_label} 分指数买卖回测",
         "",
         f"> 生成时间：{generated_at}  ",
-        "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
+        "> 买入/卖出标准：当前 config 阈值  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
-        "> 策略：**分指数独立买卖**（不共享资金池，不做只买不卖对照）  ",
-        "> 卖出规则：宽基为分批止盈+移动止盈；美股为移动止盈+估值  ",
-        "> 买入触发：与 `backtest_buy_signals.py` 相同（信号日买入；默认无冷却期）；非每日定投  ",
-        "> 区间默认自 2015-01-01；买入信号回测默认自各指数基日，对比时请对齐起始日",
+        "> 策略：**分指数独立买卖**（三指数统一买卖口径，不共享资金池）  ",
+        "> 卖出规则：宽基/创业板为分批止盈+移动止盈（创业板另含估值分位/PEG）；美股为移动止盈+估值  ",
+        "> 买入触发：信号日买入，默认无冷却期；非每日定投  ",
+        "> 区间默认自 2015-01-01",
         "",
         f"估值截至 **{val_date}**。{BACKTEST_RETURN_FOOTNOTE}",
         "",
@@ -1441,7 +1321,7 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
         reverse=True,
     )
     for r in ranked:
-        strat_ret = _effective_return(r)
+        strat_ret = r.return_pct
         sharpe = r.sharpe_ratio
         bench = r.benchmark_sharpe
         if sharpe is None:
@@ -1507,7 +1387,7 @@ def print_table(results, start_date, end_date, amounts, portfolio=None):
     print("-" * 88)
     for r in results:
         strategy = "买卖" if r.has_sell else "仅买"
-        trade_ret = _effective_return(r)
+        trade_ret = r.return_pct
         trade_text = f"{trade_ret:+.1f}%" if trade_ret is not None else "   —"
         sharpe_text = f"{r.sharpe_ratio:.2f}" if r.sharpe_ratio is not None else "   —"
         mdd_text = (
@@ -1533,7 +1413,7 @@ def print_table(results, start_date, end_date, amounts, portfolio=None):
     print(f"{'指数':<14} {'代码':<8} {'XIRR':>9}")
     print("-" * 88)
     for r in results:
-        trade_xirr = _effective_xirr(r)
+        trade_xirr = r.xirr_pct
         tx = f"{trade_xirr:+.1f}%" if trade_xirr is not None else "   —"
         print(f"{r.name:<14} {r.code:<8} {tx:>9}")
     print("-" * 88)

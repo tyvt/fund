@@ -16,3 +16,5 @@ STOCKDB_HOST = "127.0.0.1"
 STOCKDB_PORT = 7899
 BACKTEST_OUTPUT_DIR = PROJECT_DIR / "output" / "backtest"
 BACKTEST_PRESENT_LABEL = "inception_present"
+# 统一买卖口径后的面板/报告标签（仅买入口径已下线）
+BACKTEST_TRADE_PRESENT_LABEL = "trade_inception_present"

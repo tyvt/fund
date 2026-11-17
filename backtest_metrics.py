@@ -148,16 +148,6 @@ def compute_capital_efficiency_metrics(
     }
 
 
-def merge_capital_metrics_pair(trade_metrics: dict, buy_only_metrics: dict) -> dict:
-    """合并波段与仅买入两套资金效率指标。"""
-    out = {}
-    for key, value in trade_metrics.items():
-        out[key] = value
-    for key, value in buy_only_metrics.items():
-        out[f"buy_only_{key}"] = value
-    return out
-
-
 def _daily_returns_with_cash_flows(nav: pd.Series, cash_flows: pd.Series) -> pd.Series:
     """剔除外部注资/提现后的日收益率（用于定投类策略）。"""
     if nav.empty or len(nav) < 2:

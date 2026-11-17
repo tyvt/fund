@@ -5,14 +5,14 @@
 ## 覆盖指数（3 只）
 
 | 模块 | 代码 | 名称 | 策略类型（实盘报告） |
-|------|------|------|----------|
+|------|------|------|------|
 | 宽基 | 000688 | 科创50 | 买入 + 分批移动止盈 |
-| 创业板 | 399006 | 创业板指 | 仅买入 |
+| 创业板 | 399006 | 创业板指 | 买入 + 卖出（估值分位 + 移动止盈，回测口径） |
 | 美股 | NDX | 纳斯达克100 | 仅买入 |
 
 报告末尾附带**跨指数信号对比表**（按强度排序），便于横向比较。
 
-**实盘报告 vs 回测**：`report.py` 仅输出买入/观望（宽基另含移动止盈卖点）；`backtest_trade_signals.py` 默认跑**智能轮动**（共享资金池 + 轮动门控），宽基/美股在回测中可触发移动止盈（美股另含估值卖点），创业板始终仅买。详见下文「买卖波段回测」。
+**实盘报告 vs 回测**：`report.py` 仅输出买入/观望（宽基另含移动止盈卖点）；回测统一走 `backtest_trade_signals.py` **买卖口径**（默认智能轮动：共享资金池 + 轮动门控），三指数在回测中均可触发卖出——宽基分批/移动止盈、创业板估值分位+移动止盈、美股移动止盈+估值卖点。仅买入回测口径已下线。详见下文「买卖波段回测」。
 
 ## 环境要求
 
@@ -266,52 +266,35 @@ python scripts/verify_snapshots.py --full
 
 ### 回测（`backtest.py`）
 
-统一入口 `backtest.py --mode <模式>`；底层实现仍保留在 `backtest_*.py` 模块中。两套主回测**均按买入信号日触发**（非每日定投）。**默认不设买入冷却期**（`BUY_COOLDOWN_ENABLED=false`）：买入频次由各指数硬门槛自然决定，再通过**位置分配**与总投入控制仓位。
+统一入口 `backtest.py --mode <模式>`；底层实现仍保留在 `backtest_*.py` 模块中。回测**均按买入信号日触发**（非每日定投），三指数统一走**买卖口径**；仅买入口径已下线。**默认不设买入冷却期**（`BUY_COOLDOWN_ENABLED=false`）：买入频次由各指数硬门槛自然决定，再通过**位置分配**与总投入控制仓位。
 
 | 模式 | 输出 | 区间默认 | 含义 |
 |------|------|----------|------|
-| `buy` | `inception_present.md/html` | 各指数**基日**→最新 | 仅验证买入择时：信号日累加买入并持有，**不含止盈卖出** |
-| `trade` | `trade_inception_present.md/html` | **2015-01-01**→最新 | **智能轮动**（默认）：共享资金池 + 轮动门控卖点；对比仅买入持有 |
+| `trade` | `trade_inception_present.md/html` | **2015-01-01**→最新 | 买卖口径（默认智能轮动：共享资金池 + 轮动门控卖点） |
 | `rotation` | `rotation_compare.md` | **2015-01-01**→最新 | 组合级对比：全持有 / 孤立卖出 / 池内卖出 / 智能轮动 |
 | `regime` | `regime_compare.md` | **2015-01-01**→最新 | 牛熊状态开关对比（`MARKET_REGIME_ENABLED`） |
 | `wfa` | `wfa_rotation.md` | 滚动窗口 | 轮动策略样本外（WFA）稳健性检验 |
 | `optimize` | `optimize_*.md` | 可配置 | 阈值/仓位参数搜索（含 WFA 精修） |
-| `inception` | 上述 buy + trade | — | 一键依次运行 `buy` 与 `trade` |
+| `inception` | 同 `trade` | **2015-01-01**→最新 | 买卖波段全量回测（等同 `--mode trade`） |
 
-对比两套报告时请对齐起始日，例如：
+`backtest.py` 默认模式为 `trade`：
 
 ```bash
-python backtest.py -m buy --start 2015-01-01
+# 买卖波段回测（默认，等价 -m trade / -m inception）
+python backtest.py
 python backtest.py -m trade --start 2015-01-01
-```
-
-对仅买入指数（创业板/美股报告层），在**相同区间、相同金额模式**下，买入次数应与 `buy` 模式一致。
-
-```bash
-# 买入信号全量回测（默认：位置分配 + 年度预算 + 涨跌缩放）
-python backtest.py -m buy
-
-# 列出买入日期 / 统一金额覆盖 / 收益率排名（对比用）/ 禁用涨跌缩放
-python backtest.py -m buy --list-dates
-python backtest.py -m buy --amount 500
-python backtest.py -m buy --ranking
-python backtest.py -m buy --no-tier
-
-# 买卖波段回测（默认智能轮动）
-python backtest.py -m trade
 
 # 组合级轮动对比 / 牛熊开关对比
 python backtest.py -m rotation
 python backtest.py -m regime
-
-# 一键全量（买入 + 买卖波段）
-python backtest.py -m inception
 ```
 
-**指标/阈值调整后**：须跑自基日全量回测并重新生成 HTML，执行 `python backtest.py -m inception`（或分别运行 `buy` 与 `trade` 模式）。输出 `inception_present.html` 与 `trade_inception_present.html`。
+仅买入回测（原 `-m buy`）已移除：直接运行 `python backtest_buy_signals.py` 仅输出下线提示。
+
+**指标/阈值调整后**：须跑买卖口径全量回测并重新生成 HTML，执行 `python backtest.py -m trade`（或 `-m inception`），输出 `trade_inception_present.html`（当日建议面板亦指向此文件）。
 
 各指数触发频率不同，长期持有后仓位会漂移；请按主观目标**手动再平衡**。
-**历史信号频率参考**（`inception_present.md` 默认模式；数据截至最近一次全量回测，阈值变更后须重跑）：
+**历史信号频率参考**（买卖口径 `trade_inception_present.md`；数据截至最近一次全量回测，阈值变更后须重跑）：
 
 | 指数 | 代码 | 样本（交易日） | 买入次 | 占比 | 频率说明 |
 |------|------|---------------:|-------:|-----:|----------|
@@ -395,8 +378,8 @@ python backtest.py -m inception
 
 - **共享资金池**：卖出释放的资金优先用于同日其他指数的买入，减少闲置现金
 - **轮动门控**（`rotation_sell.py`）：仅当**同日有其他指数触发买入**时才允许卖出；估值类卖点还需持仓年化浮盈 **< `ROTATION_MARGINAL_HURDLE_ANN_PCT`**（默认 **10%**），避免「卖早了、钱闲着」
-- **移动止盈**：宽基、美股在回测中启用（创业板代码层仅买，不参与卖点）
-- **估值卖点**：仅美股（Forward PE 分位高等条件）；宽基估值卖点已移除
+- **移动止盈**：宽基、创业板、美股在回测中均启用（分批或回撤）
+- **估值卖点**：创业板（PE/PB 分位、PEG）与美股（Forward PE 分位高等条件）；宽基估值卖点已移除
 
 默认区间自 **2015-01-01**（可用 `--start` 覆盖）。报告同时对比**智能轮动 vs 全持有**的组合收益、XIRR 与资金占用。
 
@@ -406,7 +389,7 @@ python backtest_rotation.py          # 四种组合模式横向对比
 python backtest_regime_compare.py    # 牛熊状态开关对比
 ```
 
-结果写入 `output/backtest/trade_inception_present.md`（含组合收益、买卖次数及卖点日期）。买入信号日可用 `backtest_buy_signals.py --list-dates` 对照。
+结果写入 `output/backtest/trade_inception_present.md`（含组合收益、买卖次数及卖点日期）。
 
 **可选：牛熊市场状态**（`MARKET_REGIME_ENABLED=false`，默认关）：基于创业板/纳指的区间位置与 MA 斜率判定牛/熊/震荡，动态调整买入金额乘数与轮动门槛（见 `market_regime.py`）。
 
@@ -423,8 +406,8 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | `push.py` | **微信推送入口**。调用 `report.generate_reports()` 生成报告，经 Server酱 推送。 |
 | `sync_market_duckdb.py` | **推荐**：统一同步公网缓存、策略数据、StockDB 到 DuckDB。 |
 | `sync_data_cache.py` | 仅预拉/增量更新公网 CSV 缓存（不写入 DuckDB）。 |
-| `backtest.py` | **统一回测入口**（`-m buy/trade/rotation/regime/wfa/optimize/inception`）。 |
-| `backtest_buy_signals.py` 等 | 各模式实现模块（由 `backtest.py` 调用，也可直接运行）。 |
+| `backtest.py` | **统一回测入口**（`-m trade/rotation/regime/wfa/optimize/inception`，默认 trade）。 |
+| `backtest_trade_signals.py` 等 | 各模式实现模块（由 `backtest.py` 调用，也可直接运行）。 |
 
 ### 批处理
 
@@ -502,7 +485,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 |------|------|
 | `logs/` | **仅运行时日志**（如 `push.log`、`sync_cache.log`，由定时任务追加写入）。 |
 | `cache/` | 外部数据本地缓存：A 股（`cache/cn/`）、创业板（`cache/cyb/`）、美股（`cache/us/`），及 `position_allocation.json`（当日买入额度分配），按日刷新。 |
-| `output/backtest/` | 回测输出（`inception_present.md/html`、`trade_inception_present.md/html`）。 |
+| `output/backtest/` | 回测输出（买卖口径 `trade_inception_present.md/html`；`inception_present` 为历史遗留产物，不再生成）。 |
 | `output/_archive/` | 历史回测输出归档（可安全删除后重跑回测再生）。 |
 | `data/parquet/factors/` | 长表因子集市；由 `scripts/factor_builder.py` 构建。 |
 | `data/parquet/factors/snapshots/` | 按交易日分区的横截面因子宽表及同步 manifest。 |
@@ -557,12 +540,13 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 - **环境变量前缀**：`CN_BROAD_{代码}_*`。
 
-### 创业板指（cyb）— 仅买入
+### 创业板指（cyb）— 买入 + 回测卖出
 
 | 方向 | 条件（须全部满足） |
 |------|-------------------|
 | **买入** | 加权 PE 分位 **≤ 46%**；加权 PB 分位 **≤ 38%**；PEG（近 5 年盈利 CAGR，自动滚动，不足时回退 **16.63%**）**≤ 2.2**；距 90 日低点 **≤ 6%**；近1年区间 **≤ 42%**；距 252 日高点回撤 **≥ 18%**；MA 趋势过滤 |
-| **卖出** | 无（`cyb_signal.py` 当前不输出卖点；回测亦仅买） |
+| **卖出（回测）** | 任一触发：①移动止盈——自峰值回撤 **≥ 12%**（最低浮盈 **50%**、最短持有 **120 天**、成本回看 **252 天**），分批 50% 卖 1/3、100% 再卖 1/3；②估值——PE 分位 **≥ 78%**、PB 分位 **≥ 78%**；③PEG(5年) **≥ 3.0**；④组合（PE≥60% 且 PB≥60% 且 PEG≥3.0）。受轮动门控约束；`CYB_SELL_ENABLED=false` 可关闭 |
+| **卖出（实盘报告）** | 无（`report.py` 对创业板仅输出买入/观望；卖出逻辑用于回测口径） |
 
 - **分位窗口**：PE/PB 约 10 年（2520 交易日）。
 - **PEG 增速**：默认启用 `CYB_HISTORICAL_GROWTH_AUTO`：用日度 close/PE 隐含盈利估算滚动 5 年 CAGR（无未来函数）；样本不足时回退 `CYB_HISTORICAL_GROWTH`（16.63%）。自动值不低于 `CYB_HISTORICAL_GROWTH_FLOOR`（默认 **同为 16.63%**），即自动化主要在增速高于兜底时生效，避免盈利低谷把买入信号收没；若希望按真实低增速收紧，可将 floor 调低（如 `0.10`）。可用 `--growth` / `CYB_EXPECTED_GROWTH` 覆盖买入侧机构预期增速。
@@ -585,7 +569,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | 模块 | 指数数 | 买入核心 | 卖出核心（实盘报告 / 回测） |
 |------|--------|----------|------------------------------|
 | 宽基 | 2 | 股债利差分位 + PE/PB 分位 + 价格位置（评分制） | 移动止盈（分批或回撤） / 同左 + 轮动门控 |
-| 创业板 | 1 | PE/PB 分位 + PEG(5年) + 价格位置 | 无 / 无 |
+| 创业板 | 1 | PE/PB 分位 + PEG(5年) + 价格位置 | 无 / 移动止盈(12%) + 估值分位(PE/PB≥78%、PEG≥3.0) + 轮动门控 |
 | 美股 | 2 | Forward PE + PEG + 利率分位 + 价格位置 | 无 / 移动止盈 + 估值（轮动门控） |
 
 ---
@@ -705,14 +689,15 @@ PEG 买入判定：
 
 ### 移动止盈（单指数）
 
-高波动品种（科创50）采用**三档分批**与移动止盈回撤兜底：
+高波动品种（科创50、创业板）采用**分批**与移动止盈回撤兜底：
 
-| 品种 | 浮盈 50% | 浮盈 80% | 剩余仓位 |
-|------|----------|----------|----------|
-| 科创50 | 卖出初始仓位 1/3 | 再卖 1/3（80%） | 最后 1/3 移动止盈（回撤 12.5%） |
+| 品种 | 浮盈 50% | 浮盈 100% / 80% | 剩余仓位 |
+|------|----------|-----------------|----------|
+| 科创50 | 卖出初始仓位 1/3 | 浮盈 80% 再卖 1/3 | 最后 1/3 移动止盈（回撤 12.5%） |
+| 创业板（回测） | 卖出初始仓位 1/3 | 浮盈 100% 再卖 1/3 | 移动止盈回撤 ≥12%（最低浮盈 50%、持有 ≥120 天），另含估值卖点 |
 | 美股（回测） | — | — | 移动止盈回撤 ≥12%（另含估值卖点） |
 
-实现见 `sell_trailing.simulate_trades_trailing`。创业板当前不启用卖点。
+实现见 `sell_trailing.simulate_trades_trailing`。三指数回测均启用卖点；仅买入口径已下线。
 
 ### 智能轮动（组合级，默认开启）
 

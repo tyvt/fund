@@ -231,7 +231,7 @@ def simulate_trades_trailing(
         rebuy_gate = SELL_REBUY_GATE_ENABLED
     first_stage_gain = float(stages[0]["gain_pct"]) if stages else 0.50
 
-    from backtest_metrics import CapitalTracker, merge_capital_metrics_pair
+    from backtest_metrics import CapitalTracker
 
     trade_capital = CapitalTracker()
 
@@ -366,15 +366,10 @@ def simulate_trades_trailing(
     profit = final_value - total_bought
     return_pct = profit / total_bought * 100 if total_bought > 0 else None
 
-    buy_only_value = final_value
-    buy_only_profit = profit
-    buy_only_return_pct = return_pct
-
     trading_days = len(sample)
     trade_metrics = trade_capital.finalize(
         latest_date, final_value, trading_days, profit, total_bought
     )
-    capital = merge_capital_metrics_pair(trade_metrics, trade_metrics)
 
     return {
         "buy_count": buy_count,
@@ -387,10 +382,7 @@ def simulate_trades_trailing(
         "final_value": final_value,
         "profit": profit,
         "return_pct": return_pct,
-        "buy_only_value": buy_only_value,
-        "buy_only_profit": buy_only_profit,
-        "buy_only_return_pct": buy_only_return_pct,
         "buy_dates": buy_dates,
         "sell_dates": sell_dates,
-        **capital,
+        **trade_metrics,
     }

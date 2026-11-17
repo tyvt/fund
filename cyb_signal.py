@@ -14,6 +14,16 @@ from config import (
     CYB_BUY_TREND_MA_DAYS,
     CYB_BUY_TREND_MIN_MA_SLOPE_PCT,
     CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
+    CYB_SELL_COMBO_PB_PERCENTILE_MIN,
+    CYB_SELL_COMBO_PE_PERCENTILE_MIN,
+    CYB_SELL_ENABLED,
+    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+    CYB_SELL_PB_PERCENTILE_MIN,
+    CYB_SELL_PE_PERCENTILE_MIN,
+    CYB_SELL_PEG_HIST_MIN,
+    CYB_SELL_STAGES,
+    CYB_SELL_TRAILING_DRAWDOWN_PCT,
+    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     SELL_REBUY_GATE_ENABLED,
     SELL_REBUY_MAX_GAIN_PCT,
 )
@@ -30,7 +40,7 @@ from price_position import (
     price_position_ok,
     trend_filter_ok,
 )
-from sell_trailing import rebuy_allowed_after_take_profit
+from sell_trailing import rebuy_allowed_after_take_profit, trailing_sell_hit
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
@@ -38,6 +48,7 @@ from signal_format import (
     append_signal_block,
     format_data_meta_line,
     make_criterion,
+    pct_text,
 )
 
 
@@ -46,6 +57,76 @@ def compute_peg(pe, growth_rate):
     if pe is None or growth_rate is None or growth_rate <= 0:
         return None
     return pe / (growth_rate * 100)
+
+
+def _snapshot_first(snapshot, *names):
+    """按优先级取快照字段，兼容实盘与回测两套键名。"""
+    for name in names:
+        value = snapshot.get(name)
+        if value is not None:
+            return value
+    return None
+
+
+def cyb_valuation_sell_decision(snapshot):
+    """创业板专属卖出判定（历史口径）。
+
+    依次判断：移动止盈 → PE/PB 双高分位 → PEG 高且 PE/PB 不低。
+    任一所需估值字段缺失时，该条判定不触发，避免误卖。
+
+    返回 ``(is_sell, sell_reasons)``。
+    """
+    if not CYB_SELL_ENABLED:
+        return False, []
+
+    pe_pct = snapshot.get("pe_percentile")
+    pb_pct = snapshot.get("pb_percentile")
+    peg_historical = _snapshot_first(snapshot, "peg_historical")
+    if peg_historical is None:
+        peg_historical = compute_peg(
+            snapshot.get("pe"), snapshot.get("historical_growth")
+        )
+
+    trail_hit = trailing_sell_hit(
+        close=snapshot.get("close"),
+        cost_basis=_snapshot_first(snapshot, "cost_basis", "recent_signal_buy_avg"),
+        peak_price=_snapshot_first(snapshot, "peak_price", "peak_since_last_buy"),
+        min_unrealized_gain_pct=CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
+        trailing_drawdown_pct=CYB_SELL_TRAILING_DRAWDOWN_PCT,
+        min_hold_days=CYB_SELL_TRAILING_MIN_HOLD_DAYS,
+        days_since_buy=_snapshot_first(
+            snapshot, "days_since_buy", "days_since_last_buy"
+        ),
+    )
+    pe_high = pe_pct is not None and pe_pct >= CYB_SELL_PE_PERCENTILE_MIN
+    pb_high = pb_pct is not None and pb_pct >= CYB_SELL_PB_PERCENTILE_MIN
+    peg_combo = (
+        peg_historical is not None
+        and peg_historical >= CYB_SELL_PEG_HIST_MIN
+        and pe_pct is not None
+        and pb_pct is not None
+        and pe_pct >= CYB_SELL_COMBO_PE_PERCENTILE_MIN
+        and pb_pct >= CYB_SELL_COMBO_PB_PERCENTILE_MIN
+    )
+
+    reasons = []
+    if trail_hit:
+        reasons.append("移动止盈触发")
+    elif pe_high and pb_high:
+        reasons.append(f"PE分位{pct_text(pe_pct)}、PB分位{pct_text(pb_pct)}均偏高")
+    elif peg_combo:
+        reasons.append(f"PEG(5年){peg_historical:.2f}偏高且估值不低")
+    return bool(reasons), reasons
+
+
+def cyb_valuation_sell_fn(snapshot):
+    """回测估值卖点函数：``snapshot(row) -> is_sell``。
+
+    直接传给 ``simulate_trades_trailing(valuation_sell_fn=...)``；
+    row 为面板行字典，缺失字段不会误触发。若需原因请用
+    :func:`cyb_valuation_sell_decision`。
+    """
+    return cyb_valuation_sell_decision(snapshot)[0]
 
 
 def evaluate_cyb_signal(snapshot):
@@ -122,32 +203,23 @@ def evaluate_cyb_signal(snapshot):
         cost_basis=snapshot.get("recent_signal_buy_avg"),
         peak_price=snapshot.get("peak_since_last_buy"),
         max_gain_pct=SELL_REBUY_MAX_GAIN_PCT,
-        first_stage_gain_pct=0.50,
+        first_stage_gain_pct=(
+            float(CYB_SELL_STAGES[0]["gain_pct"]) if CYB_SELL_STAGES else 0.50
+        ),
         gate_enabled=SELL_REBUY_GATE_ENABLED,
     ):
         is_buy = False
 
-    from valuation_trend_sell import active_sell_tiers, pe_sell_bounds
-
-    pe_high, pe_mid, pe_extreme = pe_sell_bounds(snapshot.get("code"))
-    sell_tiers = active_sell_tiers(
-        pe_percentile=snapshot.get("pe_percentile"),
-        spread_percentile=None,
-        below_ma=snapshot.get("below_ma"),
-        ma_slope_pct=snapshot.get("ma_slope_pct"),
-        is_buy=is_buy,
-        pe_high=pe_high,
-        pe_mid=pe_mid,
-        pe_extreme=pe_extreme,
+    is_sell, sell_reasons = cyb_valuation_sell_decision(
+        {**snapshot, "peg_historical": peg_historical}
     )
-    is_sell = bool(sell_tiers)
 
     if is_buy:
         signal_short = SIGNAL_BUY
         summary = "PEG(5年) 可接受，且价格/趋势达标"
     elif is_sell:
         signal_short = SIGNAL_SELL
-        summary = "估值或均线触发减仓: " + "、".join(sell_tiers)
+        summary = "触发波段卖出: " + "；".join(sell_reasons)
     else:
         signal_short = SIGNAL_HOLD
         failed = [c["name"] for c in criteria if not c["passed"]]
