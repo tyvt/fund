@@ -14,14 +14,11 @@ from backtest_trade_signals import (
     _cn_broad_trailing_cfg,
     _cn_broad_valuation_sell_fn,
     _cooldown_buy_fn,
-    _dividend_trailing_cfg,
-    _dividend_valuation_sell_fn,
     _filter_panel,
     _resolve_buy_amount,
     _resolve_trade_amount,
     _us_trailing_cfg,
     _us_valuation_sell_fn,
-    _valuation_tier_fn,
     backtest_all,
 )
 from config import (
@@ -101,7 +98,6 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
         INDICES,
         US_INDEX_KEYS,
         cn_broad_sell_enabled,
-        dividend_sell_enabled,
         us_index_sell_enabled,
     )
     from dividend_data import is_buy_signal_row
@@ -116,15 +112,15 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
-        sell_on = dividend_sell_enabled(code)
+        # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
         yield {
             "code": code,
             "name": item["name"],
             "panel": panel,
             "buy_fn": buy_fn,
-            "has_sell": sell_on,
-            "trailing_cfg": _dividend_trailing_cfg(code) if sell_on else None,
-            "valuation_sell_fn": _dividend_valuation_sell_fn(code) if sell_on else None,
+            "has_sell": False,
+            "trailing_cfg": None,
+            "valuation_sell_fn": None,
             "valuation_price_col": "total_return_close",
             "sim_amt": sim_amt,
         }
@@ -165,10 +161,9 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
             "name": CYB_INDEX["name"],
             "panel": cyb_panel,
             "buy_fn": cyb_buy,
-            "has_sell": True,
-            "trailing_cfg": {
-                "tier_sell_fn": lambda row: _valuation_tier_fn(row, cyb_code)
-            },
+            # 创业板禁卖（仅科创50保留卖出），卖点逻辑已移除。
+            "has_sell": False,
+            "trailing_cfg": None,
             "valuation_sell_fn": None,
             "valuation_price_col": None,
             "sim_amt": sim_amt,

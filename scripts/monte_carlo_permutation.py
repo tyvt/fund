@@ -502,8 +502,6 @@ def _iter_trade_configs(panels, amounts, start_date, end_date):
         _cn_broad_trailing_cfg,
         _cn_broad_valuation_sell_fn,
         _cyb_signal_fns,
-        _dividend_trailing_cfg,
-        _dividend_valuation_sell_fn,
         _resolve_trade_amount,
         _us_trailing_cfg,
         _us_valuation_sell_fn,
@@ -515,7 +513,6 @@ def _iter_trade_configs(panels, amounts, start_date, end_date):
         INDICES,
         US_INDEX_KEYS,
         cn_broad_sell_enabled,
-        dividend_sell_enabled,
         us_index_sell_enabled,
     )
     from dividend_data import is_buy_signal_row
@@ -525,7 +522,7 @@ def _iter_trade_configs(panels, amounts, start_date, end_date):
         panel = panels.dividend_panel(code)
         amt = get_backtest_buy_amount(code, amounts)
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
-        sell_on = dividend_sell_enabled(code)
+        # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
         sim_amt = (
             _resolve_trade_amount(code, amt, amounts, panel, start_date, end_date, buy_fn)
             if amt > 0
@@ -538,9 +535,9 @@ def _iter_trade_configs(panels, amounts, start_date, end_date):
             "buy_fn": buy_fn,
             "buy_mask_fn": None,
             "sell_fn": None,
-            "has_sell": sell_on,
-            "trailing_cfg": _dividend_trailing_cfg(code) if sell_on else None,
-            "valuation_sell_fn": _dividend_valuation_sell_fn(code) if sell_on else None,
+            "has_sell": False,
+            "trailing_cfg": None,
+            "valuation_sell_fn": None,
             "valuation_price_col": "total_return_close",
             "date_col": "date",
             "price_col": "close",

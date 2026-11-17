@@ -23,11 +23,9 @@ from config import (
     CYB_BUY_PEG_HIST_MAX,
     CYB_INDEX,
     cn_broad_sell_enabled,
-    dividend_sell_enabled,
     format_backtest_amount_note,
     get_backtest_buy_amount,
     get_chart_buy_amount,
-    get_dividend_sell_config,
     get_cn_broad_signal_config,
     get_dividend_signal_config,
     get_us_index_sell_config,
@@ -188,26 +186,6 @@ def _cn_broad_trailing_cfg(code):
 
 
 def _cn_broad_valuation_sell_fn(code):
-    return None
-
-
-def _dividend_tier_fn(row):
-    from sell_trailing import row_field
-    from valuation_trend_sell import dividend_sell_tiers
-
-    return dividend_sell_tiers(
-        dividend_yield=row_field(row, "dividend_yield"),
-        spread=row_field(row, "spread"),
-    )
-
-
-def _dividend_trailing_cfg(code):
-    if not dividend_sell_enabled(code):
-        return None
-    return {"tier_sell_fn": _dividend_tier_fn}
-
-
-def _dividend_valuation_sell_fn(code):
     return None
 
 
@@ -740,9 +718,8 @@ def backtest_all(
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
-        sell_on = False if buy_only else dividend_sell_enabled(code)
-        trail_cfg = _dividend_trailing_cfg(code) if sell_on else None
-        val_sell_fn = _dividend_valuation_sell_fn(code) if sell_on else None
+        # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
+        sell_on = False
         stats = _run_index_trades(
             panel,
             code,
@@ -752,8 +729,6 @@ def backtest_all(
             buy_fn,
             None,
             sell_on,
-            trailing_cfg=trail_cfg,
-            valuation_sell_fn=val_sell_fn,
             valuation_price_col="total_return_close",
         )
         if stats:
@@ -983,6 +958,13 @@ def resolve_chart_sell_dates(
 ):
     """按波段/轮动回测模拟结果返回图表用卖出日期。"""
     if _rotation_sell_dates_cache and code in _rotation_sell_dates_cache:
+        # rotation 缓存兜底：禁卖指数不回灌卖出日；未知指数保留缓存原样。
+        us_enabled = any(
+            m["code"] == code and us_index_sell_enabled(k)
+            for k, m in US_INDEX_META.items()
+        )
+        if not cn_broad_sell_enabled(code) and not us_enabled:
+            return []
         return list(_rotation_sell_dates_cache[code])
 
     amt = get_chart_buy_amount(code, amounts)
@@ -1014,25 +996,7 @@ def resolve_chart_sell_dates(
             )
             return stats.get("sell_dates", []) if stats else []
 
-    if dividend_sell_enabled(code):
-        trail_cfg = _dividend_trailing_cfg(code)
-        val_fn = _dividend_valuation_sell_fn(code)
-        if trail_cfg or val_fn:
-            stats = _run_index_trades(
-                panel,
-                code,
-                start_date,
-                end_date,
-                sim_amt,
-                buy_fn,
-                lambda r: False,
-                True,
-                trailing_cfg=trail_cfg,
-                valuation_sell_fn=val_fn,
-                date_col=date_col,
-                valuation_price_col=price_col,
-            )
-            return stats.get("sell_dates", []) if stats else []
+    # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
 
     for key, meta in US_INDEX_META.items():
         if meta["code"] != code or not us_index_sell_enabled(key):
@@ -1169,23 +1133,14 @@ def collect_trade_chart_tables(
         panel = panels.dividend_panel(code)
         buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
 
-        def _div_sell_dates(c=code, p=panel, bf=buy_fn):
-            return resolve_chart_sell_dates(
-                c,
-                p,
-                start_date,
-                end_date,
-                amounts,
-                bf,
-                price_col="total_return_close",
-            )
+        # 红利底仓不设卖点（config/dividend.py:22 口径），图表不附加卖出日。
 
         _maybe_add(
             panel,
             code,
             item["name"],
             buy_fn,
-            sell_dates_fn=_div_sell_dates if dividend_sell_enabled(code) else None,
+            sell_dates_fn=None,
             price_col="total_return_close",
         )
 

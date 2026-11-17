@@ -8,6 +8,7 @@ BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
 # --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
 CN_BROAD_SELL_ENABLED_CODES = frozenset({"000688"})
+# 遗留开关：红利底仓不设卖点（config/dividend.py:22 口径），dividend_sell_enabled 恒 False，本值不再生效。
 DIVIDEND_SELL_ENABLED = _env_bool("DIVIDEND_SELL_ENABLED", True)
 US_INDEX_SELL_ENABLED = _env_bool("US_INDEX_SELL_ENABLED", True)
 # 分批/移动止盈触发后：持仓浮盈须回落至该阈值及以下才允许再买入（默认关，与无人为限频一致）
@@ -48,8 +49,8 @@ def cn_broad_sell_enabled(index_code):
 
 
 def dividend_sell_enabled(index_code=None):
-    """红利指数是否启用卖出逻辑。"""
-    return DIVIDEND_SELL_ENABLED
+    """红利底仓不设卖点（config/dividend.py:22 口径），恒返回 False。"""
+    return False
 
 
 def us_index_sell_enabled(key=None):
@@ -57,7 +58,7 @@ def us_index_sell_enabled(key=None):
     return US_INDEX_SELL_ENABLED
 
 
-# --- 红利指数卖出（仅移动止盈）---
+# --- 红利指数卖出（遗留参数，不再生效：红利底仓不设卖点，卖出逻辑已移除）---
 DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT = _env_float(
     "DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT", 0.10
 )
