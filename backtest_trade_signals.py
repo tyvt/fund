@@ -1328,7 +1328,7 @@ def _format_config_snapshot():
             f"| {item['name']} | {item['code']} | "
             f"≥{cfg['buy_spread_percentile_min']:.0f}% | — | "
             f"≤{cfg['buy_max_above_low_pct'] * 100:.0f}% | "
-            f"≤{cfg['buy_max_year_range_pct'] * 100:.0f}% | 移动止盈 |"
+            f"≤{cfg['buy_max_year_range_pct'] * 100:.0f}% | 估值+均线 |"
         )
     for item in INDICES:
         code = item["code"]
@@ -1337,12 +1337,12 @@ def _format_config_snapshot():
             f"| {item['name']} | {code} | "
             f"≥{buy_cfg['buy_spread_percentile_min']:.0f}% | "
             f"≤{buy_cfg['buy_pe_percentile_max']:.0f}% | "
-            f"≤{buy_cfg['buy_max_above_low_pct'] * 100:.0f}% | — | 移动止盈 |"
+            f"≤{buy_cfg['buy_max_above_low_pct'] * 100:.0f}% | — | 息差+股息率 |"
         )
     lines.extend([
         f"| 创业板指 | {CYB_INDEX['code']} | — | "
         f"PEG≤{CYB_BUY_PEG_HIST_MAX:.1f} | "
-        f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | — | — |",
+        f"≤{CYB_BUY_MAX_ABOVE_LOW_PCT * 100:.0f}% | — | 估值+均线 |",
     ])
     for key in US_INDEX_KEYS:
         meta = US_INDEX_META[key]
@@ -1520,13 +1520,13 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
     end_label = end_date or "最新"
 
     lines = [
-        f"# {start_date} 至 {end_label} 智能轮动回测",
+        f"# {start_date} 至 {end_label} 分指数买卖回测",
         "",
         f"> 生成时间：{generated_at}  ",
         "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
-        f"> 策略：**智能轮动**（共享资金池 + 轮动门控，门槛 {ROTATION_MARGINAL_HURDLE_ANN_PCT:.0f}% 年化）  ",
-        "> 卖出规则：全指数启用移动止盈与估值卖点（见 `config.py` 各指数 SELL_* 参数）  ",
+        "> 策略：**分指数独立买卖**（不共享资金池，不做只买不卖对照）  ",
+        "> 卖出规则：宽基/创业板为估值+均线；红利为息差+股息率；美股仍为移动止盈+估值  ",
         "> 买入触发：与 `backtest_buy_signals.py` 相同（信号日买入；默认无冷却期）；非每日定投  ",
         "> 区间默认自 2015-01-01；买入信号回测默认自各指数基日，对比时请对齐起始日",
         "",
@@ -1541,7 +1541,7 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
         "| --- | --- | --- | ---: | ---: | ---: | --- |",
     ]
     for r in results:
-        strategy = "智能轮动" if r.has_sell else "仅买入"
+        strategy = "买卖" if r.has_sell else "仅买入"
         lines.append(
             f"| {r.name} | {r.code} | {strategy} | {r.buy_count} | "
             f"{r.sell_count} | {_md_money(r.total_bought)} | {r.note} |"
@@ -1770,7 +1770,7 @@ def main(argv=None):
             filename="trade_inception_present.md",
             write_html=not args.no_html,
             daily_tables=daily_tables,
-            title="自基日全量智能轮动回测",
+            title="自基日分指数买卖回测",
             start_date=args.start,
             end_date=args.end,
             subtitle=format_backtest_amount_note(amounts),
