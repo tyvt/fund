@@ -1,19 +1,5 @@
 """指数元数据与筛选。"""
 
-INDICES = [
-    {"code": "H30269", "name": "中证红利低波动"},
-]
-
-# 红利价格指数 → 中证全收益指数（分红再投资，同源 csindex-home/perf API）
-DIVIDEND_TOTAL_RETURN_INDEX = {
-    "H30269": "H20269",
-}
-
-
-def get_dividend_total_return_code(index_code):
-    """红利价格指数对应的全收益指数代码（含分红再投资）。"""
-    return DIVIDEND_TOTAL_RETURN_INDEX.get(index_code)
-
 KC50_INDEX = {"code": "000688", "name": "科创50"}
 CYB_INDEX = {"code": "399006", "name": "创业板指"}
 NDX_INDEX = {"code": "NDX", "name": "纳斯达克100"}
@@ -43,18 +29,3 @@ BOND_YIELD_PARAMS = {
     "pageNo": "1",
     "pageNum": "1",
 }
-
-def select_indices(codes=None):
-    """按代码筛选指数；未指定时返回全部。"""
-    if not codes:
-        return list(INDICES)
-
-    known = {item["code"]: item for item in INDICES}
-    selected = []
-    for code in codes:
-        if code not in known:
-            available = ", ".join(known)
-            raise ValueError(f"未知指数代码: {code}，可选: {available}")
-        if known[code] not in selected:
-            selected.append(known[code])
-    return selected

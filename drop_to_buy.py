@@ -8,8 +8,6 @@ from config import (
     CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
     CYB_PERCENTILE_MIN_DAYS,
     CYB_PERCENTILE_WINDOW,
-    DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
-    DIVIDEND_SPREAD_PERCENTILE_WINDOW,
     get_cn_broad_signal_config,
 )
 from market_data import compute_percentile
@@ -32,44 +30,6 @@ def rolling_percentile(series, idx, value, window, min_days):
     if hist is None or hist.empty:
         return None
     return compute_percentile(hist, value)
-
-
-def find_min_drop_to_buy(is_buy_at_drop, max_drop=0.35, precision=0.002):
-    """二分搜索最小跌幅 drop∈[0,1)，使买入条件成立。"""
-    try:
-        if is_buy_at_drop(0.0):
-            return 0.0
-        if not is_buy_at_drop(max_drop):
-            return None
-        lo, hi = 0.0, max_drop
-        while hi - lo > precision:
-            mid = (lo + hi) / 2.0
-            if is_buy_at_drop(mid):
-                hi = mid
-            else:
-                lo = mid
-        return hi
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
-
-
-def find_min_rise_breaks_buy(is_buy_at_rise, max_rise=0.35, precision=0.002):
-    """昨日已满足买入时，二分搜索当日最小涨幅使买入不再成立。"""
-    try:
-        if not is_buy_at_rise(0.0):
-            return None
-        if is_buy_at_rise(max_rise):
-            return None
-        lo, hi = 0.0, max_rise
-        while hi - lo > precision:
-            mid = (lo + hi) / 2.0
-            if is_buy_at_rise(mid):
-                lo = mid
-            else:
-                hi = mid
-        return hi
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
 
 
 def find_min_drop_breaks_condition(
@@ -174,81 +134,6 @@ def format_sell_trigger_line(
     elif not price_floors:
         parts.append("估值仍偏高，大跌后仍可能维持卖出信号")
     return "；".join(parts)
-
-
-def _estimate_buy_trigger(check_factor, max_move=0.35, precision=0.002):
-    """返回 (再跌多少可买入, 已买入时当日涨多少将失效)。"""
-    drop = find_min_drop_to_buy(
-        lambda d: check_factor(1.0 - d), max_drop=max_move, precision=precision
-    )
-    rise_breaks = find_min_rise_breaks_buy(
-        lambda r: check_factor(1.0 + r), max_rise=max_move, precision=precision
-    )
-    return drop, rise_breaks
-
-
-def dividend_drop_to_buy(index_code, bond_history=None, panel=None):
-    from config import get_dividend_signal_config
-    from dividend_data import build_signal_history, is_buy_signal
-
-    if panel is None:
-        panel = build_signal_history(index_code, bond_history=bond_history)
-    if panel is None or panel.empty:
-        return None
-
-    idx = len(panel) - 1
-    row = panel.iloc[-1]
-    if row["pe"] is None or row["dividend_yield"] is None or row["bond_yield"] is None:
-        return None
-
-    cfg = get_dividend_signal_config(index_code)
-    lookback = cfg.get("buy_low_lookback_days", 60)
-    high_lookback = cfg.get("buy_high_lookback_days", 252)
-    max_above_low = cfg.get("buy_max_above_low_pct")
-    min_drawdown = cfg.get("buy_min_drawdown_from_high_pct")
-
-    def check_factor(factor):
-        if factor <= 0:
-            return False
-        pe = row["pe"] * factor
-        div = row["dividend_yield"] / factor
-        spread = div - row["bond_yield"]
-        pe_pct = rolling_percentile(
-            panel["pe"],
-            idx,
-            pe,
-            DIVIDEND_SPREAD_PERCENTILE_WINDOW,
-            DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
-        )
-        spread_pct = rolling_percentile(
-            panel["spread"],
-            idx,
-            spread,
-            DIVIDEND_SPREAD_PERCENTILE_WINDOW,
-            DIVIDEND_SPREAD_PERCENTILE_MIN_DAYS,
-        )
-        pct_above_low = None
-        pct_below_high = None
-        if max_above_low is not None or min_drawdown is not None:
-            new_close = row["close"] * factor
-            if max_above_low is not None:
-                pct_above_low = pct_above_low_for_simulated_close(
-                    panel, idx, new_close, lookback
-                )
-            if min_drawdown is not None:
-                pct_below_high = pct_below_high_for_simulated_close(
-                    panel, idx, new_close, high_lookback
-                )
-        return is_buy_signal(
-            spread,
-            spread_pct,
-            pe_pct,
-            index_code,
-            pct_above_low=pct_above_low,
-            pct_below_high=pct_below_high,
-        )
-
-    return _estimate_buy_trigger(check_factor)
 
 
 def cn_broad_drop_to_buy(snapshot):

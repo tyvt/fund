@@ -82,7 +82,7 @@ def _plot(frame: pd.DataFrame, output: Path) -> None:
     sharpe.rename(columns=labels).plot(kind="bar", ax=axes[1], color=colors, legend=False)
     axes[1].set_title("风险调整后收益")
     axes[1].grid(axis="y", alpha=0.25)
-    fig.suptitle("红利低波策略三阶段对比")
+    fig.suptitle("低波策略三阶段对比")
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=180)

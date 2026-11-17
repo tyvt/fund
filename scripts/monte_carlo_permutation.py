@@ -510,43 +510,10 @@ def _iter_trade_configs(panels, amounts, start_date, end_date):
     from backtest_buy_signals import CN_BROAD_BACKTEST_INDICES, US_INDEX_META, _us_buy_snapshot
     from config import (
         CYB_INDEX,
-        INDICES,
         US_INDEX_KEYS,
         cn_broad_sell_enabled,
         us_index_sell_enabled,
     )
-    from dividend_data import is_buy_signal_row
-
-    for item in INDICES:
-        code = item["code"]
-        panel = panels.dividend_panel(code)
-        amt = get_backtest_buy_amount(code, amounts)
-        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
-        # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
-        sim_amt = (
-            _resolve_trade_amount(code, amt, amounts, panel, start_date, end_date, buy_fn)
-            if amt > 0
-            else 0
-        )
-        yield {
-            "code": code,
-            "name": item["name"],
-            "panel": panel,
-            "buy_fn": buy_fn,
-            "buy_mask_fn": None,
-            "sell_fn": None,
-            "has_sell": False,
-            "trailing_cfg": None,
-            "valuation_sell_fn": None,
-            "valuation_price_col": "total_return_close",
-            "date_col": "date",
-            "price_col": "close",
-            "start_date": start_date,
-            "end_date": end_date,
-            "sim_amt": sim_amt,
-            "amount_raw": amt,
-            "note": "日频，每交易日评估",
-        }
 
     for item in CN_BROAD_BACKTEST_INDICES:
         code = item["code"]

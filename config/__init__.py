@@ -5,7 +5,6 @@ from config.env import *  # noqa: F403
 from config.indices import *  # noqa: F403
 from config.price_position import *  # noqa: F403
 from config.buy_amount import *  # noqa: F403
-from config.dividend import *  # noqa: F403
 from config.cn_broad import *  # noqa: F403
 from config.cyb import *  # noqa: F403
 from config.us import *  # noqa: F403

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from datetime import date, timedelta
+from datetime import date
 from io import StringIO
 
 import akshare as ak
@@ -19,22 +19,13 @@ from data_sources import (
     MULTPL_SP500_PE_TABLE_URL,
     YARDENI_FORWARD_PE_CHART_URL,
 )
-from market_data import get_gov_bond_yield_history, get_index_perf_history
+from market_data import get_gov_bond_yield_history
 
 BARRONS_INDEX_LABELS = {
     "spx": "S&P 500 Index",
     "ndx": "NASDAQ 100 Index",
 }
 BARRONS_FETCH_TIMEOUT = 60
-
-# H30269 无第三方指数 K 线，用跟踪红利/低波 ETF 做日收益相关性抽检
-DIVIDEND_INDEX_ETF_PROXIES = {
-    "H30269": [
-        ("560150", "sh560150", "红利低波ETF（跟踪中证红利低波相关指数，近期相关性最高）"),
-        ("512890", "sh512890", "华泰柏瑞中证红利ETF（跟踪中证红利，非 H30269 本指数）"),
-        ("515450", "sh515450", "南方红利低波50ETF（低波红利近似）"),
-    ],
-}
 
 
 def bond_history_coverage(panel_dates: pd.Series, bond_history=None) -> dict:
@@ -55,80 +46,6 @@ def bond_history_coverage(panel_dates: pd.Series, bond_history=None) -> dict:
         "bond_end": str(pd.to_datetime(bond["date"]).max().date()),
         "bond_rows": len(bond),
     }
-
-
-def _fetch_etf_close_sina(symbol: str, start: str, end: str) -> pd.DataFrame:
-    df = ak.fund_etf_hist_sina(symbol=symbol)
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["date", "close"])
-    out = df.rename(columns={"date": "date", "close": "close"}).copy()
-    out["date"] = pd.to_datetime(out["date"])
-    out["close"] = pd.to_numeric(out["close"], errors="coerce")
-    out = out.dropna(subset=["date", "close"])
-    mask = (out["date"] >= pd.Timestamp(start)) & (out["date"] <= pd.Timestamp(end))
-    return out.loc[mask].sort_values("date").reset_index(drop=True)
-
-
-def check_index_etf_return_correlation(
-    index_code: str,
-    *,
-    years: int = 5,
-    etf_proxies: list[tuple[str, str, str]] | None = None,
-) -> list[dict]:
-    """指数日收益与跟踪 ETF 日收益的 Pearson 相关系数。"""
-    end = date.today()
-    start = (end - timedelta(days=365 * years)).strftime("%Y-%m-%d")
-    end_s = end.strftime("%Y-%m-%d")
-
-    idx = get_index_perf_history(index_code, start_date=start.replace("-", ""), end_date=end_s.replace("-", ""))
-    if idx is None or idx.empty:
-        return [{"index": index_code, "status": "指数行情缺失"}]
-
-    idx = idx[["date", "close"]].copy()
-    idx["date"] = pd.to_datetime(idx["date"])
-    idx["ret"] = idx["close"].pct_change()
-
-    proxies = etf_proxies or DIVIDEND_INDEX_ETF_PROXIES.get(index_code, [])
-    results = []
-    for etf_code, sina_symbol, note in proxies:
-        etf = _fetch_etf_close_sina(sina_symbol, start, end_s)
-        if etf.empty:
-            results.append(
-                {
-                    "index": index_code,
-                    "etf": etf_code,
-                    "note": note,
-                    "status": "ETF 数据缺失",
-                }
-            )
-            continue
-        etf["ret"] = etf["close"].pct_change()
-        merged = idx.merge(etf[["date", "ret"]], on="date", how="inner", suffixes=("_idx", "_etf"))
-        merged = merged.dropna(subset=["ret_idx", "ret_etf"])
-        if len(merged) < 60:
-            results.append(
-                {
-                    "index": index_code,
-                    "etf": etf_code,
-                    "note": note,
-                    "overlap_days": len(merged),
-                    "status": "样本不足",
-                }
-            )
-            continue
-        corr = float(merged["ret_idx"].corr(merged["ret_etf"]))
-        status = "高度相关" if corr >= 0.95 else "中度相关" if corr >= 0.85 else "弱相关"
-        results.append(
-            {
-                "index": index_code,
-                "etf": etf_code,
-                "note": note,
-                "overlap_days": len(merged),
-                "return_corr": round(corr, 4),
-                "status": status,
-            }
-        )
-    return results
 
 
 def _flatten_column_name(col) -> str:

@@ -95,35 +95,10 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
     )
     from config import (
         CYB_INDEX,
-        INDICES,
         US_INDEX_KEYS,
         cn_broad_sell_enabled,
         us_index_sell_enabled,
     )
-    from dividend_data import is_buy_signal_row
-
-    for item in INDICES:
-        code = item["code"]
-        panel = panels.dividend_panel(code)
-        amt = get_backtest_buy_amount(code, amounts)
-        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
-        if amt <= 0:
-            continue
-        sim_amt = _resolve_trade_amount(
-            code, amt, amounts, panel, start_date, end_date, buy_fn
-        )
-        # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
-        yield {
-            "code": code,
-            "name": item["name"],
-            "panel": panel,
-            "buy_fn": buy_fn,
-            "has_sell": False,
-            "trailing_cfg": None,
-            "valuation_sell_fn": None,
-            "valuation_price_col": "total_return_close",
-            "sim_amt": sim_amt,
-        }
 
     for item in CN_BROAD_BACKTEST_INDICES:
         code = item["code"]

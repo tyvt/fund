@@ -7,7 +7,7 @@ set "VENV_DIR=%CD%\rqalpha_env"
 set "PY=%VENV_DIR%\Scripts\python.exe"
 set "PIP=%VENV_DIR%\Scripts\pip.exe"
 
-echo === RQAlpha 环境搭建（红利低波迁移 Step 1）===
+echo === RQAlpha 环境搭建 ===
 echo 项目目录: %CD%
 echo.
 

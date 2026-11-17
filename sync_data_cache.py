@@ -91,10 +91,8 @@ def sync_cn_perf(force: bool = False, failures: list[str] | None = None) -> list
 def sync_cn_indicators(
     force: bool = False, failures: list[str] | None = None
 ) -> list[str]:
-    from config import DIVIDEND_TOTAL_RETURN_INDEX
-
     failures = failures if failures is not None else []
-    skip = frozenset(DIVIDEND_TOTAL_RETURN_INDEX.values())
+    skip: frozenset = frozenset()
     lines = []
     for code in iter_all_csindex_perf_codes():
         if code in skip:

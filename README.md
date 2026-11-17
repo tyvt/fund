@@ -1,19 +1,18 @@
 # 指数定投策略
 
-本项目基于估值分位、股债利差、价格位置等指标，对 **6 只指数**（红利 1 + 宽基 2 + 创业板 1 + 美股 2）生成买入/观望/卖出信号，支持本地报告、微信定时推送和回测。这里的“定投”是估值与价格条件驱动的分批投入，不是固定日期无条件扣款。
+本项目基于估值分位、股债利差、价格位置等指标，对 **4 只指数**（宽基 2 + 创业板 1 + 美股 1）生成买入/观望/卖出信号，支持本地报告、微信定时推送和回测。这里的“定投”是估值与价格条件驱动的分批投入，不是固定日期无条件扣款。
 
-## 覆盖指数（6 只）
+## 覆盖指数（3 只）
 
 | 模块 | 代码 | 名称 | 策略类型（实盘报告） |
 |------|------|------|----------|
-| 红利 | H30269 | 中证红利低波动 | 仅买入 |
 | 宽基 | 000688 | 科创50 | 买入 + 分批移动止盈 |
 | 创业板 | 399006 | 创业板指 | 仅买入 |
 | 美股 | NDX | 纳斯达克100 | 仅买入 |
 
 报告末尾附带**跨指数信号对比表**（按强度排序），便于横向比较。
 
-**实盘报告 vs 回测**：`report.py` 仅输出买入/观望（宽基另含移动止盈卖点）；`backtest_trade_signals.py` 默认跑**智能轮动**（共享资金池 + 轮动门控），红利/宽基/美股在回测中可触发移动止盈（美股另含估值卖点），创业板始终仅买。详见下文「买卖波段回测」。
+**实盘报告 vs 回测**：`report.py` 仅输出买入/观望（宽基另含移动止盈卖点）；`backtest_trade_signals.py` 默认跑**智能轮动**（共享资金池 + 轮动门控），宽基/美股在回测中可触发移动止盈（美股另含估值卖点），创业板始终仅买。详见下文「买卖波段回测」。
 
 ## 环境要求
 
@@ -153,17 +152,13 @@ display(nav.tail(), trades.tail(), holdings)
 本地输出，不推送微信。
 
 ```bash
-# 全部模块（红利 + A股宽基 + 创业板 + 美股）
+# 全部模块（A股宽基 + 创业板 + 美股）
 python report.py
 
 # 指定模块
-python report.py -m dividend
 python report.py -m cn_broad
 python report.py -m cyb
 python report.py -m us
-
-# 红利模块：只看某只指数
-python report.py -m dividend --index H30269
 
 # 创业板：覆盖预期增速
 python report.py -m cyb --growth 0.35
@@ -174,8 +169,7 @@ python report.py -m us --us-growth 0.15
 
 | 参数 | 说明 |
 |------|------|
-| `-m, --module` | 模块：`dividend` / `cn_broad` / `cyb` / `us` / `all`（可多次指定，默认 all） |
-| `--index` | 红利模块：指数代码，可多次指定 |
+| `-m, --module` | 模块：`cn_broad` / `cyb` / `us` / `all`（可多次指定，默认 all） |
 | `--growth` | 创业板：机构预期净利润增速（小数） |
 | `--us-growth` | 美股：预期盈利增速（小数，纳指） |
 
@@ -185,7 +179,6 @@ python report.py -m us --us-growth 0.15
 
 ```bash
 python push.py
-python push.py -m dividend
 python push.py --quiet
 ```
 
@@ -292,7 +285,7 @@ python backtest.py -m buy --start 2015-01-01
 python backtest.py -m trade --start 2015-01-01
 ```
 
-对仅买入指数（红利/创业板/美股报告层），在**相同区间、相同金额模式**下，买入次数应与 `buy` 模式一致。
+对仅买入指数（创业板/美股报告层），在**相同区间、相同金额模式**下，买入次数应与 `buy` 模式一致。
 
 ```bash
 # 买入信号全量回测（默认：位置分配 + 年度预算 + 涨跌缩放）
@@ -322,7 +315,6 @@ python backtest.py -m inception
 
 | 指数 | 代码 | 样本（交易日） | 买入次 | 占比 | 频率说明 |
 |------|------|---------------:|-------:|-----:|----------|
-| 红利 | H30269 | 3,084 | 379 | 12.3% | 约每 8 个交易日 1 次 |
 | 科创50 | 000688 | 1,467 | 212 | 14.5% | 约每 7 个交易日 1 次 |
 | 创业板 | 399006 | 3,913 | 303 | 7.7% | 约每 13 个交易日 1 次 |
 | 纳指100 | NDX | 4,175 | 614 | 14.7% | 约每 7 个交易日 1 次 |
@@ -367,7 +359,6 @@ python backtest.py -m inception
 |------|------|--------:|
 | 000688 | 科创50 | **97** |
 | 399006 | 创业板指 | **83** |
-| H30269 | 红利低波 | **61** |
 | NDX | 纳指100 | **29** |
 
 金额随区间位置、就绪度与剩余额度每日变化；上表为最近一次全量回测的参考值。美股 QDII 若日限约 100 元，单日两市合计可能触及限购；回测按信号全额计入，实盘请自行控制。
@@ -396,7 +387,7 @@ python backtest.py -m inception
 | `ROTATION_MARGINAL_HURDLE_ANN_PCT` | `10` | 估值卖出门槛：持仓年化浮盈低于此值（%）才卖 |
 | `MARKET_REGIME_ENABLED` | `false` | 牛熊市场状态调节买入/轮动门槛 |
 | `MARKET_REGIME_PROXY_CODES` | `399006,NDX` | 牛熊判定代理指数 |
-| `DIVIDEND_SELL_ENABLED` / `US_INDEX_SELL_ENABLED` | `true` | 回测中红利/美股是否启用卖点 |
+| `US_INDEX_SELL_ENABLED` | `true` | 回测中美股是否启用卖点 |
 
 ### 买卖波段回测（智能轮动）
 
@@ -404,7 +395,7 @@ python backtest.py -m inception
 
 - **共享资金池**：卖出释放的资金优先用于同日其他指数的买入，减少闲置现金
 - **轮动门控**（`rotation_sell.py`）：仅当**同日有其他指数触发买入**时才允许卖出；估值类卖点还需持仓年化浮盈 **< `ROTATION_MARGINAL_HURDLE_ANN_PCT`**（默认 **10%**），避免「卖早了、钱闲着」
-- **移动止盈**：宽基、红利、美股在回测中启用（创业板代码层仅买，不参与卖点）
+- **移动止盈**：宽基、美股在回测中启用（创业板代码层仅买，不参与卖点）
 - **估值卖点**：仅美股（Forward PE 分位高等条件）；宽基估值卖点已移除
 
 默认区间自 **2015-01-01**（可用 `--start` 覆盖）。报告同时对比**智能轮动 vs 全持有**的组合收益、XIRR 与资金占用。
@@ -468,14 +459,12 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 | 模块 | 数据层 | 信号/报告层 | 覆盖指数 |
 |------|--------|-------------|----------|
-| 红利 | `dividend_data.py` | `core.py` | H30269 |
 | A股宽基 | `cn_broad_data.py` | `cn_broad_signal.py` | 000688 |
 | 创业板 | `cyb_data.py` | `cyb_signal.py` | 399006 |
 | 美股 | `us_index_data.py` | `us_index_signal.py` | NDX |
 
 - **数据层**：拉取行情/估值、构建历史面板、计算分位。
 - **信号层**：按 `config/` 配置包中的阈值判定买入/观望/卖出，格式化报告段落。
-- **`core.py`**：红利模块的信号与报告逻辑（`generate_report()` 供 `report.py` 调用）。
 
 ### 共享库
 
@@ -540,9 +529,9 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 各指数 `buy_max_year_range_pct` 示例：科创50 **38%**、创业板 **42%**、纳指100 **68%**。
 
-**分指数独立变量**：宽基通过 `get_cn_broad_signal_config(code)`（`CN_BROAD_{代码}_*` 环境变量）；红利 `DIVIDEND_{代码}_*`；创业板/纳指为 `CYB_*` / `NDX_*`（含 `BUY_TREND_*`、`BUY_MID_RANGE_*` 等）。默认值见 `config/cn_broad.py` 中 `_CN_BROAD_PER_INDEX_DEFAULTS` 与 `config/` 下各模块常量。
+**分指数独立变量**：宽基通过 `get_cn_broad_signal_config(code)`（`CN_BROAD_{代码}_*` 环境变量）；创业板/纳指为 `CYB_*` / `NDX_*`（含 `BUY_TREND_*`、`BUY_MID_RANGE_*` 等）。默认值见 `config/cn_broad.py` 中 `_CN_BROAD_PER_INDEX_DEFAULTS` 与 `config/` 下各模块常量。
 
-上述指标已接入：`report.py` 报告输出、`backtest_buy_signals.py` / `backtest_trade_signals.py` 回测、`drop_to_buy.py` 盘中推演。红利模块不使用 MA 趋势过滤（策略为股息率+利差，距低点口径为 90 日）。
+上述指标已接入：`report.py` 报告输出、`backtest_buy_signals.py` / `backtest_trade_signals.py` 回测、`drop_to_buy.py` 盘中推演。
 
 趋势相关环境变量（见 `push.example.env`）：`BUY_TREND_MA_DAYS`、`BUY_TREND_SLOPE_LOOKBACK_DAYS`、`BUY_TREND_MIN_MA_SLOPE_PCT`、`BUY_TREND_DOWNTREND_MAX_RANGE_PCT`。
 
@@ -551,19 +540,6 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 ## 模块与策略概要
 
 各指数完整买卖标准如下（默认阈值见 `config/`，可通过 `push.env` 覆盖）。**价格位置**指近 252 交易日（约 1 年）的区间位置、距低点涨幅、距高点回撤及 MA200 趋势过滤，详见上文「价格位置指标」。
-
-### 红利（dividend）— 仅买入，无卖出
-
-| 指数 | 代码 | 买入条件（须全部满足） |
-|------|------|------------------------|
-| 中证红利低波动 | H30269 | 利差 **> 2.8%**；利差分位 **≥ 40%**；PE 分位 **≤ 74%**；距 90 日低点 **≤ 6%**；近1年区间 **≤ 58%**；高点回撤 **≥ 10%**；股息可持续性（PE **≥ 5**；252 日股息率飙升 **≤ 1.5×**，近1年区间 **≤ 10%** 时豁免飙升检查） |
-
-- **分位窗口**：利差分位约 3 年（756 交易日）；PE 分位同窗口。
-- **近1年低位放宽**：区间位置 ≤ 20% 时，利差分位门槛 −10、PE 分位上限 +12，绝对利差门槛 −1.2%；区间位置 ≤ 5% 时可豁免绝对利差硬门槛；分位样本不足时允许仅凭价格位置买入。
-- **卖出（实盘报告）**：无（长期持有型）。
-- **卖出（回测）**：可选移动止盈（浮盈 **≥ 40%** 后自峰值回撤 **≥ 10%**），受轮动门控约束；可用 `DIVIDEND_SELL_ENABLED=false` 关闭。
-- **股息可持续性**：拦截「股价暴跌推高股息率」（近 252 日股息率飙升 > 1.5×）与极端低 PE（< 5）。近1年区间 **≤ 10%**（`DIVIDEND_YIELD_SPIKE_WAIVE_RANGE_PCT`）时**豁免**股息率飙升检查（仍保留 PE ≥ 5），以免系统性崩盘黄金坑拒买；可用 `DIVIDEND_SUSTAINABILITY_ENABLED=false` 关闭整项。
-- **回测收益**：使用中证全收益指数（H30269→H20269）估算，含分红再投资。
 
 ### A 股宽基（cn_broad）— 移动止盈
 
@@ -608,7 +584,6 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 | 模块 | 指数数 | 买入核心 | 卖出核心（实盘报告 / 回测） |
 |------|--------|----------|------------------------------|
-| 红利 | 1 | 股息利差 + 利差/PE 分位 + 价格位置 | 无 / 移动止盈（轮动门控） |
 | 宽基 | 2 | 股债利差分位 + PE/PB 分位 + 价格位置（评分制） | 移动止盈（分批或回撤） / 同左 + 轮动门控 |
 | 创业板 | 1 | PE/PB 分位 + PEG(5年) + 价格位置 | 无 / 无 |
 | 美股 | 2 | Forward PE + PEG + 利率分位 + 价格位置 | 无 / 移动止盈 + 估值（轮动门控） |
@@ -620,11 +595,10 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 ```
 投资推送/
 ├── report.py / push.py / sync_market_duckdb.py / sync_data_cache.py
-├── core.py / dividend_data.py
 ├── cn_broad_data.py / cn_broad_signal.py
 ├── cyb_data.py / cyb_signal.py
 ├── us_index_data.py / us_index_signal.py
-├── config/                # 配置包（indices / dividend / buy_amount / …）
+├── config/                # 配置包（indices / buy_amount / …）
 ├── backtest.py            # 统一回测入口
 ├── backtest_buy_signals.py / backtest_trade_signals.py / …
 ├── market_data.py / realtime_quote.py / live_snapshot.py
@@ -736,7 +710,6 @@ PEG 买入判定：
 | 品种 | 浮盈 50% | 浮盈 80% | 剩余仓位 |
 |------|----------|----------|----------|
 | 科创50 | 卖出初始仓位 1/3 | 再卖 1/3（80%） | 最后 1/3 移动止盈（回撤 12.5%） |
-| 红利（回测） | — | — | 浮盈 ≥40% 后回撤 ≥10% |
 | 美股（回测） | — | — | 移动止盈回撤 ≥12%（另含估值卖点） |
 
 实现见 `sell_trailing.simulate_trades_trailing`。创业板当前不启用卖点。
@@ -773,9 +746,7 @@ PEG 买入判定：
 |------|------|
 | **仓位漂移** | 各指数触发频率不同，长期持仓市值权重会偏离主观目标；建议定期检视并手动再平衡。美股实盘受 QDII 日限约束，实际资金流入未必与信号次数成正比。 |
 | **位置分配波动** | 买入金额随区间位置与就绪度每日变化，同一指数不同信号日的建议金额可能差异较大；属设计行为，非 bug。 |
-| **红利仓位难买满** | 红利抗跌、牛市滞涨，买入信号相对稀少，「压舱石」可能长期缺位，账户波动高于名义 50% 权重预期。 |
 | **分批止盈代价** | 50%/80% 分批卖出在超级大牛市中会踏空部分涨幅；这是用利润落袋换取震荡市保护的**策略代价**，非缺陷。 |
-| **红利高股息陷阱** | 股息率飙升有时源于股价暴跌或周期顶部。已有 PE 下限 + 股息率飙升过滤；极端低位可豁免飙升检查以免错过黄金坑。 |
 | **小额申购摩擦** | 基准单次偏低时，场外 C 类份额频繁申赎可能触发短期赎回费；建议合并资金、降低交易频率。 |
 | **QDII 限购** | 纳指信号频繁，但限购使实际流入受限；回测按信号全额买入、**未模拟日限购**，美股收益可能偏乐观。 |
 | **美股估值滞后** | Forward PE 月度数据可能滞后 1–2 个月；近1年区间与 MA 趋势硬过滤可兜底极速拉升时的「假便宜」。 |

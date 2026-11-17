@@ -104,7 +104,7 @@ class ReportGenerator:
             holdings["weight"] = holdings["weight"].map(lambda x: f"{x:.2%}")
         repro = self.results.metadata.get("reproducibility", {})
         lines = [
-            "# VectorBT 红利低波回测报告",
+            "# VectorBT 回测报告",
             "",
             f"- 回测区间：{nav.index.min().date()} ～ {nav.index.max().date()}",
             f"- 初始资金：{self.results.initial_capital:,.2f}",
@@ -155,9 +155,9 @@ class ReportGenerator:
         params_json = html.escape(json.dumps(self.params, ensure_ascii=False, indent=2, default=_json_default))
         return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VectorBT 红利低波回测报告</title>
+<title>VectorBT 回测报告</title>
 <style>body{{font-family:Segoe UI,Microsoft YaHei,sans-serif;max-width:1180px;margin:32px auto;padding:0 22px;color:#1f2937}}h1,h2{{color:#0f3d56}}.cards{{display:flex;gap:16px;flex-wrap:wrap}}.card{{background:#f3f7f9;border-radius:10px;padding:14px 20px;min-width:180px}}table{{border-collapse:collapse;width:100%;margin:12px 0 26px}}th,td{{padding:8px 10px;border-bottom:1px solid #dfe7eb;text-align:right}}th:first-child,td:first-child{{text-align:left}}pre{{background:#f6f8fa;padding:16px;overflow:auto;border-radius:8px}}</style></head>
-<body><h1>VectorBT 红利低波回测报告</h1>
+<body><h1>VectorBT 回测报告</h1>
 <div class="cards"><div class="card">区间<br><strong>{nav.index.min().date()} ～ {nav.index.max().date()}</strong></div><div class="card">期末资产<br><strong>{float(nav.iloc[-1]):,.2f}</strong></div><div class="card">成交笔数<br><strong>{len(self.results.trades)}</strong></div></div>
 <h2>净值与回撤</h2>{self._chart_html()}<h2>核心指标</h2>{metrics}<h2>期末持仓</h2>{holding_html}<h2>使用参数</h2><pre>{params_json}</pre></body></html>"""
 

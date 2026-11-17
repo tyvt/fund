@@ -61,33 +61,6 @@ def _cn_broad(code: str, key: str, suffix: str, default: float, **kw) -> SignalP
     )
 
 
-def _dividend(code: str, key: str, suffix: str, default: float, **kw) -> SignalParam:
-    env_name = f"DIVIDEND_{code}_{suffix}"
-    label = kw.pop("label", f"{code} {key}")
-    return SignalParam(
-        id=f"dividend.{code}.{key}",
-        label=label,
-        index=code,
-        apply=lambda v, n=env_name: _env_patch((n, v)),
-        default=default,
-        **kw,
-    )
-
-
-def _div_sell(code: str, key: str, suffix: str, default: float, **kw) -> SignalParam:
-    env_name = f"DIVIDEND_{code}_{suffix}"
-    label = kw.pop("label", f"{code} 卖 {key}")
-    return SignalParam(
-        id=f"dividend_sell.{code}.{key}",
-        label=label,
-        index=code,
-        side="sell",
-        apply=lambda v, n=env_name: _env_patch((n, v)),
-        default=default,
-        **kw,
-    )
-
-
 def _cyb(key: str, attr: str, default: float, **kw) -> SignalParam:
     label = kw.pop("label", f"CYB {key}")
     return SignalParam(
@@ -131,14 +104,6 @@ def _us_sell_env(
 
 def _load_cn_defaults(code: str) -> dict:
     return config.get_cn_broad_signal_config(code)
-
-
-def _load_div_buy(code: str) -> dict:
-    return config.get_dividend_signal_config(code)
-
-
-def _load_div_sell(code: str) -> dict:
-    return config.get_dividend_sell_config(code)
 
 
 def build_signal_param_catalog() -> list[SignalParam]:
@@ -198,60 +163,6 @@ def build_signal_param_catalog() -> list[SignalParam]:
                 higher_is_looser=False,
             ),
         ])
-
-    div_buy = _load_div_buy("H30269")
-    div_sell = _load_div_sell("H30269")
-    params.extend([
-        _dividend(
-            "H30269", "buy_spread_min", "BUY_SPREAD_MIN",
-            div_buy["buy_spread_min"],
-            side="buy", label="H30269 绝对利差买",
-            sweep=_sweep(div_buy["buy_spread_min"], (-0.006, 0, 0.006)),
-            higher_is_looser=True,
-        ),
-        _dividend(
-            "H30269", "buy_spread_percentile_min", "BUY_SPREAD_PERCENTILE_MIN",
-            div_buy["buy_spread_percentile_min"],
-            side="buy", label="H30269 利差分位买",
-            sweep=_sweep(div_buy["buy_spread_percentile_min"], (-8, 0, 8)),
-            higher_is_looser=True,
-        ),
-        _dividend(
-            "H30269", "buy_pe_percentile_max", "BUY_PE_PERCENTILE_MAX",
-            div_buy["buy_pe_percentile_max"],
-            side="buy", label="H30269 PE分位买",
-            sweep=_sweep(div_buy["buy_pe_percentile_max"], (-6, 0, 6)),
-            higher_is_looser=True,
-        ),
-        _dividend(
-            "H30269", "buy_max_above_low_pct", "BUY_MAX_ABOVE_LOW_PCT",
-            div_buy["buy_max_above_low_pct"],
-            side="buy", label="H30269 距低点涨幅买",
-            sweep=_sweep(div_buy["buy_max_above_low_pct"], (-0.02, 0, 0.02)),
-            higher_is_looser=True,
-        ),
-        _dividend(
-            "H30269", "buy_min_drawdown_from_high_pct", "BUY_MIN_DRAWDOWN_FROM_HIGH_PCT",
-            div_buy["buy_min_drawdown_from_high_pct"],
-            side="buy", label="H30269 距高点回撤买",
-            sweep=_sweep(div_buy["buy_min_drawdown_from_high_pct"], (-0.04, 0, 0.04)),
-            higher_is_looser=False,
-        ),
-        _div_sell(
-            "H30269", "sell_trailing_drawdown_pct", "SELL_TRAILING_DRAWDOWN_PCT",
-            div_sell["sell_trailing_drawdown_pct"],
-            label="H30269 移动止盈回撤",
-            sweep=(0.08, 0.10, 0.12),
-            higher_is_looser=True,
-        ),
-        _div_sell(
-            "H30269", "sell_min_unrealized_gain_pct", "SELL_MIN_UNREALIZED_GAIN_PCT",
-            div_sell["sell_min_unrealized_gain_pct"],
-            label="H30269 移动止盈浮盈",
-            sweep=_sweep(div_sell["sell_min_unrealized_gain_pct"], (-0.10, 0, 0.10)),
-            higher_is_looser=False,
-        ),
-    ])
 
     params.extend([
         _cyb(

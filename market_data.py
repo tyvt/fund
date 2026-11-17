@@ -15,7 +15,6 @@ from config import (
     BOND_YIELD_FIELD,
     BOND_YIELD_PARAMS,
     BOND_YIELD_URL,
-    DIVIDEND_TOTAL_RETURN_INDEX,
     HEADERS,
     INDEX_PERF_URL,
     REQUEST_TIMEOUT,
@@ -56,7 +55,7 @@ def _fetch_indicator_history(index_code):
     return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
 
-_TOTAL_RETURN_CODES = frozenset(DIVIDEND_TOTAL_RETURN_INDEX.values())
+_TOTAL_RETURN_CODES: frozenset = frozenset()
 
 
 def read_indicator_history(index_code):

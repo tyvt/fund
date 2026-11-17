@@ -111,42 +111,6 @@ def _fetch_one_index_state(task: dict, live_quotes=None) -> dict | None:
     kind = task["kind"]
     code = task["code"]
     try:
-        if kind == "dividend":
-            from config import INDICES
-            from core import build_dividend_signal_eval
-            from dividend_data import evaluate_buy_signal, get_index_data
-            from live_snapshot import maybe_apply_live
-            from market_data import get_gov_bond_yield, get_gov_bond_yield_history
-
-            index = next(i for i in INDICES if i["code"] == code)
-            bond_history = task.get("bond_history")
-            if bond_history is None:
-                bond_history = get_gov_bond_yield_history()
-            bond_yield, _ = get_gov_bond_yield()
-            pe, dividend_yield, _index_date = get_index_data(index["code"])
-            if pe is None or dividend_yield is None or bond_yield is None:
-                return None
-            buy_eval = evaluate_buy_signal(
-                index["code"], pe, dividend_yield, bond_yield, bond_history
-            )
-            panel = buy_eval.get("panel")
-            if panel is None or getattr(panel, "empty", False):
-                return None
-            buy_eval["code"] = code
-            buy_eval = maybe_apply_live(buy_eval, live_quotes)
-            spread = buy_eval.get("spread")
-            spread_pct = buy_eval.get("spread_percentile")
-            pe_pct = buy_eval.get("pe_percentile")
-            signal_eval = build_dividend_signal_eval(
-                code, buy_eval, spread, spread_pct, pe_pct
-            )
-            return {
-                "code": code,
-                "name": index["name"],
-                "snapshot": buy_eval,
-                "signal_eval": signal_eval,
-            }
-
         if kind == "cn_broad":
             from cn_broad_data import fetch_cn_broad_snapshot
             from cn_broad_signal import evaluate_cn_broad_buy
@@ -194,11 +158,9 @@ def _fetch_one_index_state(task: dict, live_quotes=None) -> dict | None:
 
 
 def _build_index_tasks():
-    from config import CN_BROAD_INDICES, INDICES, US_INDEX_KEYS
+    from config import CN_BROAD_INDICES, US_INDEX_KEYS
 
     tasks = []
-    for item in INDICES:
-        tasks.append({"kind": "dividend", "code": item["code"]})
     for item in CN_BROAD_INDICES:
         tasks.append({"kind": "cn_broad", "code": item["code"]})
     tasks.append({"kind": "cyb", "code": "399006"})
@@ -216,7 +178,7 @@ def collect_index_states(
     tasks = _build_index_tasks()
     bond_history = get_gov_bond_yield_history()
     for task in tasks:
-        if task["kind"] in ("dividend", "cn_broad"):
+        if task["kind"] == "cn_broad":
             task["bond_history"] = bond_history
         if cyb_growth is not None:
             task["cyb_growth"] = cyb_growth

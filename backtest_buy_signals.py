@@ -20,8 +20,6 @@ from config import (
     CYB_BUY_HIGH_LOOKBACK_DAYS,
     CYB_BUY_LOW_LOOKBACK_DAYS,
     CYB_INDEX,
-    DIVIDEND_SIGNAL_HISTORY_START,
-    INDICES,
     NDX_INDEX,
     BACKTEST_OUTPUT_DIR,
     BACKTEST_PRESENT_LABEL,
@@ -36,7 +34,6 @@ from buy_amount_config import resolve_simulate_amount
 from cyb_data import attach_percentiles as attach_cyb_percentiles
 from cyb_data import build_cyb_valuation_panel, fetch_cyb_price_history
 from cyb_signal import evaluate_cyb_signal
-from dividend_data import build_signal_history, is_buy_signal_row
 from market_data import configure_stdout_utf8, get_gov_bond_yield_history
 from us_index_data import (
     build_daily_valuation_panel,
@@ -116,8 +113,7 @@ def _skip_or_excluded(sim_amt, amounts, code, panel, date_range, buy_fn, code2, 
     )
 
 BACKTEST_RETURN_FOOTNOTE = (
-    "红利指数（H30269）收益率按中证全收益指数（H20269）估算，含分红再投资；"
-    "其他指数为价格指数、未含分红。未计手续费；"
+    "各指数收益率按价格指数估算、未含分红。未计手续费；"
     "美股指数按美元点位估算收益（未计入汇率变动）。"
 )
 
@@ -137,20 +133,9 @@ class BacktestPanels:
 
     def __init__(self):
         self.bond_history = get_gov_bond_yield_history()
-        self._dividend = {}
         self._cn_broad = {}
         self._cyb = None
         self._us = {}
-
-    def dividend_panel(self, index_code):
-        if index_code not in self._dividend:
-            start = get_index_base_date(index_code) or DIVIDEND_SIGNAL_HISTORY_START
-            self._dividend[index_code] = build_signal_history(
-                index_code,
-                start_date=start,
-                bond_history=self.bond_history,
-            )
-        return self._dividend[index_code]
 
     def cn_broad_panel(self, index_code):
         if index_code not in self._cn_broad:
@@ -564,46 +549,6 @@ def _chart_simulate_amount(
     return base
 
 
-def backtest_dividend(
-    date_range, bond_history=None, amount=None, amounts=None, panels=None
-):
-    panels = panels or get_panels()
-    rows = []
-    for item in INDICES:
-        panel = panels.dividend_panel(item["code"])
-        code = item["code"]
-        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)  # noqa: E731
-        sim_amt = (
-            _index_simulate_amount(code, amounts, panel, date_range, buy_fn)
-            if amounts
-            else amount
-        )
-        excluded_rows = _skip_or_excluded(
-            sim_amt, amounts, code, panel, date_range, buy_fn, code, item["name"]
-        )
-        if excluded_rows is not None:
-            rows.extend(excluded_rows)
-            continue
-        if sim_amt is not None:
-            result = _simulate_dca_returns(
-                panel,
-                date_range,
-                buy_fn,
-                amount=sim_amt,
-                valuation_price_col="total_return_close",
-                index_code=code,
-            )
-        else:
-            result = _count_buy_days(panel, date_range, buy_fn, index_code=code)
-        if result:
-            rows.append(
-                _finalize_backtest_row(
-                    {"code": code, "name": item["name"], **result}, code, amounts
-                )
-            )
-    return rows
-
-
 def _cn_broad_no_data_row(index_meta, amount=None):
     """当年无行情样本时仍输出一行，避免报告中指数「消失」。"""
     note = "当年无指数行情数据"
@@ -795,18 +740,6 @@ def _collect_buy_dates(panel, date_range, buy_fn, date_col="date"):
 
 def _iter_backtest_configs(panels):
     """各指数回测配置：panel、buy_fn、日期/价格列（与 report 判定一致）。"""
-    for item in INDICES:
-        code = item["code"]
-        yield {
-            "code": code,
-            "name": item["name"],
-            "panel": panels.dividend_panel(code),
-            "buy_fn": lambda r, c=code: is_buy_signal_row(r, c),
-            "date_col": "date",
-            "price_col": "close",
-            "note": "日频，每交易日评估",
-        }
-
     for item in CN_BROAD_BACKTEST_INDICES:
         code = item["code"]
         yield {
@@ -1139,19 +1072,13 @@ def run_backtest(date_range, amounts=None, panels=None):
     panels = panels or get_panels()
     if amounts and amounts.get("by_code"):
         use_amounts = amounts
-        div_amt = broad_amt = other_amt = None
+        broad_amt = other_amt = None
     else:
         use_amounts = None
-        div_amt = amounts["dividend"] if amounts else None
         broad_amt = amounts["cn_broad"] if amounts else None
         other_amt = amounts["other"] if amounts else None
 
     rows = []
-    rows.extend(
-        backtest_dividend(
-            date_range, panels=panels, amount=div_amt, amounts=use_amounts
-        )
-    )
     for item in CN_BROAD_BACKTEST_INDICES:
         rows.extend(
             backtest_cn_broad(
@@ -1296,7 +1223,7 @@ def _format_backtest_summary_markdown(rows, date_range, amounts=None):
     ]
     if amounts is not None:
         footnotes.append(
-            f"投入/市值/盈亏/收益率：按指数类别使用固定单次买入金额，持仓按估值日收盘价（或红利全收益指数）估算；"
+            f"投入/市值/盈亏/收益率：按指数类别使用固定单次买入金额，持仓按估值日收盘价估算；"
             f"{BACKTEST_RETURN_FOOTNOTE}"
         )
     lines.extend(footnotes)

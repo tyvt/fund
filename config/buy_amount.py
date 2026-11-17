@@ -6,11 +6,10 @@ from config.env import (
     _env_float_any,
     _build_annual_investment_budget_by_year,
 )
-from config.indices import CN_BROAD_INDICES, INDICES
+from config.indices import CN_BROAD_INDICES
 
 # --- 回测/实盘单次买入金额（元）---
 # 默认各指数统一基准 100；实际买入 = 基准 × 当日涨跌系数（见 buy_amount_change.py）
-DIVIDEND_BUY_AMOUNT = _env_float("DIVIDEND_BUY_AMOUNT", 100)
 CN_BROAD_BUY_AMOUNT = _env_float("CN_BROAD_BUY_AMOUNT", 100)
 BACKTEST_OTHER_BUY_AMOUNT = _env_float("BACKTEST_OTHER_BUY_AMOUNT", 100)
 
@@ -44,7 +43,6 @@ BUY_AMOUNT_DEFAULT = _env_float("BUY_AMOUNT_DEFAULT", 100)
 BUY_AMOUNT_BASE_BY_CODE = {
     "NDX": _env_float("NDX_BUY_AMOUNT", BUY_AMOUNT_DEFAULT),
     "399006": _env_float("399006_BUY_AMOUNT", BUY_AMOUNT_DEFAULT),
-    "H30269": _env_float("H30269_BUY_AMOUNT", BUY_AMOUNT_DEFAULT),
     "000688": _env_float("000688_BUY_AMOUNT", BUY_AMOUNT_DEFAULT),
 }
 
@@ -97,9 +95,7 @@ def get_backtest_buy_amount(index_code, amounts=None):
         if by_code is not None and index_code in by_code:
             return float(by_code[index_code])
         if amounts.get("unified"):
-            return float(amounts["dividend"])
-        if index_code in {i["code"] for i in INDICES}:
-            return float(amounts.get("dividend", DIVIDEND_BUY_AMOUNT))
+            return float(amounts["cn_broad"])
         if index_code in {i["code"] for i in CN_BROAD_INDICES}:
             return float(amounts.get("cn_broad", CN_BROAD_BUY_AMOUNT))
         return float(amounts.get("other", BACKTEST_OTHER_BUY_AMOUNT))
@@ -150,7 +146,6 @@ def resolve_backtest_amounts(
 
     def _pack(by_code=None, **extra):
         base = {
-            "dividend": DIVIDEND_BUY_AMOUNT,
             "cn_broad": CN_BROAD_BUY_AMOUNT,
             "other": BACKTEST_OTHER_BUY_AMOUNT,
             "unified": False,
@@ -172,7 +167,6 @@ def resolve_backtest_amounts(
     if unified_amount is not None and unified_amount > 0:
         return _pack(
             unified=True,
-            dividend=float(unified_amount),
             cn_broad=float(unified_amount),
             other=float(unified_amount),
         )
@@ -228,7 +222,7 @@ def format_backtest_amount_note(amounts):
         else ""
     )
     if amounts.get("unified"):
-        return f"每次买入 **{amounts['dividend']:.0f}** 元{change_suffix}"
+        return f"每次买入 **{amounts['cn_broad']:.0f}** 元{change_suffix}"
     if amounts.get("ranking") and amounts.get("by_code"):
         active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
         parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]

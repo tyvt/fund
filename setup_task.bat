@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
-set "TASK_NAME=红利指数投资信号"
+set "TASK_NAME=指数投资信号"
 set "RUN_TIME=14:00"
 
 if not exist "%SCRIPT_DIR%logs" mkdir "%SCRIPT_DIR%logs"
@@ -32,7 +32,7 @@ pause
 exit /b 1
 
 :after_env_check
-for %%T in ("H30269投资信号" "H50040投资信号" "红利指数投资信号") do (
+for %%T in ("H30269投资信号" "H50040投资信号" "红利指数投资信号" "指数投资信号") do (
     schtasks /query /tn %%~T >nul 2>&1
     if !errorlevel!==0 (
         schtasks /delete /tn %%~T /f >nul

@@ -10,7 +10,6 @@ from buy_amount_change import (
 )
 
 ALL_BUY_INDEX_CODES = (
-    "H30269",
     "000688",
     "399006",
     "NDX",

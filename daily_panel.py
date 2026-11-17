@@ -127,7 +127,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="生成当日买卖建议 HTML 面板")
     parser.add_argument(
         "-m", "--module", action="append", choices=MODULE_CHOICES,
-        dest="modules", help="生成模块：dividend、cn_broad、cyb、us、all(默认)",
+        dest="modules", help="生成模块：cn_broad、cyb、us、all(默认)",
     )
     args = parser.parse_args(argv)
     try:

@@ -19,7 +19,7 @@
 
 `series_id` 格式：`{domain}:{entity_key}:{field_name}`
 
-示例：`stock_daily:600519:close`、`cn_index_perf:H30269:rolling_pe`
+示例：`stock_daily:600519:close`、`cn_index_perf:000688:rolling_pe`
 
 ### 独立表
 
@@ -53,8 +53,7 @@
 
 | index_code | 行数 | 日期范围 | 字段 |
 |------------|------|----------|------|
-| H30269 | 30 | 2026-07-01 ~ 2026-08-11 | pe, pe2, dividend_yield, dividend_yield2 |
-| 000852 | 30 | 2026-07-01 ~ 2026-08-11 | 同上 |
+| 000852 | 30 | 2026-07-01 ~ 2026-08-11 | pe, pe2, dividend_yield, dividend_yield2 |
 | 000688 | 30 | 2026-07-01 ~ 2026-08-11 | 同上 |
 | 000906 | 20 | 2026-07-15 ~ 2026-08-11 | 同上 |
 | 930955 | 20 | 2026-07-09 ~ 2026-08-05 | 同上 |
@@ -83,7 +82,7 @@
 
 ### cn_index_perf（中证指数行情）
 
-每个 `entity_key` 为指数代码（可能带日期后缀，如 `H30269_20180101_20260727`），8 个字段：
+每个 `entity_key` 为指数代码（可能带日期后缀，如 `000688_20180101_20260727`），8 个字段：
 
 | field_name | 含义 |
 |------------|------|
@@ -98,8 +97,6 @@
 
 | 代码 | 名称 |
 |------|------|
-| H30269 | 中证红利低波动 |
-| H20269 | 中证红利低波动（全收益） |
 | 000852 | 中证 1000 |
 | 000688 | 科创 50 |
 | 000906 | 中证 800 |
@@ -265,7 +262,7 @@ SELECT p.trade_date, p.value AS rolling_pe
 FROM ts_point p
 JOIN ts_series s ON p.series_id = s.series_id
 WHERE s.domain = 'cn_index_perf'
-  AND s.entity_key = 'H30269'
+  AND s.entity_key = '000688'
   AND s.field_name = 'rolling_pe'
 ORDER BY p.trade_date DESC
 LIMIT 10;

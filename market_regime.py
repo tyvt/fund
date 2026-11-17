@@ -148,8 +148,6 @@ def _proxy_rows_by_day(panels, code: str, start_date, end_date) -> dict[str, dic
         daily, _ = panels.us_index_panel("ndx")
     elif code == "399006":
         daily = panels.cyb_panel()
-    elif code == "H30269":
-        daily = panels.dividend_panel(code)
     elif code == "000688":
         daily = panels.cn_broad_panel(code)
     else:

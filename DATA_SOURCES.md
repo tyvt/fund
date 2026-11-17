@@ -53,7 +53,7 @@ flowchart LR
 
 ---
 
-## 一、中证指数（A 股策略 / 宽基 / 红利）
+## 一、中证指数（A 股宽基 / 策略）
 
 | ID | 数据 | 地址 | 频率 | 调用入口 |
 |----|------|------|------|----------|
@@ -61,7 +61,7 @@ flowchart LR
 | `csindex_perf` | 收盘价、滚动 PE、成交额 | `https://www.csindex.com.cn/csindex-home/perf/index-perf` | 日频 | `market_data.get_index_perf_history` |
 | `csindex_closeweight` | 成分股权重（预留） | `…/closeweight/{code}closeweight.xls` | 调仓日 | 未直接调用 |
 
-**覆盖指数示例**：H30269、000688 等。
+**覆盖指数示例**：000688 等。
 
 **环境变量**：`CSINDEX_INDICATOR_BASE_URL`、`INDEX_PERF_URL`
 
@@ -131,7 +131,7 @@ flowchart LR
 
 | ID | 数据 | 地址 | 用途 |
 |----|------|------|------|
-| `tencent_quote` | 指数 / 个股实时价 | `https://qt.gtimg.cn/q={代码}`（批量逗号分隔） | `realtime_quote`（H30269、399006、NDX 等） |
+| `tencent_quote` | 指数 / 个股实时价 | `https://qt.gtimg.cn/q={代码}`（批量逗号分隔） | `realtime_quote`（000688、399006、NDX 等） |
 
 **环境变量**：`TENCENT_QUOTE_URL`
 
@@ -158,7 +158,6 @@ StockDB 本身从市场源采集数据；本项目将其作为 **A 股全市场 
 | `yardeni_forward_pe` | Forward P/E 图表 | `https://yardeni.com/charts/forward-p-es/` | 人工对照 |
 | `barrons_forward_pe` | Birinyi Forward PE | `https://www.barrons.com/market-data/stocks/us/pe-yields` | curl 抓取（SSL 兼容） |
 | `baostock_kline` | A 股日 K | `bs.query_history_k_data_plus` | `scripts/validate_data_baostock.py` |
-| `akshare_etf_sina` | ETF 日 K | `ak.fund_etf_hist_sina` | ETF 跟踪 H30269 等抽检 |
 
 ---
 

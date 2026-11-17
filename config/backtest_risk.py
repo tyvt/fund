@@ -8,8 +8,6 @@ BACKTEST_TRADING_DAYS_PER_YEAR = _env_int("BACKTEST_TRADING_DAYS_PER_YEAR", 252)
 
 # --- 卖出开关（自基日回测有明显超额的指数启用移动止盈）---
 CN_BROAD_SELL_ENABLED_CODES = frozenset({"000688"})
-# 遗留开关：红利底仓不设卖点（config/dividend.py:22 口径），dividend_sell_enabled 恒 False，本值不再生效。
-DIVIDEND_SELL_ENABLED = _env_bool("DIVIDEND_SELL_ENABLED", True)
 US_INDEX_SELL_ENABLED = _env_bool("US_INDEX_SELL_ENABLED", True)
 # 分批/移动止盈触发后：持仓浮盈须回落至该阈值及以下才允许再买入（默认关，与无人为限频一致）
 SELL_REBUY_GATE_ENABLED = _env_bool("SELL_REBUY_GATE_ENABLED", False)
@@ -48,53 +46,9 @@ def cn_broad_sell_enabled(index_code):
     return index_code in CN_BROAD_SELL_ENABLED_CODES
 
 
-def dividend_sell_enabled(index_code=None):
-    """红利底仓不设卖点（config/dividend.py:22 口径），恒返回 False。"""
-    return False
-
-
 def us_index_sell_enabled(key=None):
     """美股指数是否启用卖出逻辑。"""
     return US_INDEX_SELL_ENABLED
-
-
-# --- 红利指数卖出（遗留参数，不再生效：红利底仓不设卖点，卖出逻辑已移除）---
-DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT = _env_float(
-    "DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT", 0.10
-)
-DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT = _env_float(
-    "DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT", 0.40
-)
-DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS = _env_int(
-    "DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS", 60
-)
-
-
-def get_dividend_sell_config(index_code):
-    """红利指数移动止盈参数。"""
-    return {
-        "sell_trailing_drawdown_pct": _env_float_any(
-            (
-                f"DIVIDEND_{index_code}_SELL_TRAILING_DRAWDOWN_PCT",
-                "DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT",
-            ),
-            DIVIDEND_SELL_TRAILING_DRAWDOWN_PCT,
-        ),
-        "sell_min_unrealized_gain_pct": _env_float_any(
-            (
-                f"DIVIDEND_{index_code}_SELL_MIN_UNREALIZED_GAIN_PCT",
-                "DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT",
-            ),
-            DIVIDEND_SELL_MIN_UNREALIZED_GAIN_PCT,
-        ),
-        "sell_trailing_min_hold_days": _env_int_any(
-            (
-                f"DIVIDEND_{index_code}_SELL_TRAILING_MIN_HOLD_DAYS",
-                "DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS",
-            ),
-            DIVIDEND_SELL_TRAILING_MIN_HOLD_DAYS,
-        ),
-    }
 
 
 def get_us_index_sell_config(key):

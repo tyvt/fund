@@ -15,7 +15,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="生成模块：dividend、cn_broad、cyb、us、all(全部，默认)",
+        help="生成模块：cn_broad、cyb、us、all(全部，默认)",
     )
     args = parser.parse_args(argv)
 

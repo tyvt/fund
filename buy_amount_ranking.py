@@ -72,12 +72,10 @@ def _preload_ranking_panels(panels) -> None:
     from concurrent.futures import ThreadPoolExecutor
 
     from backtest_buy_signals import CN_BROAD_BACKTEST_INDICES
-    from config import INDICES, US_INDEX_KEYS
+    from config import US_INDEX_KEYS
 
     tasks = []
     with ThreadPoolExecutor(max_workers=8) as executor:
-        for item in INDICES:
-            tasks.append(executor.submit(panels.dividend_panel, item["code"]))
         for item in CN_BROAD_BACKTEST_INDICES:
             tasks.append(executor.submit(panels.cn_broad_panel, item["code"]))
         tasks.append(executor.submit(panels.cyb_panel))
@@ -121,12 +119,9 @@ def _data_cache_fingerprint() -> str:
 def _iter_configs(panels):
     from backtest_buy_signals import _iter_backtest_configs
 
-    dividend_codes = {i["code"] for i in __import__("config").INDICES}
     for cfg in _iter_backtest_configs(panels):
         code = cfg["code"]
         if code in ALL_BUY_INDEX_CODES:
-            if code in dividend_codes:
-                cfg = {**cfg, "valuation_price_col": "total_return_close"}
             yield cfg
 
 

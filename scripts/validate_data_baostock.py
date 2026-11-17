@@ -26,7 +26,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 
-from config import CYB_INDEX, KC50_INDEX, INDICES
+from config import CYB_INDEX, KC50_INDEX
 
 from cyb_data import fetch_cyb_pe_szse_official, fetch_cyb_price_history
 
@@ -36,13 +36,9 @@ from data_crosscheck import (
 
     check_cyb_pe_against_szse_index,
 
-    check_index_etf_return_correlation,
-
-    compare_us_forward_pe_sources,
+        compare_us_forward_pe_sources,
 
 )
-
-from dividend_data import build_signal_history
 
 from market_data import (
 
@@ -65,8 +61,6 @@ BAOSTOCK_INDEX_MAP = {
 
 
 UNVALIDATED_BY_BAOSTOCK = {
-
-    INDICES[0]["code"]: "中证红利低波动（H30269）— baostock 无此策略指数，改用 ETF 日收益抽检",
 
     KC50_INDEX["code"]: "科创50（000688）— baostock 无指数 K 线（sh.000688 为个股）",
 
@@ -344,20 +338,6 @@ def check_bond_yield(*, refresh: bool = False) -> dict:
 
     big_gaps = int((gaps > 5).sum())
 
-
-
-    panel = build_signal_history(INDICES[0]["code"])
-
-    coverage = (
-
-        bond_history_coverage(panel["date"])
-
-        if panel is not None and not panel.empty
-
-        else {}
-
-    )
-
     return {
 
         "rows": len(hist),
@@ -369,8 +349,6 @@ def check_bond_yield(*, refresh: bool = False) -> dict:
         "latest_yield_pct": float(latest["bond_yield"] * 100),
 
         "big_gap_count": big_gaps,
-
-        "h30269_fallback_pct": coverage.get("fallback_pct"),
 
         "status": "可靠（日频全历史）" if len(hist) > 3000 and big_gaps < 30 else "需检查",
 
@@ -490,29 +468,7 @@ def main(argv=None) -> int:
 
 
 
-    print("\n## 2. H30269 跟踪 ETF 日收益相关性\n")
-
-    for r in check_index_etf_return_correlation(INDICES[0]["code"], years=5):
-
-        print(f"  ETF {r.get('etf', '—')}: {r.get('note', '')}")
-
-        if "return_corr" in r:
-
-            print(
-
-                f"    重叠 {r['overlap_days']} 天, 相关系数 {r['return_corr']}, "
-
-                f"判定 {r['status']}"
-
-            )
-
-        else:
-
-            print(f"    状态: {r.get('status', '—')}")
-
-
-
-    print("\n## 3. baostock 无法直接覆盖的指数\n")
+    print("\n## 2. baostock 无法直接覆盖的指数\n")
 
     for code, note in UNVALIDATED_BY_BAOSTOCK.items():
 
@@ -520,11 +476,9 @@ def main(argv=None) -> int:
 
 
 
-    print("\n## 4. 估值指标内部一致性\n")
+    print("\n## 3. 估值指标内部一致性\n")
 
     for code, name in [
-
-        (INDICES[0]["code"], INDICES[0]["name"]),
 
         (KC50_INDEX["code"], KC50_INDEX["name"]),
 
@@ -546,7 +500,7 @@ def main(argv=None) -> int:
 
 
 
-    print("\n## 5. 国债收益率（分页补全后）\n")
+    print("\n## 4. 国债收益率（分页补全后）\n")
 
     bond = check_bond_yield(refresh=args.refresh_bond)
 
@@ -556,7 +510,7 @@ def main(argv=None) -> int:
 
 
 
-    print("\n## 6. 创业板估值（深交所 PE）\n")
+    print("\n## 5. 创业板估值（深交所 PE）\n")
 
     cyb = check_cyb_valuation()
 

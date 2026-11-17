@@ -24,9 +24,7 @@ def resolve_live_price_params(index_code: str) -> dict:
         CYB_BUY_LOW_LOOKBACK_DAYS,
         CYB_BUY_TREND_MA_DAYS,
         CYB_BUY_TREND_SLOPE_LOOKBACK_DAYS,
-        INDICES,
         get_cn_broad_signal_config,
-        get_dividend_signal_config,
     )
 
     if index_code == "399006":
@@ -48,16 +46,6 @@ def resolve_live_price_params(index_code: str) -> dict:
             "range_lookback_days": BUY_RANGE_LOOKBACK_DAYS,
             "ma_days": BUY_TREND_MA_DAYS,
             "slope_lookback": BUY_TREND_SLOPE_LOOKBACK_DAYS,
-            "close_col": "close",
-        }
-    if index_code in {i["code"] for i in INDICES}:
-        cfg = get_dividend_signal_config(index_code)
-        return {
-            "low_lookback_days": cfg["buy_low_lookback_days"],
-            "high_lookback_days": cfg["buy_high_lookback_days"],
-            "range_lookback_days": BUY_RANGE_LOOKBACK_DAYS,
-            "ma_days": None,
-            "slope_lookback": None,
             "close_col": "close",
         }
 

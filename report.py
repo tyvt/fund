@@ -7,13 +7,11 @@ from config import CN_BROAD_INDICES, CYB_EXPECTED_GROWTH, US_INDEX_KEYS
 from market_data import configure_stdout_utf8, get_gov_bond_yield_history
 from signal_format import join_index_sections, log_fetch_done, log_fetch_start
 
-MODULE_DIVIDEND = "dividend"
 MODULE_CN_BROAD = "cn_broad"
 MODULE_CYB = "cyb"
 MODULE_US = "us"
 MODULE_ALL = "all"
 MODULE_CHOICES = (
-    MODULE_DIVIDEND,
     MODULE_CN_BROAD,
     MODULE_CYB,
     MODULE_US,
@@ -46,12 +44,6 @@ def _log_snapshot_ready(snapshot, *, live_quotes=None):
         history_days=snapshot.get("history_days"),
         extra=live_extra,
     )
-
-
-def generate_dividend_report(index_codes=None, live_quotes=None):
-    from core import generate_report
-
-    return generate_report(index_codes, live_quotes=live_quotes)
 
 
 def generate_cn_broad_report(index_meta, bond_history=None, live_quotes=None):
@@ -145,7 +137,6 @@ def generate_us_reports(expected_growth=None, live_quotes=None):
 def _resolve_modules(modules):
     if not modules or MODULE_ALL in modules:
         return [
-            MODULE_DIVIDEND,
             MODULE_CN_BROAD,
             MODULE_CYB,
             MODULE_US,
@@ -154,7 +145,7 @@ def _resolve_modules(modules):
 
 
 def generate_reports(
-    modules=None, index_codes=None, cyb_growth=None, us_growth=None
+    modules=None, cyb_growth=None, us_growth=None
 ):
     """按模块生成报告；modules 含 all 或未指定时生成全部。"""
     from concurrent.futures import ThreadPoolExecutor
@@ -185,9 +176,6 @@ def generate_reports(
 
     resolved = _resolve_modules(modules)
     generators = {
-        MODULE_DIVIDEND: lambda: generate_dividend_report(
-            index_codes, live_quotes=live_quotes
-        ),
         MODULE_CN_BROAD: lambda: generate_cn_broad_reports(live_quotes=live_quotes),
         MODULE_CYB: lambda: generate_cyb_report(cyb_growth, live_quotes=live_quotes),
         MODULE_US: lambda: generate_us_reports(us_growth, live_quotes=live_quotes),
@@ -241,13 +229,7 @@ def main(argv=None):
         action="append",
         choices=MODULE_CHOICES,
         dest="modules",
-        help="报告模块：dividend(红利)、cn_broad(科创50)、cyb(创业板)、us(纳指)、all(全部，默认)",
-    )
-    parser.add_argument(
-        "--index",
-        action="append",
-        metavar="CODE",
-        help="红利模块：仅分析指定指数（可多次指定）",
+        help="报告模块：cn_broad(科创50)、cyb(创业板)、us(纳指)、all(全部，默认)",
     )
     parser.add_argument(
         "--growth",
@@ -266,7 +248,6 @@ def main(argv=None):
     try:
         report, _sections = generate_reports(
             modules=args.modules,
-            index_codes=args.index,
             cyb_growth=args.growth,
             us_growth=args.us_growth,
         )

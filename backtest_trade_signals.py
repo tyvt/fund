@@ -27,9 +27,7 @@ from config import (
     get_backtest_buy_amount,
     get_chart_buy_amount,
     get_cn_broad_signal_config,
-    get_dividend_signal_config,
     get_us_index_sell_config,
-    INDICES,
     BACKTEST_OUTPUT_DIR,
     ROTATION_MARGINAL_HURDLE_ANN_PCT,
     ROTATION_SELL_ENABLED,
@@ -43,7 +41,6 @@ from sell_trailing import (
     simulate_trades_trailing,
     valuation_sell_hit_us_index,
 )
-from dividend_data import is_buy_signal_row
 
 BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 DEFAULT_START = "2015-01-01"
@@ -696,65 +693,6 @@ def backtest_all(
 
     results = []
 
-    for item in INDICES:
-        panel = panels.dividend_panel(item["code"])
-        code = item["code"]
-        amt = get_backtest_buy_amount(code, amounts)
-        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
-        excluded = _skip_or_excluded_trade(
-            amt,
-            amounts,
-            code,
-            panel,
-            start_date,
-            end_date,
-            buy_fn,
-            item["name"],
-            date_col="date",
-        )
-        if excluded is not None:
-            results.extend(excluded)
-            continue
-        sim_amt = _resolve_trade_amount(
-            code, amt, amounts, panel, start_date, end_date, buy_fn
-        )
-        # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
-        sell_on = False
-        stats = _run_index_trades(
-            panel,
-            code,
-            start_date,
-            end_date,
-            sim_amt,
-            buy_fn,
-            None,
-            sell_on,
-            valuation_price_col="total_return_close",
-        )
-        if stats:
-            ret = stats.get("return_pct") if sell_on else stats.get("buy_only_return_pct")
-            metrics = _attach_risk_metrics(
-                panel,
-                start_date,
-                end_date,
-                amt,
-                buy_fn,
-                None,
-                sell_on,
-                ret,
-                valuation_price_col="total_return_close",
-            )
-            metrics.pop("trading_days", None)
-            stats.update(metrics)
-            results.append(
-                TradeResult(
-                    code=code,
-                    name=item["name"],
-                    has_sell=sell_on,
-                    **_trade_result_fields(stats),
-                )
-            )
-
     def _backtest_cn_broad(item):
         panel = panels.cn_broad_panel(item["code"])
         code = item["code"]
@@ -996,8 +934,6 @@ def resolve_chart_sell_dates(
             )
             return stats.get("sell_dates", []) if stats else []
 
-    # 红利底仓不设卖点（config/dividend.py:22 口径），卖出逻辑已移除。
-
     for key, meta in US_INDEX_META.items():
         if meta["code"] != code or not us_index_sell_enabled(key):
             continue
@@ -1074,7 +1010,6 @@ def collect_trade_chart_tables(
     from backtest_buy_signals import (
         build_daily_table_range,
         CYB_INDEX,
-        INDICES,
     )
 
     if amounts is None:
@@ -1127,22 +1062,6 @@ def collect_trade_chart_tables(
             sell_dates = sell_dates_fn()
             table = _append_sell_dates_column(table, sell_dates)
         tables.append({"name": name, "code": code, "table": table})
-
-    for item in INDICES:
-        code = item["code"]
-        panel = panels.dividend_panel(code)
-        buy_fn = lambda r, c=code: is_buy_signal_row(r, c)
-
-        # 红利底仓不设卖点（config/dividend.py:22 口径），图表不附加卖出日。
-
-        _maybe_add(
-            panel,
-            code,
-            item["name"],
-            buy_fn,
-            sell_dates_fn=None,
-            price_col="total_return_close",
-        )
 
     for item in CN_BROAD_BACKTEST_INDICES:
         code = item["code"]
@@ -1283,15 +1202,6 @@ def _format_config_snapshot():
             f"≥{cfg['buy_spread_percentile_min']:.0f}% | — | "
             f"≤{cfg['buy_max_above_low_pct'] * 100:.0f}% | "
             f"≤{cfg['buy_max_year_range_pct'] * 100:.0f}% | 估值+均线 |"
-        )
-    for item in INDICES:
-        code = item["code"]
-        buy_cfg = get_dividend_signal_config(code)
-        lines.append(
-            f"| {item['name']} | {code} | "
-            f"≥{buy_cfg['buy_spread_percentile_min']:.0f}% | "
-            f"≤{buy_cfg['buy_pe_percentile_max']:.0f}% | "
-            f"≤{buy_cfg['buy_max_above_low_pct'] * 100:.0f}% | — | 息差+股息率 |"
         )
     lines.extend([
         f"| 创业板指 | {CYB_INDEX['code']} | — | "
@@ -1480,7 +1390,7 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
         "> 买入/卖出标准：当前 config 阈值（与 `backtest_buy_signals.py` 一致）  ",
         f"> 每次买入金额：{format_backtest_amount_note(amounts)}  ",
         "> 策略：**分指数独立买卖**（不共享资金池，不做只买不卖对照）  ",
-        "> 卖出规则：宽基/创业板为估值+均线；红利为息差+股息率；美股仍为移动止盈+估值  ",
+        "> 卖出规则：宽基为分批止盈+移动止盈；美股为移动止盈+估值  ",
         "> 买入触发：与 `backtest_buy_signals.py` 相同（信号日买入；默认无冷却期）；非每日定投  ",
         "> 区间默认自 2015-01-01；买入信号回测默认自各指数基日，对比时请对齐起始日",
         "",
