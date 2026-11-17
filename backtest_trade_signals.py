@@ -285,6 +285,17 @@ def _cooldown_buy_fn(
     return wrapped
 
 
+def _sell_simplify_mode():
+    """卖出端简化模式：off=原逻辑(默认) / a=单一粗移动止盈 / b=关闭主动卖出仅买入持有。
+
+    非法值回退 off。设为独立函数便于单测，且此处一处守卫覆盖全部三指数回测。
+    """
+    from config.env import _env_str
+
+    mode = (_env_str("SELL_SIMPLIFY_MODE", "off") or "off").strip().lower()
+    return mode if mode in {"off", "a", "b"} else "off"
+
+
 def _run_index_trades(
     panel,
     code,
@@ -299,6 +310,22 @@ def _run_index_trades(
     date_col="date",
     valuation_price_col=None,
 ):
+    mode = _sell_simplify_mode()
+    if mode == "b":
+        # 关闭全部主动卖出：has_sell=False 令 simulate_trades 的 sell_fn 不触发；
+        # trailing/valuation 均置空，走 simulate_trades fallback（见 :302/:315）。
+        has_sell = False
+        trailing_cfg = None
+        valuation_sell_fn = None
+    elif mode == "a":
+        # 单一粗移动止盈：仅保留 trailing，去掉估值分档/利差/MA200 与估值卖点。
+        has_sell = True
+        trailing_cfg = {
+            "trailing_drawdown_pct": 0.15,
+            "min_unrealized_gain_pct": 0.50,
+            "min_hold_days": 90,
+        }
+        valuation_sell_fn = None
     if has_sell and trailing_cfg is not None:
         return simulate_trades_trailing(
             panel,
