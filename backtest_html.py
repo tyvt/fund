@@ -1,10 +1,153 @@
 """回测 HTML 折线图：收盘价走势 + 买入/卖出标记，支持时间范围筛选。"""
 
 import json
-from datetime import date
+import os
+import re
+import tempfile
+from datetime import date, datetime
 from html import escape
+from pathlib import Path
 
 import pandas as pd
+
+DAILY_ADVICE_START = "<!--DAILY_ADVICE_START-->"
+DAILY_ADVICE_END = "<!--DAILY_ADVICE_END-->"
+
+_DAILY_ADVICE_CSS = """
+  #daily-advice { margin-bottom: 18px; }
+  #daily-advice h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  #daily-advice .advice-meta { color: #666; font-size: 0.8rem; margin-bottom: 10px; }
+  #daily-advice .advice-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  #daily-advice .advice-card { border-radius: 8px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    overflow: hidden; border-left: 5px solid #9ca3af; align-self: start; }
+  #daily-advice .sig-buy { border-left-color: #16a34a; }
+  #daily-advice .sig-sell { border-left-color: #dc2626; }
+  #daily-advice .sig-hold { border-left-color: #9ca3af; }
+  #daily-advice .advice-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    border-bottom: 1px solid #eef0f2; flex-wrap: wrap; }
+  #daily-advice .advice-title { font-weight: 600; font-size: 0.9rem; }
+  #daily-advice .advice-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: #eef0f2; }
+  #daily-advice .sig-buy .advice-badge { background: #dcfce7; color: #166534; }
+  #daily-advice .sig-sell .advice-badge { background: #fee2e2; color: #991b1b; }
+  #daily-advice .advice-score { margin-left: auto; font-size: 0.75rem; color: #666; }
+  #daily-advice .advice-body { margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+    font-family: Consolas, Menlo, monospace; font-size: 0.8rem; line-height: 1.5; }
+  #daily-advice .advice-empty { color: #666; font-size: 0.875rem; }
+"""
+
+
+def _advice_signal_class(signal_short):
+    if signal_short == "买入":
+        return "sig-buy"
+    if signal_short == "卖出":
+        return "sig-sell"
+    return "sig-hold"
+
+
+def render_daily_advice_block(sections=None, generated_at=None, error=None) -> str:
+    """渲染可嵌入回测 HTML 的当日建议区块（含唯一标记，CSS 作用域限 #daily-advice）。"""
+    generated_at = generated_at or datetime.now()
+    ts = generated_at.strftime("%Y-%m-%d %H:%M:%S")
+    if error is not None:
+        inner = f'<p class="advice-empty">生成失败：{escape(str(error))}</p>'
+    elif sections:
+        cards = []
+        for s in sections:
+            code = str(s.get("code") or "")
+            name = str(s.get("name") or "")
+            signal = str(s.get("signal_short") or "")
+            text = str(s.get("text") or "")
+            score, total = s.get("score"), s.get("total")
+            score_html = (
+                f'<span class="advice-score">{escape(str(score))}/{escape(str(total))}</span>'
+                if score is not None and total
+                else ""
+            )
+            title = " ".join(x for x in (code, name) if x) or "指数"
+            cards.append(
+                f'<article class="advice-card {_advice_signal_class(signal)}">'
+                f'<div class="advice-head"><span class="advice-title">{escape(title)}</span>'
+                f'<span class="advice-badge">{escape(signal)}</span>{score_html}</div>'
+                f'<pre class="advice-body">{escape(text)}</pre></article>'
+            )
+        inner = f'<div class="advice-grid">{"".join(cards)}</div>'
+    else:
+        inner = '<p class="advice-empty">当日建议待刷新（运行 push.py 更新本区块）。</p>'
+    return (
+        f"{DAILY_ADVICE_START}\n"
+        f'<section id="daily-advice"><h2>当日买卖建议</h2>'
+        f'<p class="advice-meta">生成时间：{escape(ts)} · 共 {len(sections or [])} 只指数</p>'
+        f"{inner}</section>\n{DAILY_ADVICE_END}"
+    )
+
+
+_DAILY_ADVICE_RE = re.compile(
+    re.escape(DAILY_ADVICE_START) + r".*?" + re.escape(DAILY_ADVICE_END),
+    re.DOTALL,
+)
+
+
+def refresh_daily_advice(path, modules=None, *, generate=None):
+    """只刷新回测 HTML 中的当日建议区块，图表数据原样保留；原子写。"""
+    if generate is None:
+        from report import generate_reports
+
+        def generate(mods):
+            return generate_reports(modules=mods or ["all"])
+
+    target = Path(path)
+    try:
+        _, sections = generate(modules)
+        block = render_daily_advice_block(sections)
+    except Exception as exc:  # noqa: BLE001 - 定时任务需可观测失败
+        block = render_daily_advice_block([], error=exc)
+        _write_block(target, block, strict=False)
+        raise
+
+    before = target.read_text(encoding="utf-8") if target.exists() else ""
+    _write_block(target, block, strict=False, original=before)
+    return target
+
+
+def _write_block(target: Path, block: str, *, strict: bool, original: str | None = None):
+    """将 block 写入 target：命中标记则替换，0 标记走锚点插入，多标记 abort。"""
+    src = original if original is not None else (target.read_text(encoding="utf-8") if target.exists() else "")
+    matches = _DAILY_ADVICE_RE.findall(src)
+    if len(matches) > 1:
+        raise RuntimeError("HTML 中存在多个 DAILY_ADVICE 标记块，拒绝写入")
+
+    if len(matches) == 1:
+        out = _DAILY_ADVICE_RE.sub(lambda _m: block, src, count=1)
+    else:
+        out = _insert_block(src, block)
+
+    _atomic_write(target, out)
+
+
+def _insert_block(src: str, block: str) -> str:
+    """锚点回退：#chart 前 → </body> 前 → 整页重生成。"""
+    anchor = '<div id="chart"></div>'
+    if anchor in src:
+        return src.replace(anchor, f"{block}\n  {anchor}", 1)
+    if "</body>" in src:
+        return src.replace("</body>", f"  {block}\n</body>", 1)
+    return (
+        "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>当日买卖建议</title>"
+        f"<style>{_DAILY_ADVICE_CSS}</style></head><body>{block}</body></html>"
+    )
+
+
+def _atomic_write(target: Path, content: str):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp_name, target)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
 
 
 def append_sell_dates_column(table: pd.DataFrame, sell_dates: list) -> pd.DataFrame:
@@ -111,14 +254,18 @@ def render_backtest_html(
     end_date: str | None = None,
     subtitle: str = "",
     return_pct_by_code: dict[str, float | None] | None = None,
+    daily_sections: list[dict] | None = None,
 ) -> str:
     """生成含交互折线图的自包含 HTML。"""
     payload = build_chart_payload(daily_tables)
     if not payload:
         return (
             "<!DOCTYPE html><html lang='zh-CN'><head>"
-            "<meta charset='UTF-8'><title>无数据</title></head>"
-            "<body><p>无可用图表数据</p></body></html>"
+            "<meta charset='UTF-8'><title>无数据</title>"
+            f"<style>{_DAILY_ADVICE_CSS}</style></head>"
+            "<body>"
+            f"{render_daily_advice_block(daily_sections)}"
+            "<p>无可用图表数据</p></body></html>"
         )
 
     codes = sort_codes_by_return(list(payload.keys()), return_pct_by_code)
@@ -131,6 +278,7 @@ def render_backtest_html(
     default_filter_end = all_dates[-1] if all_dates else today.isoformat()
 
     data_json = json.dumps(payload, ensure_ascii=False)
+    advice_block = render_daily_advice_block(daily_sections)
     page_title = title
     page_subtitle = subtitle or "买入标准：当前 config 阈值"
     options_html = "\n".join(
@@ -171,11 +319,13 @@ def render_backtest_html(
     #chart {{ width: 100%; height: 520px; background: #fff; border-radius: 8px;
       box-shadow: 0 1px 3px rgba(0,0,0,.08); }}
     .legend-hint {{ font-size: 0.8rem; color: #888; margin-top: 8px; }}
+    {_DAILY_ADVICE_CSS}
   </style>
 </head>
 <body>
   <h1 id="pageTitle">{escape(page_title)}</h1>
   <p class="meta" id="pageMeta">{escape(page_subtitle)}</p>
+  {advice_block}
   <div class="toolbar">
     <label>指数
       <select id="indexSelect">{options_html}</select>
@@ -646,8 +796,20 @@ def save_backtest_html(
     end_date: str | None = None,
     subtitle: str = "",
     return_pct_by_code: dict[str, float | None] | None = None,
+    daily_sections: list[dict] | None = None,
 ) -> str:
-    """写入 HTML 文件并返回路径。"""
+    """写入 HTML 并返回路径；目标已存在时保留其当日建议卡片，避免回测重写覆盖。"""
+    if daily_sections is None and Path(path).exists():
+        old = Path(path).read_text(encoding="utf-8")
+        match = _DAILY_ADVICE_RE.search(old)
+        if match:
+            # 复用旧区块（含卡片与生成时间），保持回测重写幂等
+            daily_block = match.group(0)
+        else:
+            daily_block = render_daily_advice_block()
+    else:
+        daily_block = render_daily_advice_block(daily_sections)
+
     html = render_backtest_html(
         title,
         daily_tables,
@@ -656,6 +818,8 @@ def save_backtest_html(
         subtitle=subtitle,
         return_pct_by_code=return_pct_by_code,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+    # render 内已插入占位/传入区块；此处把保留的旧区块替换回去
+    html = _DAILY_ADVICE_RE.sub(lambda _m: daily_block, html, count=1)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(html, encoding="utf-8")
     return str(path)
