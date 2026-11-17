@@ -24,7 +24,6 @@ def signal_backtest_overlay(patches: dict | None):
     old_env: dict[str, str | None] = {}
     old_config: dict[str, Any] = {}
     old_cyb: dict[str, Any] = {}
-    old_rotation: dict[str, Any] = {}
 
     try:
         for key, val in patches.get("env", {}).items():
@@ -43,14 +42,6 @@ def signal_backtest_overlay(patches: dict | None):
                 old_cyb[attr] = getattr(cyb_mod, attr)
                 setattr(cyb_mod, attr, val)
 
-        rot_mod = None
-        if patches.get("rotation_sell_attrs"):
-            import rotation_sell as rot_mod  # noqa: F811
-
-            for attr, val in patches["rotation_sell_attrs"].items():
-                old_rotation[attr] = getattr(rot_mod, attr)
-                setattr(rot_mod, attr, val)
-
         clear_signal_caches()
         yield
     finally:
@@ -68,11 +59,5 @@ def signal_backtest_overlay(patches: dict | None):
 
             for attr, val in old_cyb.items():
                 setattr(cyb_mod, attr, val)
-
-        if old_rotation:
-            import rotation_sell as rot_mod
-
-            for attr, val in old_rotation.items():
-                setattr(rot_mod, attr, val)
 
         clear_signal_caches()

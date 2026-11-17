@@ -1,6 +1,6 @@
 """回测风险指标与卖出开关。"""
 
-from config.env import _env_bool, _env_float, _env_int, _env_float_any, _env_int_any, _env_str
+from config.env import _env_bool, _env_float, _env_int, _env_float_any, _env_int_any
 
 # --- 回测风险指标 ---
 BACKTEST_RISK_FREE_RATE = _env_float("BACKTEST_RISK_FREE_RATE", 0.024)
@@ -12,33 +12,6 @@ US_INDEX_SELL_ENABLED = _env_bool("US_INDEX_SELL_ENABLED", True)
 # 分批/移动止盈触发后：持仓浮盈须回落至该阈值及以下才允许再买入（默认关，与无人为限频一致）
 SELL_REBUY_GATE_ENABLED = _env_bool("SELL_REBUY_GATE_ENABLED", False)
 SELL_REBUY_MAX_GAIN_PCT = _env_float("SELL_REBUY_MAX_GAIN_PCT", 0.30)
-
-# --- 轮动卖出：仅在有其他指数买点时卖出，并优先复用释放资金 ---
-ROTATION_SELL_ENABLED = _env_bool("ROTATION_SELL_ENABLED", True)
-ROTATION_MARGINAL_HURDLE_ANN_PCT = _env_float(
-    "ROTATION_MARGINAL_HURDLE_ANN_PCT", 10.0
-)
-
-# --- 牛熊市场状态（基于年区间位置 + MA 斜率，无额外数据源）---
-MARKET_REGIME_ENABLED = _env_bool("MARKET_REGIME_ENABLED", False)
-MARKET_REGIME_PROXY_CODES = tuple(
-    c.strip()
-    for c in _env_str("MARKET_REGIME_PROXY_CODES", "399006,NDX").split(",")
-    if c.strip()
-)
-MARKET_REGIME_BULL_RANGE_MIN = _env_float("MARKET_REGIME_BULL_RANGE_MIN", 0.58)
-MARKET_REGIME_BULL_MA_SLOPE_MIN = _env_float("MARKET_REGIME_BULL_MA_SLOPE_MIN", 0.0)
-MARKET_REGIME_BEAR_RANGE_MAX = _env_float("MARKET_REGIME_BEAR_RANGE_MAX", 0.40)
-MARKET_REGIME_BEAR_MA_SLOPE_MAX = _env_float("MARKET_REGIME_BEAR_MA_SLOPE_MAX", -0.025)
-# 牛市：少买、提高轮动估值门槛（难卖）；熊市：多买、降低门槛（易轮动）
-MARKET_REGIME_BULL_BUY_MULT = _env_float("MARKET_REGIME_BULL_BUY_MULT", 0.90)
-MARKET_REGIME_BEAR_BUY_MULT = _env_float("MARKET_REGIME_BEAR_BUY_MULT", 1.12)
-MARKET_REGIME_BULL_ROTATION_HURDLE = _env_float(
-    "MARKET_REGIME_BULL_ROTATION_HURDLE", 14.0
-)
-MARKET_REGIME_BEAR_ROTATION_HURDLE = _env_float(
-    "MARKET_REGIME_BEAR_ROTATION_HURDLE", 7.0
-)
 
 
 def cn_broad_sell_enabled(index_code):

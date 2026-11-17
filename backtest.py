@@ -8,19 +8,11 @@ import sys
 
 MODE_MODULES = {
     "trade": "backtest_trade_signals",
-    "rotation": "backtest_rotation",
-    "regime": "backtest_regime_compare",
-    "wfa": "backtest_wfa",
-    "optimize": "backtest_optimize",
 }
 
 MODE_HELP = {
-    "trade": "买卖波段 + 智能轮动（trade_inception_present.md/html）",
-    "rotation": "组合级轮动对比（rotation_compare.md）",
-    "regime": "牛熊状态开关对比（regime_compare.md）",
-    "wfa": "轮动策略样本外检验（wfa_rotation.md）",
-    "optimize": "阈值/仓位参数搜索（optimize_*.md）",
-    "inception": "买卖波段回测（等同 python backtest.py --mode trade）",
+    "trade": "分指数买卖波段回测（trade_inception_present.md/html）",
+    "inception": "分指数买卖回测（等同 python backtest.py --mode trade）",
 }
 
 

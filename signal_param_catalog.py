@@ -14,7 +14,7 @@ class SignalParam:
 
     id: str
     label: str
-    side: str  # buy | sell | rotation | alloc
+    side: str  # buy | sell | alloc
     index: str | None
     default: float
     sweep: tuple[float, ...]
@@ -24,8 +24,6 @@ class SignalParam:
 
     def verdict_threshold_pct(self) -> float:
         """判定「有影响」的最小验证段利差变化（百分点）。"""
-        if self.side == "rotation":
-            return 0.20
         if self.side == "alloc":
             return 0.30
         return 0.15
@@ -304,22 +302,6 @@ def build_signal_param_catalog() -> list[SignalParam]:
             ),
         ])
 
-    params.append(
-        SignalParam(
-            id="rotation.hurdle_ann_pct",
-            label="轮动边际门槛（年化%）",
-            side="rotation",
-            index=None,
-            default=config.ROTATION_MARGINAL_HURDLE_ANN_PCT,
-            sweep=(7.0, 10.0, 12.0, 14.0, 16.0),
-            higher_is_looser=True,
-            apply=lambda v: {
-                "config_attrs": {"ROTATION_MARGINAL_HURDLE_ANN_PCT": v},
-                "rotation_sell_attrs": {"ROTATION_MARGINAL_HURDLE_ANN_PCT": v},
-            },
-        )
-    )
-
     return params
 
 
@@ -368,7 +350,7 @@ def active_search_space(screen_results: list[dict] | None = None) -> dict[str, l
         return {
             p.id: list(p.sweep)
             for p in build_signal_param_catalog()
-            if p.side in ("buy", "sell", "rotation")
+            if p.side in ("buy", "sell")
         }
     space: dict[str, list[float]] = {}
     for row in screen_results:

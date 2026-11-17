@@ -12,7 +12,7 @@
 
 报告末尾附带**跨指数信号对比表**（按强度排序），便于横向比较。
 
-**实盘报告 vs 回测**：`report.py` 仅输出买入/观望（宽基另含移动止盈卖点）；回测统一走 `backtest_trade_signals.py` **买卖口径**（默认智能轮动：共享资金池 + 轮动门控），三指数在回测中均可触发卖出——宽基分批/移动止盈、创业板估值分位+移动止盈、美股移动止盈+估值卖点。仅买入回测口径已下线。详见下文「买卖波段回测」。
+**实盘报告 vs 回测**：`report.py` 仅输出买入/观望（宽基另含移动止盈卖点）；回测统一走 `backtest_trade_signals.py` **买卖口径**，三指数在回测中均可触发卖出——宽基分批/移动止盈、创业板估值分位+移动止盈、美股移动止盈+估值卖点。仅买入回测口径已下线。详见下文「买卖波段回测」。
 
 ## 环境要求
 
@@ -272,11 +272,7 @@ python scripts/verify_snapshots.py --full
 
 | 模式 | 输出 | 区间默认 | 含义 |
 |------|------|----------|------|
-| `trade` | `trade_inception_present.md/html` | **2015-01-01**→最新 | 买卖口径（默认智能轮动：共享资金池 + 轮动门控卖点） |
-| `rotation` | `rotation_compare.md` | **2015-01-01**→最新 | 组合级对比：全持有 / 孤立卖出 / 池内卖出 / 智能轮动 |
-| `regime` | `regime_compare.md` | **2015-01-01**→最新 | 牛熊状态开关对比（`MARKET_REGIME_ENABLED`） |
-| `wfa` | `wfa_rotation.md` | 滚动窗口 | 轮动策略样本外（WFA）稳健性检验 |
-| `optimize` | `optimize_*.md` | 可配置 | 阈值/仓位参数搜索（含 WFA 精修） |
+| `trade` | `trade_inception_present.md/html` | **2015-01-01**→最新 | 买卖口径 |
 | `inception` | 同 `trade` | **2015-01-01**→最新 | 买卖波段全量回测（等同 `--mode trade`） |
 
 `backtest.py` 默认模式为 `trade`：
@@ -285,10 +281,6 @@ python scripts/verify_snapshots.py --full
 # 买卖波段回测（默认，等价 -m trade / -m inception）
 python backtest.py
 python backtest.py -m trade --start 2015-01-01
-
-# 组合级轮动对比 / 牛熊开关对比
-python backtest.py -m rotation
-python backtest.py -m regime
 ```
 
 仅买入回测（原 `-m buy`）已移除：直接运行 `python backtest_buy_signals.py` 仅输出下线提示。
@@ -364,36 +356,26 @@ python backtest.py -m regime
 | `BUY_AMOUNT_CHANGE_SENSITIVITY` | `10` | 敏感度 |
 | `BUY_AMOUNT_CHANGE_MIN_MULT` / `MAX_MULT` | `0.5` / `2.0` | 系数上下限 |
 
-#### 轮动与牛熊（`push.env`）
+#### 卖出开关（`push.env`）
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `ROTATION_SELL_ENABLED` | `true` | 回测启用智能轮动（共享资金池 + 门控） |
-| `ROTATION_MARGINAL_HURDLE_ANN_PCT` | `10` | 估值卖出门槛：持仓年化浮盈低于此值（%）才卖 |
-| `MARKET_REGIME_ENABLED` | `false` | 牛熊市场状态调节买入/轮动门槛 |
-| `MARKET_REGIME_PROXY_CODES` | `399006,NDX` | 牛熊判定代理指数 |
 | `US_INDEX_SELL_ENABLED` | `true` | 回测中美股是否启用卖点 |
 
-### 买卖波段回测（智能轮动）
+### 买卖波段回测
 
-`backtest_trade_signals.py` 默认输出**智能轮动**策略（`ROTATION_SELL_ENABLED=true`）：
+`backtest_trade_signals.py` 默认输出买卖波段策略：
 
-- **共享资金池**：卖出释放的资金优先用于同日其他指数的买入，减少闲置现金
-- **轮动门控**（`rotation_sell.py`）：仅当**同日有其他指数触发买入**时才允许卖出；估值类卖点还需持仓年化浮盈 **< `ROTATION_MARGINAL_HURDLE_ANN_PCT`**（默认 **10%**），避免「卖早了、钱闲着」
 - **移动止盈**：宽基、创业板、美股在回测中均启用（分批或回撤）
 - **估值卖点**：创业板（PE/PB 分位、PEG）与美股（Forward PE 分位高等条件）；宽基估值卖点已移除
 
-默认区间自 **2015-01-01**（可用 `--start` 覆盖）。报告同时对比**智能轮动 vs 全持有**的组合收益、XIRR 与资金占用。
+默认区间自 **2015-01-01**（可用 `--start` 覆盖）。
 
 ```bash
 python backtest_trade_signals.py
-python backtest_rotation.py          # 四种组合模式横向对比
-python backtest_regime_compare.py    # 牛熊状态开关对比
 ```
 
-结果写入 `output/backtest/trade_inception_present.md`（含组合收益、买卖次数及卖点日期）。
-
-**可选：牛熊市场状态**（`MARKET_REGIME_ENABLED=false`，默认关）：基于创业板/纳指的区间位置与 MA 斜率判定牛/熊/震荡，动态调整买入金额乘数与轮动门槛（见 `market_regime.py`）。
+结果写入 `output/backtest/trade_inception_present.md`（含买卖次数及卖点日期）。
 
 **实盘操作提示（美股）**：纳指信号约每 7 个交易日一次，跟投繁琐时可改为**周度合并执行**（例如周四一次性买入本周累计建议金额），成本影响通常有限，但能减轻操作负担。回测按信号日全额计入，**未模拟 QDII 日限购**。
 ---
@@ -408,7 +390,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | `push.py` | **微信推送入口**。调用 `report.generate_reports()` 生成报告，经 Server酱 推送。 |
 | `sync_market_duckdb.py` | **推荐**：统一同步公网缓存、策略数据、StockDB 到 DuckDB。 |
 | `sync_data_cache.py` | 仅预拉/增量更新公网 CSV 缓存（不写入 DuckDB）。 |
-| `backtest.py` | **统一回测入口**（`-m trade/rotation/regime/wfa/optimize/inception`，默认 trade）。 |
+| `backtest.py` | **统一回测入口**（`-m trade/inception`，默认 trade）。 |
 | `backtest_trade_signals.py` 等 | 各模式实现模块（由 `backtest.py` 调用，也可直接运行）。 |
 
 ### 批处理
@@ -467,8 +449,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | `sell_trailing.py` | 移动止盈（浮盈达标后自峰值回撤卖出） |
 | `buy_amount_config.py` / `buy_amount_budget.py` / `buy_amount_change.py` | 买入金额：基准、年度预算、涨跌缩放 |
 | `buy_amount_allocation.py` / `buy_amount_ranking.py` | 位置分配（默认）与收益率排名分配（对比用） |
-| `rotation_sell.py` / `market_regime.py` | 轮动卖出门控与牛熊市场状态 |
-| `backtest_rotation.py` / `backtest_metrics.py` | 组合轮动回测与风险指标 |
+| `backtest_metrics.py` | 风险指标 |
 | `backtest_html.py` | 回测 HTML 图表 |
 | `notify.py` | Server酱 微信推送封装，与报告生成解耦。 |
 
@@ -534,7 +515,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 
 1. **分批 + 移动止盈**（科创50）：以**初始仓位**为基准分三档——浮盈 **50%** 卖 **1/3**、**80%** 再卖 **1/3**；剩余 **1/3** 进入移动止盈，自持仓峰值回撤 **≥ 12.5%** 清仓。
 2. **移动止盈兜底**（宽基/科创50）：浮盈 **≥ 40%** 后自峰值回撤 **≥ 10%** 清仓。
-3. 卖出与买入互斥：当日若仍满足买入条件，不触发卖出。回测中卖点受**轮动门控**约束。
+3. 卖出与买入互斥：当日若仍满足买入条件，不触发卖出。
 
 | 指数 | 代码 | 买入（分位窗口约 10 年） | 卖出 |
 |------|------|--------------------------|------|
@@ -547,7 +528,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 | 方向 | 条件（须全部满足） |
 |------|-------------------|
 | **买入** | 加权 PE 分位 **≤ 46%**；加权 PB 分位 **≤ 38%**；PEG（近 5 年盈利 CAGR，自动滚动，不足时回退 **16.63%**）**≤ 2.2**；距 90 日低点 **≤ 6%**；近1年区间 **≤ 42%**；距 252 日高点回撤 **≥ 18%**；MA 趋势过滤 |
-| **卖出（回测）** | 任一触发：①移动止盈——自峰值回撤 **≥ 12%**（最低浮盈 **50%**、最短持有 **120 天**、成本回看 **252 天**），分批 50% 卖 1/3、100% 再卖 1/3；②估值——PE 分位 **≥ 78%**、PB 分位 **≥ 78%**；③PEG(5年) **≥ 3.0**；④组合（PE≥60% 且 PB≥60% 且 PEG≥3.0）。受轮动门控约束；`CYB_SELL_ENABLED=false` 可关闭 |
+| **卖出（回测）** | 任一触发：①移动止盈——自峰值回撤 **≥ 12%**（最低浮盈 **50%**、最短持有 **120 天**、成本回看 **252 天**），分批 50% 卖 1/3、100% 再卖 1/3；②估值——PE 分位 **≥ 78%**、PB 分位 **≥ 78%**；③PEG(5年) **≥ 3.0**；④组合（PE≥60% 且 PB≥60% 且 PEG≥3.0）。`CYB_SELL_ENABLED=false` 可关闭 |
 | **卖出（实盘报告）** | 无（`report.py` 对创业板仅输出买入/观望；卖出逻辑用于回测口径） |
 
 - **分位窗口**：PE/PB 约 10 年（2520 交易日）。
@@ -563,16 +544,16 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 - **PEG 增速回退**：显式配置 → 隐含增速 → 5 年历史增速 → 兜底（NDX 19%）。详见下文「美股估值数据与 PEG 回退逻辑」。
 - **利率斜率**：21 交易日美债升幅超过 40bp 时暂缓买入（防 2022 式利率急升）。
 - **卖出（实盘报告）**：无（长期持有型）；建议通过场外 QDII 基金执行，注意限购。
-- **卖出（回测）**：移动止盈（NDX 浮盈 **≥ 50%** 后回撤 **≥ 12%**）+ 估值卖点（Forward PE 分位 **≥ 88%** 且距低点 **≥ 30%**），受轮动门控约束；可用 `US_INDEX_SELL_ENABLED=false` 关闭。
+- **卖出（回测）**：移动止盈（NDX 浮盈 **≥ 50%** 后回撤 **≥ 12%**）+ 估值卖点（Forward PE 分位 **≥ 88%** 且距低点 **≥ 30%**），可用 `US_INDEX_SELL_ENABLED=false` 关闭。
 - **环境变量前缀**：`NDX_*`。
 
 ### 买卖标准速查
 
 | 模块 | 指数数 | 买入核心 | 卖出核心（实盘报告 / 回测） |
 |------|--------|----------|------------------------------|
-| 宽基 | 2 | 股债利差分位 + PE/PB 分位 + 价格位置（评分制） | 移动止盈（分批或回撤） / 同左 + 轮动门控 |
-| 创业板 | 1 | PE/PB 分位 + PEG(5年) + 价格位置 | 无 / 移动止盈(12%) + 估值分位(PE/PB≥78%、PEG≥3.0) + 轮动门控 |
-| 美股 | 2 | Forward PE + PEG + 利率分位 + 价格位置 | 无 / 移动止盈 + 估值（轮动门控） |
+| 宽基 | 2 | 股债利差分位 + PE/PB 分位 + 价格位置（评分制） | 移动止盈（分批或回撤） / 同左 |
+| 创业板 | 1 | PE/PB 分位 + PEG(5年) + 价格位置 | 无 / 移动止盈(12%) + 估值分位(PE/PB≥78%、PEG≥3.0) |
+| 美股 | 2 | Forward PE + PEG + 利率分位 + 价格位置 | 无 / 移动止盈 + 估值 |
 
 ---
 
@@ -591,9 +572,7 @@ python backtest_regime_compare.py    # 牛熊状态开关对比
 ├── signal_format.py / drop_to_buy.py / price_position.py / sell_trailing.py
 ├── buy_amount_config.py / buy_amount_budget.py / buy_amount_change.py
 ├── buy_amount_allocation.py / buy_amount_ranking.py
-├── rotation_sell.py / market_regime.py
 ├── index_meta.py / data_sources.py / data_cache.py
-├── backtest_regime_compare.py / backtest_wfa.py / backtest_optimize.py
 ├── backtest_html.py / backtest_metrics.py
 ├── notify.py
 ├── factor_loader.py / factor_snapshot_loader.py  # 因子查询兼容入口
@@ -687,7 +666,7 @@ PEG 买入判定：
 
 ---
 
-## 止盈策略：移动止盈 + 智能轮动
+## 止盈策略：移动止盈
 
 ### 移动止盈（单指数）
 
@@ -701,27 +680,15 @@ PEG 买入判定：
 
 实现见 `sell_trailing.simulate_trades_trailing`。三指数回测均启用卖点；仅买入口径已下线。
 
-### 智能轮动（组合级，默认开启）
-
-`ROTATION_SELL_ENABLED=true` 时，回测在组合层面模拟：
-
-1. **共享资金池**：各指数卖出所得进入统一现金池，优先满足同日其他指数的买入
-2. **轮动门控**：仅当同日**有其他指数触发买入**时才执行卖出；估值类卖点还需持仓年化 **< 门槛**（默认 10%，牛熊状态下可调）
-3. **牛熊调节**（`MARKET_REGIME_ENABLED=false` 默认关）：牛市提高轮动门槛、略减买入；熊市降低门槛、略增买入
-
-回测见 `backtest_trade_signals.py` → `trade_inception_present.md`；独立对比见 `backtest_rotation.py`。
-
 **分批卖出后的行为**（当前实现）：
 
 - 同一持仓内，各浮盈档位（50%/80%）**仅触发一次**（`stages_triggered` 记录）；不会在震荡中于同一档位反复卖出。
 - 持仓未清零时继续买入，会**累加** `initial_units_at_position`，后续分批卖出按累计初始份额计算。
 - **清仓后**下一笔买入视为新仓位，分批档位重置。
-- **轮动门控**（`ROTATION_SELL_ENABLED`，**默认开**）：无其他指数买点时不卖出，避免资金闲置；可用 `ROTATION_SELL_ENABLED=false` 退回各指数孤立卖出模式。
 - **止盈后再买入约束**（`SELL_REBUY_GATE_ENABLED`，**默认关**）：可选开启；开启后一旦某档分批止盈已触发（或峰值浮盈曾达首档），持仓浮盈须回落至 **≤ 30%**（`SELL_REBUY_MAX_GAIN_PCT`）才允许继续买入。与「无冷却」理念一致时保持关闭，靠估值/价格位置硬门槛控频。
 - **买入冷却期**（`BUY_COOLDOWN_ENABLED`，**默认关**）：可选人为限制连续买入间隔；默认关闭后，买入次数完全由硬门槛决定。
-- **牛熊市场状态**（`MARKET_REGIME_ENABLED`，**默认关**）：基于代理指数（默认 399006/NDX）的区间位置与 MA 斜率判定，动态调整买入乘数与轮动门槛。
 
-**组合再平衡**：系统不自动再平衡。买入金额由位置分配动态决定，智能轮动通过资金池复用提高资金效率；因各指数触发频率不同，持仓市值会漂移——请按年度或主观风险偏好**手动再平衡**。
+**组合再平衡**：系统不自动再平衡。买入金额由位置分配动态决定；因各指数触发频率不同，持仓市值会漂移——请按年度或主观风险偏好**手动再平衡**。
 
 ---
 

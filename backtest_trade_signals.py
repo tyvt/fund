@@ -34,8 +34,6 @@ from config import (
     get_cn_broad_signal_config,
     get_us_index_sell_config,
     BACKTEST_OUTPUT_DIR,
-    ROTATION_MARGINAL_HURDLE_ANN_PCT,
-    ROTATION_SELL_ENABLED,
     resolve_backtest_amounts,
     US_INDEX_KEYS,
     us_index_sell_enabled,
@@ -49,13 +47,6 @@ from sell_trailing import (
 
 BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 DEFAULT_START = "2015-01-01"
-_rotation_sell_dates_cache: dict[str, list[str]] = {}
-
-
-@dataclass
-class PortfolioSummary:
-    rotation: object
-    hold: object
 
 
 @dataclass
@@ -570,62 +561,11 @@ def _resolve_trade_amount(
     )
 
 
-def _merge_rotation_results(hold_results, rotation_portfolio) -> list[TradeResult]:
-    rot_by_code = rotation_portfolio.per_index
-    merged = []
-    for hold in hold_results:
-        rot = rot_by_code.get(hold.code)
-        if rot is None:
-            merged.append(hold)
-            continue
-        note = hold.note
-        if rot.has_sell:
-            note = "智能轮动（共享资金池；单指数市值不含池内未分配现金）"
-        merged.append(
-            TradeResult(
-                code=hold.code,
-                name=hold.name,
-                has_sell=rot.has_sell,
-                buy_count=rot.buy_count,
-                sell_count=rot.sell_count,
-                total_bought=rot.new_money_in,
-                total_sold=rot.sell_proceeds,
-                final_units=rot.final_units,
-                final_price=rot.final_price,
-                final_date=rot.final_date,
-                final_value=rot.final_value,
-                profit=rot.profit,
-                return_pct=rot.return_pct,
-                sharpe_ratio=hold.sharpe_ratio,
-                benchmark_sharpe=hold.benchmark_sharpe,
-                max_drawdown_pct=hold.max_drawdown_pct,
-                annualized_return_pct=hold.annualized_return_pct,
-                xirr_pct=None,
-                deployed_annualized_return_pct=None,
-                capital_utilization_pct=None,
-                time_in_market_pct=None,
-                note=note,
-                buy_dates=list(rot.buy_dates),
-                sell_dates=list(rot.sell_dates),
-            )
-        )
-    return merged
-
-
-def _cache_rotation_sell_dates(per_index: dict) -> None:
-    global _rotation_sell_dates_cache
-    _rotation_sell_dates_cache = {
-        code: list(item.sell_dates) for code, item in per_index.items()
-    }
-
-
 def backtest_all(
     start_date=DEFAULT_START,
     end_date=None,
     amounts=None,
     panels=None,
-    *,
-    rotation: bool | None = None,
 ):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -636,47 +576,6 @@ def backtest_all(
         amounts = resolve_backtest_amounts(panels=panels)
     panels = panels or get_panels()
     _preload_ranking_panels(panels)
-
-    if rotation is None:
-        rotation = ROTATION_SELL_ENABLED
-
-    if rotation:
-        hold_results, _ = backtest_all(
-            start_date,
-            end_date,
-            amounts=amounts,
-            panels=panels,
-            rotation=False,
-        )
-        from backtest_rotation import run_portfolio_rotation
-        from config import MARKET_REGIME_ENABLED
-        from market_regime import build_regime_by_day
-
-        regime_by_day = None
-        if MARKET_REGIME_ENABLED:
-            regime_by_day = build_regime_by_day(panels, start_date, end_date)
-
-        rot = run_portfolio_rotation(
-            start_date,
-            end_date,
-            amounts,
-            panels,
-            mode="rotation",
-            regime_by_day=regime_by_day,
-        )
-        hold_port = run_portfolio_rotation(
-            start_date,
-            end_date,
-            amounts,
-            panels,
-            mode="hold",
-            use_pool=False,
-            rotation_gate=False,
-            regime_by_day=regime_by_day,
-        )
-        results = _merge_rotation_results(hold_results, rot)
-        _cache_rotation_sell_dates(rot.per_index)
-        return results, PortfolioSummary(rotation=rot, hold=hold_port)
 
     results = []
 
@@ -882,18 +781,7 @@ def resolve_chart_sell_dates(
     date_col="date",
     price_col="close",
 ):
-    """按波段/轮动回测模拟结果返回图表用卖出日期。"""
-    if _rotation_sell_dates_cache and code in _rotation_sell_dates_cache:
-        # rotation 缓存兜底：禁卖指数不回灌卖出日；未知指数保留缓存原样。
-        us_enabled = any(
-            m["code"] == code and us_index_sell_enabled(k)
-            for k, m in US_INDEX_META.items()
-        )
-        cyb_enabled = code == CYB_INDEX["code"]
-        if not cn_broad_sell_enabled(code) and not us_enabled and not cyb_enabled:
-            return []
-        return list(_rotation_sell_dates_cache[code])
-
+    """按波段回测模拟结果返回图表用卖出日期。"""
     amt = get_chart_buy_amount(code, amounts)
     if amt <= 0:
         return []
@@ -1148,18 +1036,6 @@ def _md_sharpe(value):
 
 
 def _trade_totals(results, portfolio=None):
-    if portfolio is not None:
-        rot = portfolio.rotation
-        return {
-            "buy_count": rot.buy_count,
-            "sell_count": rot.sell_count,
-            "total_bought": rot.total_new_money,
-            "trade_value": rot.final_value,
-            "trade_profit": rot.profit,
-            "trade_ret": rot.return_pct,
-            "rotation_xirr": rot.xirr_pct,
-            "pool_reused": rot.pool_reused,
-        }
     total_bought = sum(r.total_bought for r in results)
     trade_value = sum(r.final_value for r in results)
     trade_profit = sum(r.profit for r in results)
@@ -1256,32 +1132,6 @@ def _format_amount_snapshot(amounts):
     return []
 
 
-def _format_portfolio_section(portfolio):
-    rot = portfolio.rotation
-    hold = portfolio.hold
-    diff_ret = (rot.return_pct or 0) - (hold.return_pct or 0)
-    diff_xirr = (rot.xirr_pct or 0) - (hold.xirr_pct or 0)
-    return [
-        "## 组合收益（智能轮动 vs 全持有）",
-        "",
-        "> **智能轮动**：共享资金池 + 轮动门控（仅当同日有其他指数买点时卖出；"
-        f"估值卖需持仓年化 < **{ROTATION_MARGINAL_HURDLE_ANN_PCT:.0f}%**）",
-        "",
-        "| 策略 | 净投入 | 期末市值 | 利润 | 总收益率 | XIRR | 买入次 | 卖出次 | 池复用 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-        f"| 全持有 | {_md_money(hold.total_new_money)} | {_md_money(hold.final_value)} | "
-        f"{hold.profit:+.0f} | {_md_pct(hold.return_pct)} | {_md_pct(hold.xirr_pct)} | "
-        f"{hold.buy_count} | {hold.sell_count} | 0 |",
-        f"| **智能轮动** | {_md_money(rot.total_new_money)} | {_md_money(rot.final_value)} | "
-        f"{rot.profit:+.0f} | {_md_pct(rot.return_pct)} | {_md_pct(rot.xirr_pct)} | "
-        f"{rot.buy_count} | {rot.sell_count} | {_md_money(rot.pool_reused)} |",
-        "",
-        f"- 智能轮动 vs 全持有：总收益率差 **{diff_ret:+.1f}** pct，"
-        f"XIRR 差 **{diff_xirr:+.1f}** pct",
-        "",
-    ]
-
-
 def format_markdown(results, start_date, end_date, amounts, portfolio=None):
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     val_dates = [r.final_date for r in results if r.final_date is not None]
@@ -1303,7 +1153,6 @@ def format_markdown(results, start_date, end_date, amounts, portfolio=None):
         "",
         *_format_config_snapshot(),
         *_format_amount_snapshot(amounts),
-        *(_format_portfolio_section(portfolio) if portfolio else []),
         "## 交易统计",
         "",
         "| 指数 | 代码 | 策略 | 买入次 | 卖出次 | 总投入 | 备注 |",
@@ -1393,14 +1242,6 @@ def print_table(results, start_date, end_date, amounts, portfolio=None):
         f"\n=== {start_date} 至 {end_label} 分指数买卖回测 "
         f"（{format_backtest_amount_note(amounts)}，截至 {val_date}） ==="
     )
-    if portfolio is not None:
-        rot = portfolio.rotation
-        hold = portfolio.hold
-        print(
-            f"组合 轮动 {rot.return_pct:+.1f}% / XIRR {rot.xirr_pct:+.1f}% | "
-            f"持有 {hold.return_pct:+.1f}% / XIRR {hold.xirr_pct:+.1f}% | "
-            f"池复用 {_md_money(rot.pool_reused)}"
-        )
     print(
         f"{'指数':<14} {'代码':<8} {'策略':<8} {'买入':>5} {'卖出':>5} "
         f"{'投入':>8} {'收益':>8} {'夏普':>6} {'回撤':>8}"
@@ -1525,7 +1366,6 @@ def main(argv=None):
             args.end,
             amounts=amounts,
             panels=panels,
-            rotation=False,
         )
         print_table(results, args.start, args.end, amounts, portfolio=portfolio)
         daily_tables = collect_trade_chart_tables(
