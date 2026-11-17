@@ -94,6 +94,7 @@ def _cn_broad_index_defaults(**overrides):
 _CN_BROAD_PER_INDEX_DEFAULTS = {
     # 科创50：夏普偏低但绝对收益高，轻度收紧
     "000688": _cn_broad_index_defaults(
+        percentile_min_days=250,
         buy_spread_percentile_min=64,
         buy_max_above_low_pct=0.07,
         buy_min_drawdown_from_high_pct=0.14,
