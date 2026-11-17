@@ -923,6 +923,27 @@ def resolve_chart_sell_dates(
             )
             return stats.get("sell_dates", []) if stats else []
 
+    # 创业板卖出日期：与回测同口径（移动止盈/分批 + 估值分位/PEG）
+    if code == CYB_INDEX["code"] and CYB_SELL_ENABLED:
+        trail_cfg = _cyb_trailing_cfg()
+        val_fn = cyb_valuation_sell_fn
+        if trail_cfg or val_fn:
+            stats = _run_index_trades(
+                panel,
+                code,
+                start_date,
+                end_date,
+                sim_amt,
+                buy_fn,
+                lambda r: False,
+                True,
+                trailing_cfg=trail_cfg,
+                valuation_sell_fn=val_fn,
+                date_col=date_col,
+                valuation_price_col=price_col,
+            )
+            return stats.get("sell_dates", []) if stats else []
+
     for key, meta in US_INDEX_META.items():
         if meta["code"] != code or not us_index_sell_enabled(key):
             continue
