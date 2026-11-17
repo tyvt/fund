@@ -895,7 +895,7 @@ def backtest_all(
             date_col="date",
         )
         if stats:
-            ret = stats.get("buy_only_return_pct")
+            ret = stats.get("return_pct")
             metrics = _attach_risk_metrics(
                 cyb_panel,
                 start_date,
