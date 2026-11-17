@@ -190,17 +190,20 @@ def _cn_broad_valuation_sell_fn(code):
     return None
 
 
+def _dividend_tier_fn(row):
+    from sell_trailing import row_field
+    from valuation_trend_sell import dividend_sell_tiers
+
+    return dividend_sell_tiers(
+        dividend_yield=row_field(row, "dividend_yield"),
+        spread=row_field(row, "spread"),
+    )
+
+
 def _dividend_trailing_cfg(code):
     if not dividend_sell_enabled(code):
         return None
-    cfg = get_dividend_sell_config(code)
-    if cfg.get("sell_trailing_drawdown_pct") is None:
-        return None
-    return {
-        "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
-        "min_unrealized_gain_pct": cfg.get("sell_min_unrealized_gain_pct"),
-        "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
-    }
+    return {"tier_sell_fn": _dividend_tier_fn}
 
 
 def _dividend_valuation_sell_fn(code):

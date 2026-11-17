@@ -1,8 +1,11 @@
 from valuation_trend_sell import (
+    TIER_DIV_SPREAD,
+    TIER_DIV_YIELD,
     TIER_EXTREME,
     TIER_TREND,
     TIER_VALUATION,
     active_sell_tiers,
+    dividend_sell_tiers,
     drawdown_amount_multiplier,
     units_for_new_tiers,
 )
@@ -52,6 +55,18 @@ def test_extreme_exits_remainder():
     )
     assert full
     assert sold == 60
+
+
+def test_dividend_spread_and_yield_tiers():
+    assert dividend_sell_tiers(dividend_yield=0.046, spread=0.024) == [TIER_DIV_SPREAD]
+    assert dividend_sell_tiers(dividend_yield=0.034, spread=0.024) == [
+        TIER_DIV_SPREAD,
+        TIER_DIV_YIELD,
+    ]
+    assert dividend_sell_tiers(dividend_yield=0.029, spread=0.02) == [TIER_EXTREME]
+    assert dividend_sell_tiers(dividend_yield=0.04, spread=0.014) == [TIER_EXTREME]
+    assert dividend_sell_tiers(dividend_yield=0.02, spread=0.01, is_buy=True) == []
+    assert dividend_sell_tiers(dividend_yield=None, spread=None) == []
 
 
 def test_drawdown_bands():

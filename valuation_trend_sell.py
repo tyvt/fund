@@ -10,10 +10,14 @@ import math
 TIER_VALUATION = "valuation"
 TIER_TREND = "trend"
 TIER_EXTREME = "extreme"
+TIER_DIV_SPREAD = "div_spread"
+TIER_DIV_YIELD = "div_yield"
 
 _TIER_FRACTION = {
     TIER_VALUATION: 1 / 3,
     TIER_TREND: 1 / 3,
+    TIER_DIV_SPREAD: 1 / 3,
+    TIER_DIV_YIELD: 1 / 3,
 }
 
 
@@ -82,13 +86,43 @@ def units_for_new_tiers(tiers, already, units, initial_units):
     if not pending or units <= 0 or initial_units <= 0:
         return 0.0, False, []
     if TIER_EXTREME in pending:
-        return float(units), True, [TIER_EXTREME, TIER_VALUATION, TIER_TREND]
+        return float(units), True, list(
+            {TIER_EXTREME, TIER_VALUATION, TIER_TREND, TIER_DIV_SPREAD, TIER_DIV_YIELD}
+        )
     fraction = sum(_TIER_FRACTION[tier] for tier in pending if tier in _TIER_FRACTION)
     sell_units = min(float(units), float(initial_units) * fraction)
     if sell_units <= 0:
         return 0.0, False, []
     full = sell_units >= float(units) - 1e-12
     return sell_units, full, list(pending)
+
+
+def dividend_sell_tiers(
+    *,
+    dividend_yield,
+    spread,
+    is_buy=False,
+    spread_trim=0.025,
+    yield_trim=0.035,
+    yield_exit=0.030,
+    spread_exit=0.015,
+):
+    """红利止盈。收益率与息差均为小数。买入日不卖；缺数不触发对应档。"""
+    if is_buy:
+        return []
+    div_yield = _num(dividend_yield)
+    gap = _num(spread)
+    extreme = (div_yield is not None and div_yield <= yield_exit) or (
+        gap is not None and gap <= spread_exit
+    )
+    if extreme:
+        return [TIER_EXTREME]
+    tiers = []
+    if gap is not None and gap <= spread_trim:
+        tiers.append(TIER_DIV_SPREAD)
+    if div_yield is not None and div_yield <= yield_trim:
+        tiers.append(TIER_DIV_YIELD)
+    return tiers
 
 
 def drawdown_amount_multiplier(pct_below_high):
