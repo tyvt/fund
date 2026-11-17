@@ -2,8 +2,6 @@
 
 import pandas as pd
 
-from price_position import price_position_sell_hit
-
 BUY_SIGNAL_COL = "_is_buy_signal"
 
 
@@ -147,20 +145,6 @@ def rebuy_allowed_after_take_profit(
     return current_gain <= max_gain_pct
 
 
-def valuation_sell_hit_us_index(snapshot, cfg):
-    """美股估值卖点：仅 TTM PE 分位 + 距低点涨幅（Forward PE 门槛已移除）。"""
-    trail_pct = snapshot.get("trailing_pe_percentile")
-    pct_above_low = snapshot.get("pct_above_low")
-    pe_hit = (
-        trail_pct is not None
-        and trail_pct >= cfg["sell_trailing_pe_percentile_min"]
-    )
-    price_hit = price_position_sell_hit(
-        pct_above_low, cfg["sell_max_above_low_pct"]
-    )
-    return pe_hit and price_hit
-
-
 def simulate_trades_trailing(
     panel,
     start_date,
@@ -218,7 +202,6 @@ def simulate_trades_trailing(
     use_trailing = trail.get("trailing_drawdown_pct") is not None
     stages = trail.get("stages") or []
     stages_triggered: set[float] = set()
-    tiers_triggered: set[str] = set()
     rebuy_max_gain = trail.get("rebuy_max_gain_pct")
     if rebuy_max_gain is None:
         from config import SELL_REBUY_MAX_GAIN_PCT
@@ -278,8 +261,6 @@ def simulate_trades_trailing(
                     min_hold_days=trail.get("min_hold_days"),
                     days_since_buy=days_since,
                 )
-            if partial_sell_units <= 0 and not is_sell and valuation_sell_fn:
-                is_sell = valuation_sell_fn(row)
 
         if is_buy and units > 0 and avg_cost is not None:
             if not rebuy_allowed_after_take_profit(
@@ -293,36 +274,12 @@ def simulate_trades_trailing(
             ):
                 is_buy = False
 
-        tier_fn = trail.get("tier_sell_fn")
-        if (
-            tier_fn
-            and units > 0
-            and not is_buy
-            and partial_sell_units <= 0
-            and not is_sell
-        ):
-            from valuation_trend_sell import units_for_new_tiers
-
-            sell_units, full_exit, marked = units_for_new_tiers(
-                tier_fn(row) or [],
-                tiers_triggered,
-                units,
-                initial_units_at_position,
-            )
-            if marked:
-                tiers_triggered.update(marked)
-                if full_exit:
-                    is_sell = True
-                elif sell_units > 0:
-                    partial_sell_units = sell_units
-
         buy_amount = _resolve_buy_amount(amount, row) if is_buy else 0.0
         if is_buy and buy_amount > 0:
             new_units = buy_amount / price
             if units <= 0:
                 initial_units_at_position = 0.0
                 stages_triggered.clear()
-                tiers_triggered.clear()
             units += new_units
             initial_units_at_position += new_units
             total_bought += buy_amount
@@ -346,7 +303,6 @@ def simulate_trades_trailing(
                 peak_since_buy = 0.0
                 initial_units_at_position = 0.0
                 stages_triggered.clear()
-                tiers_triggered.clear()
         elif is_sell and units > 0:
             proceeds = units * price
             total_sold += proceeds
@@ -356,7 +312,6 @@ def simulate_trades_trailing(
             peak_since_buy = 0.0
             initial_units_at_position = 0.0
             stages_triggered.clear()
-            tiers_triggered.clear()
             sell_count += 1
             sell_dates.append(day)
 

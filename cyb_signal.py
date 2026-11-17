@@ -10,16 +10,8 @@ from config import (
     CYB_BUY_MID_RANGE_POSITION_PCT,
     CYB_BUY_NEAR_YEAR_LOW_RANGE_PCT,
     CYB_BUY_PEG_HIST_MAX,
-    CYB_SELL_COMBO_PB_PERCENTILE_MIN,
-    CYB_SELL_COMBO_PE_PERCENTILE_MIN,
     CYB_SELL_ENABLED,
-    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-    CYB_SELL_PB_PERCENTILE_MIN,
-    CYB_SELL_PE_PERCENTILE_MIN,
-    CYB_SELL_PEG_HIST_MIN,
     CYB_SELL_STAGES,
-    CYB_SELL_TRAILING_DRAWDOWN_PCT,
-    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     SELL_REBUY_GATE_ENABLED,
     SELL_REBUY_MAX_GAIN_PCT,
 )
@@ -42,7 +34,6 @@ from signal_format import (
     append_signal_block,
     format_data_meta_line,
     make_criterion,
-    pct_text,
 )
 
 
@@ -63,53 +54,28 @@ def _snapshot_first(snapshot, *names):
 
 
 def cyb_valuation_sell_decision(snapshot):
-    """创业板专属卖出判定（历史口径）。
+    """创业板卖出判定：单一粗移动止盈（A 方案）。
 
-    依次判断：移动止盈 → PE/PB 双高分位 → PEG 高且 PE/PB 不低。
-    任一所需估值字段缺失时，该条判定不触发，避免误卖。
+    浮盈≥50% 且自峰值回撤≥15% 且持有≥90日。旧 PE/PB 高分位、PEG 高卖出
+    逻辑已删除。
 
     返回 ``(is_sell, sell_reasons)``。
     """
     if not CYB_SELL_ENABLED:
         return False, []
 
-    pe_pct = snapshot.get("pe_percentile")
-    pb_pct = snapshot.get("pb_percentile")
-    peg_historical = _snapshot_first(snapshot, "peg_historical")
-    if peg_historical is None:
-        peg_historical = compute_peg(
-            snapshot.get("pe"), snapshot.get("historical_growth")
-        )
-
     trail_hit = trailing_sell_hit(
         close=snapshot.get("close"),
         cost_basis=_snapshot_first(snapshot, "cost_basis", "recent_signal_buy_avg"),
         peak_price=_snapshot_first(snapshot, "peak_price", "peak_since_last_buy"),
-        min_unrealized_gain_pct=CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-        trailing_drawdown_pct=CYB_SELL_TRAILING_DRAWDOWN_PCT,
-        min_hold_days=CYB_SELL_TRAILING_MIN_HOLD_DAYS,
+        min_unrealized_gain_pct=0.50,
+        trailing_drawdown_pct=0.15,
+        min_hold_days=90,
         days_since_buy=_snapshot_first(
             snapshot, "days_since_buy", "days_since_last_buy"
         ),
     )
-    pe_high = pe_pct is not None and pe_pct >= CYB_SELL_PE_PERCENTILE_MIN
-    pb_high = pb_pct is not None and pb_pct >= CYB_SELL_PB_PERCENTILE_MIN
-    peg_combo = (
-        peg_historical is not None
-        and peg_historical >= CYB_SELL_PEG_HIST_MIN
-        and pe_pct is not None
-        and pb_pct is not None
-        and pe_pct >= CYB_SELL_COMBO_PE_PERCENTILE_MIN
-        and pb_pct >= CYB_SELL_COMBO_PB_PERCENTILE_MIN
-    )
-
-    reasons = []
-    if trail_hit:
-        reasons.append("移动止盈触发")
-    elif pe_high and pb_high:
-        reasons.append(f"PE分位{pct_text(pe_pct)}、PB分位{pct_text(pb_pct)}均偏高")
-    elif peg_combo:
-        reasons.append(f"PEG(5年){peg_historical:.2f}偏高且估值不低")
+    reasons = ["移动止盈触发"] if trail_hit else []
     return bool(reasons), reasons
 
 

@@ -23,10 +23,6 @@ from config import (
     CYB_BUY_PEG_HIST_MAX,
     CYB_INDEX,
     CYB_SELL_ENABLED,
-    CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-    CYB_SELL_STAGES,
-    CYB_SELL_TRAILING_DRAWDOWN_PCT,
-    CYB_SELL_TRAILING_MIN_HOLD_DAYS,
     cn_broad_sell_enabled,
     format_backtest_amount_note,
     get_backtest_buy_amount,
@@ -39,11 +35,8 @@ from config import (
     us_index_sell_enabled,
 )
 from buy_amount_config import resolve_simulate_amount
-from cyb_signal import cyb_valuation_sell_fn, evaluate_cyb_signal
-from sell_trailing import (
-    simulate_trades_trailing,
-    valuation_sell_hit_us_index,
-)
+from cyb_signal import evaluate_cyb_signal
+from sell_trailing import simulate_trades_trailing
 
 BACKTEST_DIR = BACKTEST_OUTPUT_DIR
 DEFAULT_START = "2015-01-01"
@@ -149,98 +142,31 @@ def _filter_panel(panel, start_date, end_date, date_col="date"):
     return work.loc[mask].dropna(subset=["close"])
 
 
-def _valuation_tier_fn(row, code=None):
-    from sell_trailing import row_field
-    from valuation_trend_sell import active_sell_tiers, pe_sell_bounds
-
-    pe_high, pe_mid, pe_extreme = pe_sell_bounds(code or row_field(row, "code"))
-    return active_sell_tiers(
-        pe_percentile=row_field(row, "pe_percentile"),
-        spread_percentile=row_field(row, "spread_percentile"),
-        below_ma=row_field(row, "below_ma"),
-        ma_slope_pct=row_field(row, "ma_slope_pct"),
-        pe_high=pe_high,
-        pe_mid=pe_mid,
-        pe_extreme=pe_extreme,
-    )
+# A 方案单一粗移动止盈：三指数统一口径（浮盈≥50% 且自峰值回撤≥15% 且持有≥90日）。
+# 旧估值分档 / 利差 / MA200 / PEG / TTM-PE 卖出逻辑已删除，仅保留此一条规则。
+_UNIFIED_SELL_TRAILING = {
+    "trailing_drawdown_pct": 0.15,
+    "min_unrealized_gain_pct": 0.50,
+    "min_hold_days": 90,
+}
 
 
 def _cn_broad_trailing_cfg(code):
     if not cn_broad_sell_enabled(code):
         return None
-    return {"tier_sell_fn": lambda row, c=code: _valuation_tier_fn(row, c)}
-
-
-def _cn_broad_valuation_sell_fn(code):
-    return None
+    return dict(_UNIFIED_SELL_TRAILING)
 
 
 def _cyb_trailing_cfg():
-    """创业板移动止盈/分批止盈配置（历史 CYB_SELL_* 口径）。"""
-    if not CYB_SELL_ENABLED or (
-        CYB_SELL_TRAILING_DRAWDOWN_PCT is None and not CYB_SELL_STAGES
-    ):
+    if not CYB_SELL_ENABLED:
         return None
-    trail = {
-        "trailing_drawdown_pct": CYB_SELL_TRAILING_DRAWDOWN_PCT,
-        "min_unrealized_gain_pct": CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-        "min_hold_days": CYB_SELL_TRAILING_MIN_HOLD_DAYS,
-    }
-    if CYB_SELL_STAGES:
-        trail["stages"] = CYB_SELL_STAGES
-    return trail
+    return dict(_UNIFIED_SELL_TRAILING)
 
 
 def _us_trailing_cfg(key):
     if not us_index_sell_enabled(key):
         return None
-    cfg = get_us_index_sell_config(key)
-    if cfg.get("sell_trailing_drawdown_pct") is None:
-        return None
-    min_gain = cfg.get("sell_min_unrealized_gain_pct")
-    return {
-        "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
-        "min_unrealized_gain_pct": min_gain,
-        "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
-    }
-
-
-def _us_valuation_sell_fn(key, historical_growth=None):
-    if not us_index_sell_enabled(key):
-        return None
-
-    from us_index_signal import is_buy as is_us_index_buy, resolve_expected_growth
-
-    cfg = get_us_index_sell_config(key)
-
-    def _sell(row, k=key, g=historical_growth):
-        from sell_trailing import row_field
-
-        sell_snap = {
-            "forward_pe_percentile": row_field(row, "forward_pe_percentile"),
-            "trailing_pe_percentile": row_field(row, "trailing_pe_percentile"),
-            "pct_above_low": row_field(row, "pct_above_low"),
-        }
-        buy_snap = {
-            "forward_pe": row_field(row, "forward_pe"),
-            "trailing_pe": row_field(row, "trailing_pe"),
-            "forward_pe_percentile": row_field(row, "forward_pe_percentile"),
-            "trailing_pe_percentile": row_field(row, "trailing_pe_percentile"),
-            "us10y_percentile": row_field(row, "us10y_percentile"),
-            "us10y_slope": row_field(row, "us10y_slope"),
-            "implied_growth": row_field(row, "implied_growth"),
-            "historical_growth": g,
-            "pct_above_low": row_field(row, "pct_above_low"),
-            "pct_below_high": row_field(row, "pct_below_high"),
-            "year_range_position": row_field(row, "year_range_position"),
-            "ma_slope_pct": row_field(row, "ma_slope_pct"),
-        }
-        buy_snap["expected_growth"] = resolve_expected_growth(k, buy_snap)
-        return valuation_sell_hit_us_index(sell_snap, cfg) and not is_us_index_buy(
-            k, buy_snap
-        )
-
-    return _sell
+    return dict(_UNIFIED_SELL_TRAILING)
 
 
 def _cooldown_buy_fn(
@@ -285,17 +211,6 @@ def _cooldown_buy_fn(
     return wrapped
 
 
-def _sell_simplify_mode():
-    """卖出端简化模式：off=原逻辑(默认) / a=单一粗移动止盈 / b=关闭主动卖出仅买入持有。
-
-    非法值回退 off。设为独立函数便于单测，且此处一处守卫覆盖全部三指数回测。
-    """
-    from config.env import _env_str
-
-    mode = (_env_str("SELL_SIMPLIFY_MODE", "off") or "off").strip().lower()
-    return mode if mode in {"off", "a", "b"} else "off"
-
-
 def _run_index_trades(
     panel,
     code,
@@ -310,22 +225,6 @@ def _run_index_trades(
     date_col="date",
     valuation_price_col=None,
 ):
-    mode = _sell_simplify_mode()
-    if mode == "b":
-        # 关闭全部主动卖出：has_sell=False 令 simulate_trades 的 sell_fn 不触发；
-        # trailing/valuation 均置空，走 simulate_trades fallback（见 :302/:315）。
-        has_sell = False
-        trailing_cfg = None
-        valuation_sell_fn = None
-    elif mode == "a":
-        # 单一粗移动止盈：仅保留 trailing，去掉估值分档/利差/MA200 与估值卖点。
-        has_sell = True
-        trailing_cfg = {
-            "trailing_drawdown_pct": 0.15,
-            "min_unrealized_gain_pct": 0.50,
-            "min_hold_days": 90,
-        }
-        valuation_sell_fn = None
     if has_sell and trailing_cfg is not None:
         return simulate_trades_trailing(
             panel,
@@ -626,7 +525,6 @@ def backtest_all(
         )
         if excluded is not None:
             return excluded
-        val_sell_fn = _cn_broad_valuation_sell_fn(code) if sell_on else None
         sim_amt = _resolve_trade_amount(
             code, amt, amounts, panel, start_date, end_date, buy_fn
         )
@@ -640,7 +538,6 @@ def backtest_all(
             sell_fn,
             sell_on,
             trailing_cfg=trail_cfg,
-            valuation_sell_fn=val_sell_fn,
         )
         if not stats:
             return []
@@ -702,7 +599,6 @@ def backtest_all(
             cyb_sell,
             CYB_SELL_ENABLED,
             trailing_cfg=_cyb_trailing_cfg(),
-            valuation_sell_fn=cyb_valuation_sell_fn if CYB_SELL_ENABLED else None,
             date_col="date",
         )
         if stats:
@@ -752,7 +648,6 @@ def backtest_all(
         )
         sell_on = us_index_sell_enabled(key)
         trail_cfg = _us_trailing_cfg(key) if sell_on else None
-        val_sell_fn = _us_valuation_sell_fn(key, growth) if sell_on else None
         stats = _run_index_trades(
             daily,
             meta["code"],
@@ -763,7 +658,6 @@ def backtest_all(
             None,
             sell_on,
             trailing_cfg=trail_cfg,
-            valuation_sell_fn=val_sell_fn,
         )
         if stats:
             ret = stats.get("return_pct")
@@ -820,8 +714,7 @@ def resolve_chart_sell_dates(
 
     if cn_broad_sell_enabled(code):
         trail_cfg = _cn_broad_trailing_cfg(code)
-        val_fn = _cn_broad_valuation_sell_fn(code)
-        if trail_cfg or val_fn:
+        if trail_cfg:
             stats = _run_index_trades(
                 panel,
                 code,
@@ -832,17 +725,15 @@ def resolve_chart_sell_dates(
                 lambda r: False,
                 True,
                 trailing_cfg=trail_cfg,
-                valuation_sell_fn=val_fn,
                 date_col=date_col,
                 valuation_price_col=price_col,
             )
             return stats.get("sell_dates", []) if stats else []
 
-    # 创业板卖出日期：与回测同口径（移动止盈/分批 + 估值分位/PEG）
+    # 创业板卖出日期：与回测同口径（单一粗移动止盈）
     if code == CYB_INDEX["code"] and CYB_SELL_ENABLED:
         trail_cfg = _cyb_trailing_cfg()
-        val_fn = cyb_valuation_sell_fn
-        if trail_cfg or val_fn:
+        if trail_cfg:
             stats = _run_index_trades(
                 panel,
                 code,
@@ -853,7 +744,6 @@ def resolve_chart_sell_dates(
                 lambda r: False,
                 True,
                 trailing_cfg=trail_cfg,
-                valuation_sell_fn=val_fn,
                 date_col=date_col,
                 valuation_price_col=price_col,
             )
@@ -863,8 +753,7 @@ def resolve_chart_sell_dates(
         if meta["code"] != code or not us_index_sell_enabled(key):
             continue
         trail_cfg = _us_trailing_cfg(key)
-        val_fn = _us_valuation_sell_fn(key)
-        if trail_cfg or val_fn:
+        if trail_cfg:
             stats = _run_index_trades(
                 panel,
                 code,
@@ -875,7 +764,6 @@ def resolve_chart_sell_dates(
                 lambda r: False,
                 True,
                 trailing_cfg=trail_cfg,
-                valuation_sell_fn=val_fn,
                 date_col=date_col,
                 valuation_price_col=price_col,
             )

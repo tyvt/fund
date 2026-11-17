@@ -25,13 +25,9 @@ def us_index_sell_enabled(key=None):
 
 
 def get_us_index_sell_config(key):
-    """美股指数移动止盈与估值卖点参数（key: ndx）。"""
+    """美股指数移动止盈参数（key: ndx）。A 方案：仅单一粗移动止盈。"""
     prefix = key.upper()
     return {
-        "sell_trailing_pe_percentile_min": _env_float(
-            f"{prefix}_SELL_TRAILING_PE_PERCENTILE_MIN", 88
-        ),
-        "sell_max_above_low_pct": _env_float(f"{prefix}_SELL_MAX_ABOVE_LOW_PCT", 0.30),
         "sell_trailing_drawdown_pct": _env_float(
             f"{prefix}_SELL_TRAILING_DRAWDOWN_PCT", 0.12
         ),

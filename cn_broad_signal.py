@@ -43,15 +43,11 @@ def _resolve_cn_broad_signal_short(is_buy, is_sell):
 
 
 def evaluate_cn_broad_sell(snapshot):
-    """估值减 1/3、破位再减 1/3、极端估值清仓。日报不记已减档。"""
-    from valuation_trend_sell import (
-        TIER_EXTREME,
-        TIER_PE_MID,
-        TIER_TREND,
-        TIER_VALUATION,
-        active_sell_tiers,
-        pe_sell_bounds,
-    )
+    """单一粗移动止盈：浮盈≥50% 且自峰值回撤≥15% 且持有≥90日。
+
+    旧「估值减仓1/3 / 破位再减1/3 / 极端估值清仓」分档逻辑已删除（A 方案）。
+    """
+    from sell_trailing import trailing_sell_hit
 
     index_code = snapshot.get("code")
     if not cn_broad_sell_enabled(index_code):
@@ -61,37 +57,29 @@ def evaluate_cn_broad_sell(snapshot):
             "sell_summary": None,
         }
 
-    pe_high, pe_mid, pe_extreme = pe_sell_bounds(snapshot.get("code"))
-    tiers = active_sell_tiers(
-        pe_percentile=snapshot.get("pe_percentile"),
-        spread_percentile=snapshot.get("spread_percentile"),
-        below_ma=snapshot.get("below_ma"),
-        ma_slope_pct=snapshot.get("ma_slope_pct"),
-        pe_high=pe_high,
-        pe_mid=pe_mid,
-        pe_extreme=pe_extreme,
+    is_sell = trailing_sell_hit(
+        close=snapshot.get("close"),
+        cost_basis=snapshot.get("recent_signal_buy_avg"),
+        peak_price=snapshot.get("peak_since_last_buy"),
+        min_unrealized_gain_pct=0.50,
+        trailing_drawdown_pct=0.15,
+        min_hold_days=90,
+        days_since_buy=snapshot.get("days_since_last_buy"),
     )
-    labels = {
-        TIER_VALUATION: "估值过高，减仓1/3",
-        TIER_PE_MID: "估值继续升高，再减仓1/3",
-        TIER_TREND: "跌破MA200且斜率<-2%，再减仓1/3",
-        TIER_EXTREME: "极端高估，清仓剩余",
-    }
-    is_sell = bool(tiers)
-    reasons = [labels[tier] for tier in tiers]
+    reason = "浮盈≥50%后自峰值回撤≥15%，移动止盈"
     sell_criteria = [
         make_criterion(
-            "估值+趋势卖出",
-            is_sell,
-            "、".join(reasons) if reasons else "未触发",
-            "估值与均线均未达减仓",
+            "移动止盈卖出",
+            bool(is_sell),
+            reason if is_sell else "浮盈/回撤未达移动止盈",
+            "未达移动止盈条件",
             applicable=True,
         )
     ]
     return {
-        "is_sell": is_sell,
+        "is_sell": bool(is_sell),
         "sell_criteria": sell_criteria,
-        "sell_summary": "触发卖出: " + "、".join(reasons) if is_sell else None,
+        "sell_summary": f"触发卖出: {reason}" if is_sell else None,
     }
 
 

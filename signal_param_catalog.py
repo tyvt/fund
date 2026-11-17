@@ -188,58 +188,6 @@ def build_signal_param_catalog() -> list[SignalParam]:
             side="sell", label="CYB 卖出开关", sweep=(),
         ),
         _cyb(
-            "sell_pe_percentile_min", "CYB_SELL_PE_PERCENTILE_MIN",
-            config.CYB_SELL_PE_PERCENTILE_MIN,
-            side="sell", label="CYB PE分位卖",
-            sweep=_sweep(config.CYB_SELL_PE_PERCENTILE_MIN, (-5, 0, 5)),
-        ),
-        _cyb(
-            "sell_pb_percentile_min", "CYB_SELL_PB_PERCENTILE_MIN",
-            config.CYB_SELL_PB_PERCENTILE_MIN,
-            side="sell", label="CYB PB分位卖",
-            sweep=_sweep(config.CYB_SELL_PB_PERCENTILE_MIN, (-5, 0, 5)),
-        ),
-        _cyb(
-            "sell_peg_hist_min", "CYB_SELL_PEG_HIST_MIN",
-            config.CYB_SELL_PEG_HIST_MIN,
-            side="sell", label="CYB PEG卖",
-            sweep=_sweep(config.CYB_SELL_PEG_HIST_MIN, (-0.5, 0, 0.5)),
-            higher_is_looser=False,
-        ),
-        _cyb(
-            "sell_combo_pe_percentile_min", "CYB_SELL_COMBO_PE_PERCENTILE_MIN",
-            config.CYB_SELL_COMBO_PE_PERCENTILE_MIN,
-            side="sell", label="CYB 组合PE分位卖",
-            sweep=_sweep(config.CYB_SELL_COMBO_PE_PERCENTILE_MIN, (-5, 0, 5)),
-        ),
-        _cyb(
-            "sell_combo_pb_percentile_min", "CYB_SELL_COMBO_PB_PERCENTILE_MIN",
-            config.CYB_SELL_COMBO_PB_PERCENTILE_MIN,
-            side="sell", label="CYB 组合PB分位卖",
-            sweep=_sweep(config.CYB_SELL_COMBO_PB_PERCENTILE_MIN, (-5, 0, 5)),
-        ),
-        _cyb(
-            "sell_trailing_drawdown_pct", "CYB_SELL_TRAILING_DRAWDOWN_PCT",
-            config.CYB_SELL_TRAILING_DRAWDOWN_PCT,
-            side="sell", label="CYB 移动止盈回撤",
-            sweep=_sweep(config.CYB_SELL_TRAILING_DRAWDOWN_PCT, (-0.02, 0, 0.02)),
-            higher_is_looser=False,
-        ),
-        _cyb(
-            "sell_min_unrealized_gain_pct", "CYB_SELL_MIN_UNREALIZED_GAIN_PCT",
-            config.CYB_SELL_MIN_UNREALIZED_GAIN_PCT,
-            side="sell", label="CYB 移动止盈浮盈",
-            sweep=_sweep(config.CYB_SELL_MIN_UNREALIZED_GAIN_PCT, (-0.10, 0, 0.10)),
-            higher_is_looser=False,
-        ),
-        _cyb(
-            "sell_trailing_min_hold_days", "CYB_SELL_TRAILING_MIN_HOLD_DAYS",
-            config.CYB_SELL_TRAILING_MIN_HOLD_DAYS,
-            side="sell", label="CYB 最短持有天数",
-            sweep=_sweep(config.CYB_SELL_TRAILING_MIN_HOLD_DAYS, (-20, 0, 20)),
-            higher_is_looser=True,
-        ),
-        _cyb(
             "sell_cost_lookback_days", "CYB_SELL_COST_LOOKBACK_DAYS",
             config.CYB_SELL_COST_LOOKBACK_DAYS,
             side="sell", label="CYB 成本回看天数",
@@ -274,15 +222,6 @@ def build_signal_param_catalog() -> list[SignalParam]:
                 sweep=_sweep(
                     getattr(config, f"{prefix}_BUY_TREND_MIN_MA_SLOPE_PCT"), (-0.01, 0, 0.01)
                 ),
-            ),
-            _us_sell_env(
-                "sell_trailing_pe_percentile_min", us_key,
-                "SELL_TRAILING_PE_PERCENTILE_MIN",
-                "sell_trailing_pe_percentile_min",
-                sell_cfg["sell_trailing_pe_percentile_min"],
-                label=f"{prefix} TTM PE卖",
-                sweep=_sweep(sell_cfg["sell_trailing_pe_percentile_min"], (-5, 0, 5)),
-                higher_is_looser=False,
             ),
             _us_sell_env(
                 "sell_trailing_drawdown_pct", us_key, "SELL_TRAILING_DRAWDOWN_PCT",
@@ -330,12 +269,9 @@ def ablate_value(param: SignalParam) -> float:
         "sell_pe_percentile_min": 101.0,
         "sell_pb_percentile_min": 101.0,
         "sell_spread_percentile_max": -1.0,
-        "sell_max_above_low_pct": 99.0,
         "sell_trailing_drawdown_pct": 1.0,
         "sell_min_unrealized_gain_pct": 99.0,
         "sell_forward_pe_percentile_min": 101.0,
-        "sell_trailing_pe_percentile_min": 101.0,
-        "sell_peg_hist_min": 999.0,
     }
     if param.side == "buy" or key.startswith("buy_"):
         return _BUY_OFF.get(key, 100.0 if param.higher_is_looser else 0.0)

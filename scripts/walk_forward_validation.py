@@ -1,19 +1,17 @@
 #!/usr/bin/env python
 """Walk-forward 滚动窗口验证：对每段滚动区间重跑三指数回测，检验参数稳健性。
 
-不修改策略代码；通过 SELL_SIMPLIFY_MODE 环境变量选择卖出模式（off/a/b）。
+不修改策略代码；卖出逻辑固定为 A 方案（单一粗移动止盈 0.15/0.50/90）。
 每个窗口独立调用 backtest_all(start, end)，输出各指数 XIRR / 最大回撤 / 买卖次数，
 用于判断收益是否集中在个别窗口（稳健性诊断），不可外推为未来收益。
 
 用法：
   python scripts/walk_forward_validation.py --window 3 --step 1
-  SELL_SIMPLIFY_MODE=a python scripts/walk_forward_validation.py --window 3 --step 1
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -144,16 +142,12 @@ def parse_args(argv=None):
     p.add_argument("--end-year", type=int, default=2026)
     p.add_argument("--window", type=int, default=3, help="窗口长度（年）")
     p.add_argument("--step", type=int, default=1, help="滚动步长（年）")
-    p.add_argument("--mode", choices=["off", "a", "b"], default=None,
-                   help="卖出模式；覆盖环境变量 SELL_SIMPLIFY_MODE")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    mode = args.mode or os.environ.get("SELL_SIMPLIFY_MODE", "off").strip().lower() or "off"
-    if mode in {"off", "a", "b"}:
-        os.environ["SELL_SIMPLIFY_MODE"] = mode
+    mode = "a"
     windows_spec = build_windows(args.start_year, args.end_year, args.window, args.step)
     if not windows_spec:
         print("窗口参数无效或无有效窗口（需 end_year>=start_year+1, window>=1, step>=1）")
