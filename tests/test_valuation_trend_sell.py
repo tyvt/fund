@@ -1,0 +1,61 @@
+from valuation_trend_sell import (
+    TIER_EXTREME,
+    TIER_TREND,
+    TIER_VALUATION,
+    active_sell_tiers,
+    drawdown_amount_multiplier,
+    units_for_new_tiers,
+)
+
+
+def test_buy_day_blocks_sell():
+    tiers = active_sell_tiers(
+        pe_percentile=95,
+        spread_percentile=5,
+        below_ma=True,
+        ma_slope_pct=-0.05,
+        is_buy=True,
+    )
+    assert tiers == []
+
+
+def test_extreme_covers_partial_tiers():
+    tiers = active_sell_tiers(pe_percentile=91, below_ma=True, ma_slope_pct=-0.03)
+    assert tiers == [TIER_EXTREME]
+
+
+def test_valuation_and_trend_can_both_fire():
+    tiers = active_sell_tiers(
+        pe_percentile=82, spread_percentile=50, below_ma=True, ma_slope_pct=-0.03
+    )
+    assert tiers == [TIER_VALUATION, TIER_TREND]
+
+
+def test_same_tier_sells_once():
+    already = set()
+    sold, full, marked = units_for_new_tiers(
+        [TIER_VALUATION], already, units=90, initial_units=90
+    )
+    assert not full
+    assert abs(sold - 30) < 1e-9
+    already.update(marked)
+    sold_again, _, marked_again = units_for_new_tiers(
+        [TIER_VALUATION], already, units=60, initial_units=90
+    )
+    assert sold_again == 0
+    assert marked_again == []
+
+
+def test_extreme_exits_remainder():
+    sold, full, _ = units_for_new_tiers(
+        [TIER_EXTREME], {TIER_VALUATION}, units=60, initial_units=90
+    )
+    assert full
+    assert sold == 60
+
+
+def test_drawdown_bands():
+    assert drawdown_amount_multiplier(0.20) == 1.0
+    assert drawdown_amount_multiplier(0.31) == 1.5
+    assert drawdown_amount_multiplier(0.45) == 2.0
+    assert drawdown_amount_multiplier(None) == 1.0

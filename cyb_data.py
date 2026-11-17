@@ -392,6 +392,11 @@ def _fetch_cyb_snapshot_uncached(expected_growth=None):
             if pd.notna(latest.get("ma_slope_pct"))
             else None
         ),
+        "below_ma": (
+            bool(latest["below_ma"])
+            if pd.notna(latest.get("below_ma"))
+            else None
+        ),
         "volatility": volatility,
         "history_days": int(panel["pe"].notna().sum()),
         "panel": panel,

@@ -35,6 +35,7 @@ from sell_trailing import rebuy_allowed_after_take_profit
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,
+    SIGNAL_SELL,
     append_signal_block,
     format_data_meta_line,
     make_criterion,
@@ -127,9 +128,23 @@ def evaluate_cyb_signal(snapshot):
     ):
         is_buy = False
 
+    from valuation_trend_sell import active_sell_tiers
+
+    sell_tiers = active_sell_tiers(
+        pe_percentile=snapshot.get("pe_percentile"),
+        spread_percentile=None,
+        below_ma=snapshot.get("below_ma"),
+        ma_slope_pct=snapshot.get("ma_slope_pct"),
+        is_buy=is_buy,
+    )
+    is_sell = bool(sell_tiers)
+
     if is_buy:
         signal_short = SIGNAL_BUY
         summary = "PEG(5年) 可接受，且价格/趋势达标"
+    elif is_sell:
+        signal_short = SIGNAL_SELL
+        summary = "估值或均线触发减仓: " + "、".join(sell_tiers)
     else:
         signal_short = SIGNAL_HOLD
         failed = [c["name"] for c in criteria if not c["passed"]]
@@ -139,7 +154,7 @@ def evaluate_cyb_signal(snapshot):
         "peg_historical": peg_historical,
         "historical_growth": hist_growth,
         "is_buy": is_buy,
-        "is_sell": False,
+        "is_sell": is_sell,
         "score": score,
         "signal_short": signal_short,
         "criteria": criteria,
@@ -175,7 +190,7 @@ def format_cyb_section(snapshot, signal_eval):
         price_ceilings=price_ceilings,
     )
     sell_line = format_sell_trigger_line(
-        is_sell=False,
+        is_sell=signal_eval.get("is_sell"),
         drop_breaks_pct=None,
         close=snapshot.get("close"),
     )

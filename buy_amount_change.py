@@ -69,7 +69,11 @@ def resolve_change_scaled_amount(
     """基准金额 × 涨跌系数。"""
     if base_amount <= 0:
         return 0.0
+    from sell_trailing import row_field
+    from valuation_trend_sell import drawdown_amount_multiplier
+
     mult = change_multiplier(row_daily_change_pct(row))
+    mult *= drawdown_amount_multiplier(row_field(row, "pct_below_high"))
     return max(min_amount, round(base_amount * mult))
 
 
@@ -116,7 +120,10 @@ def make_change_amount_fn(
             if raw is not None:
                 key = pd.Timestamp(raw).strftime("%Y-%m-%d")
                 chg = change_by_date.get(key)
+        from valuation_trend_sell import drawdown_amount_multiplier
+
         mult = change_multiplier(chg)
+        mult *= drawdown_amount_multiplier(row_field(row, "pct_below_high"))
         return max(10.0, round(effective_base * mult))
 
     return _fn

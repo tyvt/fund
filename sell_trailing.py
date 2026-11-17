@@ -279,6 +279,7 @@ def simulate_trades_trailing(
     use_trailing = trail.get("trailing_drawdown_pct") is not None
     stages = trail.get("stages") or []
     stages_triggered: set[float] = set()
+    tiers_triggered: set[str] = set()
     rebuy_max_gain = trail.get("rebuy_max_gain_pct")
     if rebuy_max_gain is None:
         from config import SELL_REBUY_MAX_GAIN_PCT
@@ -354,12 +355,36 @@ def simulate_trades_trailing(
             ):
                 is_buy = False
 
+        tier_fn = trail.get("tier_sell_fn")
+        if (
+            tier_fn
+            and units > 0
+            and not is_buy
+            and partial_sell_units <= 0
+            and not is_sell
+        ):
+            from valuation_trend_sell import units_for_new_tiers
+
+            sell_units, full_exit, marked = units_for_new_tiers(
+                tier_fn(row) or [],
+                tiers_triggered,
+                units,
+                initial_units_at_position,
+            )
+            if marked:
+                tiers_triggered.update(marked)
+                if full_exit:
+                    is_sell = True
+                elif sell_units > 0:
+                    partial_sell_units = sell_units
+
         buy_amount = _resolve_buy_amount(amount, row) if is_buy else 0.0
         if is_buy and buy_amount > 0:
             new_units = buy_amount / price
             if units <= 0:
                 initial_units_at_position = 0.0
                 stages_triggered.clear()
+                tiers_triggered.clear()
             units += new_units
             initial_units_at_position += new_units
             buy_only_units += new_units
@@ -385,6 +410,7 @@ def simulate_trades_trailing(
                 peak_since_buy = 0.0
                 initial_units_at_position = 0.0
                 stages_triggered.clear()
+                tiers_triggered.clear()
         elif is_sell and units > 0:
             proceeds = units * price
             total_sold += proceeds
@@ -394,6 +420,7 @@ def simulate_trades_trailing(
             peak_since_buy = 0.0
             initial_units_at_position = 0.0
             stages_triggered.clear()
+            tiers_triggered.clear()
             sell_count += 1
             sell_dates.append(day)
 

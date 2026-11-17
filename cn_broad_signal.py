@@ -46,7 +46,9 @@ def _resolve_cn_broad_signal_short(is_buy, is_sell):
 
 
 def evaluate_cn_broad_sell(snapshot):
-    """波段卖出：仅移动止盈（估值类卖点已移除）。"""
+    """估值减 1/3、破位再减 1/3、极端估值清仓。日报不记已减档。"""
+    from valuation_trend_sell import TIER_EXTREME, TIER_TREND, TIER_VALUATION, active_sell_tiers
+
     index_code = snapshot.get("code")
     if not cn_broad_sell_enabled(index_code):
         return {
@@ -54,50 +56,33 @@ def evaluate_cn_broad_sell(snapshot):
             "sell_criteria": [],
             "sell_summary": None,
         }
-    cfg = get_cn_broad_signal_config(index_code)
 
-    close = snapshot.get("close")
-    recent_avg = snapshot.get("recent_signal_buy_avg")
-    peak_price = snapshot.get("peak_since_last_buy")
-    days_since_buy = snapshot.get("days_since_last_buy")
-
-    trail_hit = trailing_sell_hit(
-        close=close,
-        cost_basis=recent_avg,
-        peak_price=peak_price,
-        min_unrealized_gain_pct=cfg.get("sell_min_unrealized_gain_pct"),
-        trailing_drawdown_pct=cfg.get("sell_trailing_drawdown_pct"),
-        min_hold_days=cfg.get("sell_trailing_min_hold_days"),
-        days_since_buy=days_since_buy,
+    tiers = active_sell_tiers(
+        pe_percentile=snapshot.get("pe_percentile"),
+        spread_percentile=snapshot.get("spread_percentile"),
+        below_ma=snapshot.get("below_ma"),
+        ma_slope_pct=snapshot.get("ma_slope_pct"),
     )
-
-    sell_criteria = []
-    if cfg.get("sell_trailing_drawdown_pct") is not None:
-        gain_pct = None
-        if close is not None and recent_avg is not None and recent_avg > 0:
-            gain_pct = (close - recent_avg) / recent_avg * 100
-        sell_criteria.append(
-            make_criterion(
-                "移动止盈",
-                trail_hit,
-                (
-                    f"浮盈 {gain_pct:.0f}%（需≥{cfg['sell_min_unrealized_gain_pct']*100:.0f}%）"
-                    f"，峰值回撤≥{cfg['sell_trailing_drawdown_pct']*100:.0f}%"
-                    if gain_pct is not None
-                    else "—"
-                ),
-                "浮盈未达移动止盈门槛或峰值回撤不足",
-                applicable=recent_avg is not None and peak_price is not None,
-            )
+    labels = {
+        TIER_VALUATION: "估值过高，减仓1/3",
+        TIER_TREND: "跌破MA200且斜率<-2%，再减仓1/3",
+        TIER_EXTREME: "极端高估，清仓剩余",
+    }
+    is_sell = bool(tiers)
+    reasons = [labels[tier] for tier in tiers]
+    sell_criteria = [
+        make_criterion(
+            "估值+趋势卖出",
+            is_sell,
+            "、".join(reasons) if reasons else "未触发",
+            "估值与均线均未达减仓",
+            applicable=True,
         )
-
-    is_sell = trail_hit
-    reasons = ["移动止盈触发"] if trail_hit else []
-
+    ]
     return {
         "is_sell": is_sell,
-        "sell_criteria": [c for c in sell_criteria if c["applicable"]],
-        "sell_summary": "触发波段卖出: " + "、".join(reasons) if is_sell else None,
+        "sell_criteria": sell_criteria,
+        "sell_summary": "触发卖出: " + "、".join(reasons) if is_sell else None,
     }
 
 

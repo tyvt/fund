@@ -168,19 +168,22 @@ def _filter_panel(panel, start_date, end_date, date_col="date"):
     return work.loc[mask].dropna(subset=["close"])
 
 
+def _valuation_tier_fn(row):
+    from sell_trailing import row_field
+    from valuation_trend_sell import active_sell_tiers
+
+    return active_sell_tiers(
+        pe_percentile=row_field(row, "pe_percentile"),
+        spread_percentile=row_field(row, "spread_percentile"),
+        below_ma=row_field(row, "below_ma"),
+        ma_slope_pct=row_field(row, "ma_slope_pct"),
+    )
+
+
 def _cn_broad_trailing_cfg(code):
-    cfg = get_cn_broad_signal_config(code)
-    if cfg.get("sell_trailing_drawdown_pct") is None and not cfg.get("sell_stages"):
+    if not cn_broad_sell_enabled(code):
         return None
-    trail = {
-        "trailing_drawdown_pct": cfg.get("sell_trailing_drawdown_pct"),
-        "min_unrealized_gain_pct": cfg.get("sell_min_unrealized_gain_pct"),
-        "min_hold_days": cfg.get("sell_trailing_min_hold_days"),
-    }
-    stages = cfg.get("sell_stages")
-    if stages:
-        trail["stages"] = stages
-    return trail
+    return {"tier_sell_fn": _valuation_tier_fn}
 
 
 def _cn_broad_valuation_sell_fn(code):
@@ -410,6 +413,7 @@ def _cyb_signals(row):
             "pct_below_high": row_field(row, "pct_below_high"),
             "year_range_position": row_field(row, "year_range_position"),
             "ma_slope_pct": row_field(row, "ma_slope_pct"),
+            "below_ma": row_field(row, "below_ma"),
             "historical_growth": row_field(row, "historical_growth"),
             "close": row_field(row, "close"),
             "recent_signal_buy_avg": row_field(row, "recent_signal_buy_avg"),
@@ -883,8 +887,8 @@ def backtest_all(
             sim_amt,
             cyb_buy,
             cyb_sell,
-            False,
-            trailing_cfg=None,
+            True,
+            trailing_cfg={"tier_sell_fn": _valuation_tier_fn},
             date_col="date",
         )
         if stats:
@@ -896,7 +900,7 @@ def backtest_all(
                 cyb_amt,
                 cyb_buy,
                 cyb_sell,
-                False,
+                True,
                 ret,
             )
             metrics.pop("trading_days", None)
@@ -905,7 +909,7 @@ def backtest_all(
                 TradeResult(
                     code=CYB_INDEX["code"],
                     name=CYB_INDEX["name"],
-                    has_sell=False,
+                    has_sell=True,
                     **_trade_result_fields(stats),
                 )
             )
