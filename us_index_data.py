@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from io import StringIO
+import re
 from typing import Any
 
 import pandas as pd
@@ -365,9 +366,37 @@ def fetch_dividend_yield_proxy(key: str):
 
     try:
         data = get_or_fetch_us_json(spec["dividend_cache"], _fetch)
-        return data.get("yield")
     except requests.RequestException:
-        return None
+        data = None
+
+    if key == "spx" and (not data or data.get("yield") is None):
+        if offline_mode_enabled():
+            return None
+        from bs4 import BeautifulSoup
+
+        ssga_url = "https://www.ssga.com/us/en/individual/etfs/state-street-spdr-sp-500-etf-trust-spy"
+        response = requests.get(
+            ssga_url,
+            headers=HEADERS,
+            timeout=_cfg(key, "FRED_NETWORK_TIMEOUT"),
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        for row in soup.find_all("tr"):
+            cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
+            if any("Fund Distribution Yield" in cell for cell in cells):
+                match = re.search(r"(\d+(?:\.\d+)?)%", cells[-1] if cells else "")
+                if match:
+                    data = {
+                        "yield": float(match.group(1)) / 100,
+                        "source": "SSGA SPY Fund Distribution Yield",
+                    }
+                    save_json(us_cache_path(spec["dividend_cache"]), data)
+                    break
+        if not data or data.get("yield") is None:
+            raise RuntimeError("SSGA SPY page does not contain Fund Distribution Yield")
+
+    return data.get("yield") if data else None
 
 
 def implied_earnings_growth(trailing_pe, forward_pe):
