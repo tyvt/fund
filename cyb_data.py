@@ -102,15 +102,25 @@ def fetch_cyb_price_history():
 def build_cyb_valuation_panel():
     """合并 PE、PB、股息率为日度估值面板。
 
-    乐咕 PE 为月度发布，merge_asof 对齐后按指数收盘价折算为日度 PE，
-    避免指数上涨而 PE 未更新导致分位与 PEG 被低估（如 2025 年 2 月）。
+    乐咕 PE/PB 为月度发布，以日线价格为基表向前对齐；PE 再按发布日指数收盘价
+    折算为每日 PE，避免指数上涨而 PE 未更新导致分位与 PEG 被低估。
     """
     pb = fetch_cyb_pb_history()
     pe = fetch_cyb_pe_szse_official()
     dividend = fetch_cyb_dividend_history()
     prices = fetch_cyb_price_history()
 
-    panel = pb.sort_values("date")
+    panel = prices[["date", "close"]].dropna(subset=["date", "close"]).sort_values("date")
+    pb_src = pb[["date", "pb", "pb_equal", "pb_median"]].dropna(
+        subset=["date", "pb"]
+    ).sort_values("date").rename(columns={"date": "pb_source_date"})
+    panel = pd.merge_asof(
+        panel,
+        pb_src,
+        left_on="date",
+        right_on="pb_source_date",
+        direction="backward",
+    )
     pe_src = pe.sort_values("date").rename(
         columns={"date": "pe_source_date", "pe": "pe_official", "index_close": "pe_index_close"}
     )
@@ -121,15 +131,12 @@ def build_cyb_valuation_panel():
         right_on="pe_source_date",
         direction="backward",
     )
+    dividend_src = dividend[["date", "dividend_yield"]].dropna(
+        subset=["date", "dividend_yield"]
+    ).sort_values("date")
     panel = pd.merge_asof(
         panel,
-        dividend[["date", "dividend_yield"]].sort_values("date"),
-        on="date",
-        direction="backward",
-    )
-    panel = pd.merge_asof(
-        panel.sort_values("date"),
-        prices[["date", "close"]].sort_values("date"),
+        dividend_src,
         on="date",
         direction="backward",
     )
@@ -150,6 +157,7 @@ def build_cyb_valuation_panel():
     panel = panel.dropna(subset=["pe", "pb", "pb_equal", "dividend_yield"])
     panel["date_only"] = panel["date"].dt.date
     drop_cols = [
+        "pb_source_date",
         "pe_source_date",
         "pe_index_close",
         "close_at_pe_source",
