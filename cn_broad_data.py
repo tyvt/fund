@@ -11,12 +11,12 @@ from config import (
 from market_data import (
     asof_datetime,
     attach_bond_yield,
-    compute_percentile,
     get_gov_bond_yield_history,
     get_index_perf_history,
     read_indicator_history,
     rolling_percentile_series,
 )
+from dividend_data import calibrate_dividend_ratio
 from price_position import attach_ma_trend, attach_pct_above_low, attach_pct_below_high, attach_year_range_position, row_price_position_fields
 from signal_format import merge_history_meta
 
@@ -28,13 +28,6 @@ CN_BROAD_INDEX_BY_CODE = {
 def read_cn_broad_indicator(index_code):
     """读取官方指标文件（近约 20 个交易日）。"""
     return read_indicator_history(index_code)
-
-
-def calibrate_dividend_ratio(indicator):
-    """用官方股息率与 PE 校准估算系数。"""
-    if indicator is None or indicator.empty:
-        return None
-    return float((indicator["dividend_yield"] * indicator["pe"]).mean())
 
 
 def _rolling_pe_calibration_scale(panel):

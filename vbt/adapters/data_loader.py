@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
 import gc
 from pathlib import Path
-from typing import Any, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Iterator, MutableMapping, Sequence
 
 import pandas as pd
 

@@ -76,15 +76,3 @@ def signal_backtest_overlay(patches: dict | None):
                 setattr(rot_mod, attr, val)
 
         clear_signal_caches()
-
-
-@contextmanager
-def merge_overlays(*patch_dicts: dict):
-    merged: dict[str, dict] = {}
-    for p in patch_dicts:
-        if not p:
-            continue
-        for kind, items in p.items():
-            merged.setdefault(kind, {}).update(items)
-    with signal_backtest_overlay(merged if merged else None):
-        yield

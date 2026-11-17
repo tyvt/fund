@@ -273,41 +273,6 @@ def get_or_fetch_json(
         raise
 
 
-def get_or_fetch_text(
-    key: str,
-    fetch_fn: Callable[[], str],
-    *,
-    subdir: str = "",
-    ext: str = ".csv",
-    force: bool = False,
-    fallback_path: Path | None = None,
-) -> str:
-    path = cache_path(key, ext, subdir=subdir)
-    cached = load_text(path)
-    if offline_mode_enabled():
-        if not cached and fallback_path and fallback_path.exists():
-            cached = load_text(fallback_path)
-        if not cached:
-            _raise_missing_offline_cache("text", key, path)
-        return cached
-    if not force and is_fresh_today(path) and cached:
-        return cached
-
-    try:
-        text = fetch_fn()
-        if text:
-            save_text(path, text)
-        return text
-    except Exception:
-        if cached:
-            return cached
-        if fallback_path and fallback_path.exists():
-            cached = load_text(fallback_path)
-            if cached:
-                return cached
-        raise
-
-
 def get_or_fetch_us_dataframe(
     name: str,
     fetch_fn: Callable[[], pd.DataFrame | None],
@@ -358,25 +323,5 @@ def get_or_fetch_us_json(name: str, fetch_fn: Callable[[], T], *, force: bool = 
         return payload
     except Exception:
         if cached is not None:
-            return cached
-        raise
-
-
-def get_or_fetch_us_text(name: str, fetch_fn: Callable[[], str], *, force: bool = False) -> str:
-    path = us_cache_path(name)
-    cached = load_text(path)
-    if offline_mode_enabled():
-        if not cached:
-            _raise_missing_offline_cache("US text", name, path)
-        return cached
-    if not force and is_fresh_today(path) and cached:
-        return cached
-    try:
-        text = fetch_fn()
-        if text:
-            save_text(path, text)
-        return text
-    except Exception:
-        if cached:
             return cached
         raise

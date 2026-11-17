@@ -77,16 +77,6 @@ def resolve_change_scaled_amount(
     return max(min_amount, round(base_amount * mult))
 
 
-def attach_daily_change_pct(panel, close_col: str = "close") -> pd.DataFrame:
-    """为面板附加 daily_change_pct（相对前一交易日收盘）。"""
-    if panel is None or panel.empty or close_col not in panel.columns:
-        return panel
-    out = panel.copy()
-    closes = pd.to_numeric(out[close_col], errors="coerce")
-    out["daily_change_pct"] = closes.pct_change()
-    return out
-
-
 def make_change_amount_fn(
     base_amount: float,
     panel=None,

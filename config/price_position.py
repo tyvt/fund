@@ -1,6 +1,6 @@
 """价格位置与趋势过滤（全局默认）。"""
 
-from config.env import _env_float, _env_int, _env_int_any, _env_float_any, _env_str
+from config.env import _env_float, _env_int
 
 # 滚动区间位置（默认近 252 交易日 ≈ 1 年）：0=窗口内最低、1=窗口内最高
 BUY_RANGE_LOOKBACK_DAYS = _env_int("BUY_RANGE_LOOKBACK_DAYS", 252)

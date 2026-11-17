@@ -44,7 +44,6 @@ from config.paths import (
 )
 from data.parquet_constants import (
     A_SHARE_CATEGORIES,
-    CALENDAR_COLUMNS,
     DEFAULT_INDEX_SYMBOLS,
     INDEX_ORDER_BOOK_IDS,
     DIVIDEND_COLUMNS,
@@ -69,7 +68,6 @@ from data.parquet_constants import (
     ST_COLUMNS,
 )
 from scripts.rqalpha_paths import (
-    DEFAULT_RQALPHA_BUNDLE_PATH,
     resolve_rqalpha_bundle_path,
 )
 from scripts.rqalpha_symbols import from_rqalpha_id, normalize_stock_code, to_rqalpha_id

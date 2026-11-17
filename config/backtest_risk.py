@@ -1,6 +1,5 @@
 """回测风险指标与卖出开关。"""
 
-import os
 from config.env import _env_bool, _env_float, _env_int, _env_float_any, _env_int_any, _env_str
 
 # --- 回测风险指标 ---

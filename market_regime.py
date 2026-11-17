@@ -74,10 +74,6 @@ def default_regime_config() -> RegimeConfig:
     return RegimeConfig(enabled=MARKET_REGIME_ENABLED)
 
 
-def is_market_regime_enabled() -> bool:
-    return MARKET_REGIME_ENABLED
-
-
 def _row_field(row, key):
     if row is None:
         return None

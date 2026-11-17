@@ -4,8 +4,6 @@ from config.env import (
     _env_bool,
     _env_float,
     _env_float_any,
-    _env_int,
-    _env_int_any,
     _build_annual_investment_budget_by_year,
 )
 from config.indices import CN_BROAD_INDICES, INDICES
@@ -248,7 +246,6 @@ def format_backtest_amount_note(amounts):
     if amounts.get("position_alloc") and amounts.get("by_code"):
         active = {c: a for c, a in amounts["by_code"].items() if a and a > 0}
         parts = [f"{c} **{a:.0f}**" for c, a in sorted(active.items())]
-        from buy_amount_allocation import format_allocation_note
 
         head = "位置分配（回测按历史买入日低位程度）"
         if amounts.get("annual_budget"):

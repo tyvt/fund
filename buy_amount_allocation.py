@@ -411,7 +411,6 @@ def get_position_allocation(
 
 def _avg_at_buy(panel, buy_fn, date_col="date"):
     """回测：买入日的平均年区间位置（越低说明常在低位买）。"""
-    from backtest_trade_signals import _filter_panel
 
     if panel is None or panel.empty:
         return 0.5, 0
@@ -521,32 +520,3 @@ def format_allocation_note(alloc=None) -> str:
         f"**{days_left}** 天）；按当前位置与买入就绪度分配；"
         f"预计全年投入 **{estimated:,.0f}** 元（截至 {as_of}）"
     )
-
-
-def format_allocation_markdown_table(alloc=None) -> list[str]:
-    alloc = alloc or get_position_allocation()
-    lines = [
-        "## 买入额度分配（位置 × 就绪度）",
-        "",
-        f"> {format_allocation_note(alloc)}",
-        "",
-        "| 指数 | 代码 | 区间位置 | 就绪度 | 策略收益 | 权重 | 单次买入 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for row in reversed(alloc.get("rows", [])):
-        pos = row.get("year_range_position")
-        pos_text = f"{pos * 100:.0f}%" if pos is not None else "—"
-        readiness = row.get("readiness")
-        ready_text = f"{readiness * 100:.0f}%" if readiness is not None else "—"
-        if row.get("is_buy"):
-            ready_text = "买入"
-        ret = row.get("return_pct")
-        ret_text = f"{ret:.1f}%" if ret is not None else "—"
-        weight = row.get("weight") or 0
-        amt = row.get("amount", 0)
-        lines.append(
-            f"| {row['name']} | {row['code']} | {pos_text} | {ready_text} | "
-            f"{ret_text} | {weight:.2f} | {amt:.0f} |"
-        )
-    lines.append("")
-    return lines

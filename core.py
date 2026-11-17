@@ -9,17 +9,14 @@ from config import (
 from drop_to_buy import dividend_drop_to_buy, format_buy_trigger_line
 from dividend_data import (
     assess_spread_10y_level,
-    build_signal_history,
     collect_index_results,
     evaluate_buy_signal,
-    format_dividend_spread_10y_line,
 )
 from market_data import get_gov_bond_yield, get_gov_bond_yield_history
 from price_position import (
     build_buy_price_ceilings,
     effective_drawdown_threshold,
     effective_max_above_low_pct,
-    is_near_year_low,
     make_drawdown_from_high_criterion,
     make_price_position_criterion,
 )

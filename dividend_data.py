@@ -34,27 +34,8 @@ from price_position import (
     is_near_year_low,
     price_position_ok,
     row_price_position_fields,
-    year_range_ok,
 )
 from signal_format import panel_history_meta
-
-
-def spread_10y_window_stats(spread_series, idx):
-    """计算近10年（或可用样本）利差区间与分位。"""
-    if idx < DIVIDEND_SPREAD_10Y_MIN_DAYS:
-        return None, None, None, None
-    start = max(0, idx - DIVIDEND_SPREAD_10Y_WINDOW)
-    hist = spread_series.iloc[start:idx]
-    current = spread_series.iloc[idx]
-    if hist.empty or current is None or pd.isna(current):
-        return None, None, None, None
-    pct = compute_percentile(hist, current)
-    return (
-        float(hist.min()),
-        float(hist.max()),
-        pct,
-        int(len(hist)),
-    )
 
 
 def assess_spread_10y_level(spread_10y_pct, high_pct_min=None):
@@ -65,38 +46,6 @@ def assess_spread_10y_level(spread_10y_pct, high_pct_min=None):
     if spread_10y_pct >= threshold:
         return False, "利差偏高"
     return True, "未过高"
-
-
-def format_dividend_spread_10y_line(
-    spread,
-    spread_10y_pct,
-    spread_10y_min,
-    spread_10y_max,
-    sample_days,
-    high_pct_min=None,
-):
-    """报告用近10年利差区间与偏高判定行。"""
-    threshold = (
-        high_pct_min if high_pct_min is not None else DIVIDEND_SPREAD_HIGH_PERCENTILE_MIN
-    )
-    if sample_days is None or sample_days < DIVIDEND_SPREAD_10Y_MIN_DAYS:
-        return "近10年利差: 历史样本不足"
-    years = sample_days / 252
-    period_label = "近10年" if years >= 9 else f"近{max(1, int(round(years)))}年"
-    range_text = "—"
-    if spread_10y_min is not None and spread_10y_max is not None:
-        range_text = f"{spread_10y_min:.2%}–{spread_10y_max:.2%}"
-    spread_text = f"{spread:.2%}" if spread is not None else "—"
-    pct_text = (
-        f"{spread_10y_pct:.1f}%"
-        if spread_10y_pct is not None and not pd.isna(spread_10y_pct)
-        else "—"
-    )
-    _, verdict = assess_spread_10y_level(spread_10y_pct, threshold)
-    return (
-        f"{period_label}利差 {range_text} | 当前 {spread_text} | "
-        f"{period_label}分位 {pct_text}（偏高线≥{threshold:.0f}%）| 判定: {verdict}"
-    )
 
 
 def get_index_data(index_code):

@@ -35,10 +35,6 @@ def tencent_symbol_for_index(index_code: str) -> str | None:
     return TENCENT_SYMBOL_BY_INDEX.get(index_code)
 
 
-def supported_live_index_codes() -> tuple[str, ...]:
-    return tuple(TENCENT_SYMBOL_BY_INDEX)
-
-
 def _parse_quote_line(line: str) -> LiveQuote | None:
     line = line.strip()
     if not line or "=\"" not in line:
@@ -114,7 +110,3 @@ def fetch_live_quotes(index_codes: Iterable[str] | None = None) -> dict[str, Liv
         if quote is not None:
             results[quote.index_code] = quote
     return results
-
-
-def fetch_live_quote(index_code: str) -> LiveQuote | None:
-    return fetch_live_quotes([index_code]).get(index_code)

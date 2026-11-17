@@ -163,7 +163,7 @@ def compute_index_ranking(panels=None, *, force: bool = False):
     """计算各指数自基日买入持有收益率排名，并分配年度额度。"""
     global _RANKING_CACHE
     from backtest_buy_signals import default_backtest_range, get_panels
-    from config import ANNUAL_INVESTMENT_BUDGET, BUY_AMOUNT_RANKING_ENABLED
+    from config import BUY_AMOUNT_RANKING_ENABLED
 
     if not BUY_AMOUNT_RANKING_ENABLED:
         return _empty_ranking()

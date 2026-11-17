@@ -1,10 +1,6 @@
 """红利指数信号阈值。"""
 
-from functools import lru_cache
-import os
-
 from config.env import (
-    ENV_BOOL_TRUE,
     _env_bool,
     _env_float,
     _env_float_any,

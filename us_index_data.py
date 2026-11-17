@@ -5,7 +5,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from io import StringIO
-import re
 from typing import Any
 
 import pandas as pd

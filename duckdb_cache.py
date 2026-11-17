@@ -23,11 +23,6 @@ _ENABLED = True
 _DUCKDB_READY: bool | None = None
 
 
-def set_duckdb_cache_enabled(enabled: bool) -> None:
-    global _ENABLED
-    _ENABLED = enabled
-
-
 def ensure_duckdb_cache_ready(*, verbose: bool = False) -> bool:
     """检测 DuckDB 是否可用；不可用时禁用双写/回读，静默走 CSV。"""
     global _ENABLED, _DUCKDB_READY

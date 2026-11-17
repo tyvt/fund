@@ -214,16 +214,6 @@ def append_signal_block(lines, signal_eval, module):
     return lines
 
 
-def format_module_header(title, meta_line, source_line=None):
-    """统一模块报告头。"""
-    lines = [title, meta_line]
-    if source_line:
-        lines.append(source_line)
-    lines.append("")
-    lines.append("─" * 24)
-    return lines
-
-
 def join_index_sections(sections) -> str:
     """将各指数 section 拼接为扁平报告正文。"""
     parts = []

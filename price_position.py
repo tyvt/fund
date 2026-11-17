@@ -202,23 +202,6 @@ def ma_slope_for_simulated_close(
     return (ma_now - ma_lag) / ma_lag
 
 
-def compute_pct_above_low_from_prices(prices, lookback_days=60, close_col="close"):
-    """从价格序列计算最新一日的距低点涨幅。"""
-    if prices is None or prices.empty or close_col not in prices.columns:
-        return None
-    work = prices.copy()
-    if "date" in work.columns:
-        work = work.sort_values("date")
-    work = work.reset_index(drop=True)
-    min_periods = min(20, max(1, lookback_days // 3))
-    low_n = work[close_col].rolling(lookback_days, min_periods=min_periods).min()
-    latest_low = low_n.iloc[-1]
-    latest_close = work[close_col].iloc[-1]
-    if pd.isna(latest_low) or pd.isna(latest_close) or latest_low <= 0:
-        return None
-    return float(latest_close) / float(latest_low) - 1
-
-
 def price_position_ok(pct_above_low, max_above_low_pct):
     """距低点涨幅是否在允许范围内。"""
     if max_above_low_pct is None:
@@ -300,49 +283,6 @@ def range_position_for_simulated_close(
     if high_n <= low_n:
         return 0.0
     return (new_close - low_n) / (high_n - low_n)
-
-
-def format_range_position_text(
-    year_range_position, lookback_days=252, close=None, range_low=None, range_high=None
-):
-    """报告用区间位置文案（优先展示价格区间）。"""
-    label = "近1年" if lookback_days == 252 else f"近{lookback_days}日"
-    if range_low is not None and range_high is not None:
-        return f"{label} {format_index_price(range_low)}–{format_index_price(range_high)}"
-    if year_range_position is None or pd.isna(year_range_position):
-        return "—"
-    return f"{label}区间 {year_range_position * 100:.0f}%"
-
-
-def format_price_position_line(snapshot, lookback_days=252):
-    """报告用价格位置摘要行（展示点位，非涨跌幅）。"""
-    close = snapshot.get("close")
-    low = snapshot.get("lookback_low_price")
-    high = snapshot.get("lookback_high_price")
-    range_low = snapshot.get("range_low_price")
-    range_high = snapshot.get("range_high_price")
-    parts = []
-    if close is not None and not pd.isna(close):
-        price_label = "现价" if snapshot.get("live_price") else "收盘"
-        parts.append(f"{price_label} {format_index_price(close)}")
-    parts.append(
-        format_range_position_text(
-            snapshot.get("year_range_position"),
-            lookback_days,
-            close=close,
-            range_low=range_low,
-            range_high=range_high,
-        )
-    )
-    if low is not None and not pd.isna(low):
-        parts.append(f"近{lookback_days}日低 {format_index_price(low)}")
-    high_days = snapshot.get("high_lookback_days", lookback_days)
-    if high is not None and not pd.isna(high):
-        parts.append(f"近{high_days}日高 {format_index_price(high)}")
-    slope = snapshot.get("ma_slope_pct")
-    if slope is not None and not pd.isna(slope):
-        parts.append(f"MA200斜率 {slope * 100:.1f}%")
-    return " | ".join(parts)
 
 
 def pct_above_low_for_simulated_close(
@@ -523,17 +463,6 @@ def build_buy_price_ceilings(
     return ceilings
 
 
-def build_sell_price_floors(snapshot, min_above_low_pct, lookback_days=120):
-    """从快照提取卖出侧价格下限（收盘需≥该值才维持卖出）。"""
-    floors = []
-    low = snapshot.get("lookback_low_price")
-    if min_above_low_pct is not None and low is not None and not pd.isna(low):
-        floors.append(
-            (f"近{lookback_days}日低", _min_close_sell_above_low(low, min_above_low_pct))
-        )
-    return floors
-
-
 def format_price_bound_summary(bounds, bound_kind="上限"):
     """将 (标签, 点位) 列表格式化为报告用摘要。"""
     valid = [(label, price) for label, price in bounds if price is not None]
@@ -550,35 +479,3 @@ def format_price_bound_summary(bounds, bound_kind="上限"):
     if extras:
         text += "；" + "；".join(extras)
     return text
-
-
-def make_sell_price_position_criterion(
-    pct_above_low,
-    min_above_low_pct,
-    lookback_days,
-    close=None,
-    lookback_low=None,
-):
-    """生成卖出侧价格位置判定行。"""
-    if min_above_low_pct is None:
-        return None
-    sell_hit = price_position_sell_hit(pct_above_low, min_above_low_pct)
-    min_close = _min_close_sell_above_low(lookback_low, min_above_low_pct)
-    if close is not None and lookback_low is not None:
-        detail = (
-            f"收盘 {format_index_price(close)}（近{lookback_days}日低 "
-            f"{format_index_price(lookback_low)}，卖出需≥{format_index_price(min_close)}）"
-        )
-    elif pct_above_low is not None and not pd.isna(pct_above_low):
-        detail = (
-            f"{pct_above_low * 100:.1f}%（需≥{min_above_low_pct * 100:.0f}%）"
-        )
-    else:
-        detail = "—"
-    return make_criterion(
-        f"近{lookback_days}日低点",
-        sell_hit,
-        detail,
-        "指数尚未从近期低点反弹足够",
-        applicable=pct_above_low is not None and not pd.isna(pct_above_low),
-    )

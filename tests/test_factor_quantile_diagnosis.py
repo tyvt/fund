@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from scripts.factor_quantile_diagnosis import (
     assign_quantile_returns,

@@ -25,7 +25,6 @@ from config import (
     NDX_INDEX,
     BACKTEST_OUTPUT_DIR,
     BACKTEST_PRESENT_LABEL,
-    PROJECT_DIR,
     US_INDEX_KEYS,
     format_backtest_amount_note,
     get_backtest_buy_amount,

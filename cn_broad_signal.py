@@ -25,7 +25,6 @@ from price_position import (
     trend_filter_ok,
     year_range_ok,
 )
-from sell_trailing import trailing_sell_hit
 from signal_format import (
     SIGNAL_BUY,
     SIGNAL_HOLD,

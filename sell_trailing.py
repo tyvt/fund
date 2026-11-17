@@ -89,54 +89,6 @@ def last_buy_signal_price_from_column(
     return float(price)
 
 
-def compute_recent_signal_buy_avg(
-    panel,
-    buy_eval_fn,
-    row_snapshot_fn,
-    lookback_days=252,
-    date_col="date",
-    close_col="close",
-):
-    """近 N 个交易日内，策略买入信号日的收盘价算术平均（隐含持仓成本）。"""
-    if panel is None or panel.empty or close_col not in panel.columns:
-        return None
-    work = panel.tail(lookback_days)
-    prices = []
-    for _, row in work.iterrows():
-        snap = row_snapshot_fn(row)
-        if buy_eval_fn(snap).get("is_buy"):
-            close = row.get(close_col)
-            if close is not None and not pd.isna(close):
-                prices.append(float(close))
-    if not prices:
-        return None
-    return sum(prices) / len(prices)
-
-
-def compute_peak_since_last_buy(
-    panel,
-    buy_eval_fn,
-    row_snapshot_fn,
-    date_col="date",
-    close_col="close",
-):
-    """自最近一次买入信号日以来，收盘价最高点。"""
-    if panel is None or panel.empty or close_col not in panel.columns:
-        return None
-    last_buy_idx = None
-    for i, row in panel.iterrows():
-        snap = row_snapshot_fn(row)
-        if buy_eval_fn(snap).get("is_buy"):
-            last_buy_idx = i
-    if last_buy_idx is None:
-        return None
-    segment = panel.loc[last_buy_idx:]
-    closes = segment[close_col].dropna()
-    if closes.empty:
-        return None
-    return float(closes.max())
-
-
 def trailing_sell_hit(
     *,
     close,

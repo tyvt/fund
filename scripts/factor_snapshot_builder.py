@@ -17,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import duckdb
 import pandas as pd

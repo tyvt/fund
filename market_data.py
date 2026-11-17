@@ -341,19 +341,6 @@ def _normalize_bond_history(bond_history):
     return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
 
-def resolve_bond_yield_for_date(target_date, bond_history=None):
-    """优先使用日度国债；缺失时按年度回填。"""
-    day = _to_date(target_date)
-    if day is None:
-        return None
-    if bond_history is not None and not bond_history.empty:
-        bond = _normalize_bond_history(bond_history)
-        matched = bond.loc[bond["date"] == day, "bond_yield"]
-        if not matched.empty:
-            return float(matched.iloc[0])
-    return BOND_YIELD_FALLBACK_BY_YEAR.get(day.year)
-
-
 def attach_bond_yield(panel, bond_history=None):
     """将国债收益率对齐到指数面板（日度 merge_asof + 年度回填）。"""
     if panel is None or panel.empty:
@@ -382,11 +369,3 @@ def attach_bond_yield(panel, bond_history=None):
 
     out = out.drop(columns=["_date_dt"], errors="ignore")
     return out.dropna(subset=["bond_yield"])
-
-
-def merge_index_with_bond(index_history, bond_history):
-    """按交易日对齐指数与国债收益率。"""
-    merged = attach_bond_yield(index_history, bond_history)
-    if "bond_yield" in merged.columns:
-        merged["bond_yield"] = merged["bond_yield"].ffill()
-    return merged.dropna(subset=["bond_yield"])

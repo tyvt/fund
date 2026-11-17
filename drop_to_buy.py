@@ -176,21 +176,6 @@ def format_sell_trigger_line(
     return "；".join(parts)
 
 
-def format_drop_to_buy_line(
-    drop_pct, is_buy=False, max_drop=0.35, rise_breaks_pct=None, close=None,
-    price_ceilings=None,
-):
-    """报告用单行文案（兼容旧调用，内部转 format_buy_trigger_line）。"""
-    return format_buy_trigger_line(
-        drop_pct=drop_pct,
-        is_buy=is_buy,
-        rise_breaks_pct=rise_breaks_pct,
-        close=close,
-        price_ceilings=price_ceilings,
-        max_drop=max_drop,
-    )
-
-
 def _estimate_buy_trigger(check_factor, max_move=0.35, precision=0.002):
     """返回 (再跌多少可买入, 已买入时当日涨多少将失效)。"""
     drop = find_min_drop_to_buy(
@@ -528,41 +513,6 @@ def cn_broad_sell_trigger(snapshot):
                 "pct_above_low": pct_above_low,
                 "close": new_close,
                 "lookback_low_price": snapshot.get("lookback_low_price"),
-            }
-        )["is_sell"]
-
-    return _estimate_sell_trigger(check_factor)
-
-
-def cyb_sell_trigger(snapshot):
-    from cyb_signal import evaluate_cyb_signal
-
-    panel = snapshot.get("panel")
-    if panel is None or panel.empty:
-        return None
-
-    idx = len(panel) - 1
-    row = panel.iloc[-1]
-    if row["pe"] is None or row["pb"] is None:
-        return None
-
-    def check_factor(factor):
-        if factor <= 0:
-            return False
-        pe = row["pe"] * factor
-        pb = row["pb"] * factor
-        pe_pct = rolling_percentile(
-            panel["pe"], idx, pe, CYB_PERCENTILE_WINDOW, CYB_PERCENTILE_MIN_DAYS
-        )
-        pb_pct = rolling_percentile(
-            panel["pb"], idx, pb, CYB_PERCENTILE_WINDOW, CYB_PERCENTILE_MIN_DAYS
-        )
-        return evaluate_cyb_signal(
-            {
-                "pe": pe,
-                "pb": pb,
-                "pe_percentile": pe_pct,
-                "pb_percentile": pb_pct,
             }
         )["is_sell"]
 

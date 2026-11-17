@@ -465,11 +465,6 @@ DATA_SOURCES = [
 ]
 
 
-def list_data_sources(category: str | None = None) -> list[dict]:
-    """返回数据源列表；category 预留扩展，当前返回全部。"""
-    return list(DATA_SOURCES)
-
-
 def print_data_sources():
     """在终端打印数据源摘要（供人工查阅）。"""
     for item in DATA_SOURCES:

@@ -21,7 +21,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.factor_orthogonality import (
-    CANDIDATES,
     compute_purified_ic_series,
     load_factor_panel,
     load_forward_returns,

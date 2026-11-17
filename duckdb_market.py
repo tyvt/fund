@@ -16,8 +16,6 @@ import pandas as pd
 
 
 
-from config import MARKET_DUCKDB_PATH
-
 from duckdb_cache import ensure_duckdb_cache_ready
 
 from duckdb_store import (

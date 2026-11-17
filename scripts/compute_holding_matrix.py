@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Sequence
 
 import duckdb
-import numpy as np
 import pandas as pd
 
 

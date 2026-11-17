@@ -15,7 +15,7 @@ from config import (
     CYB_PERCENTILE_WINDOW,
 )
 from data_cache import get_or_fetch_dataframe
-from market_data import compute_percentile, rolling_percentile_series
+from market_data import rolling_percentile_series
 from price_position import (
     attach_ma_trend,
     attach_pct_above_low,

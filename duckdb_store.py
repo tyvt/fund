@@ -362,17 +362,6 @@ def load_wide_frame(
     return wide.sort_values(date_col).reset_index(drop=True)
 
 
-def max_trade_date(conn, *, domain: str, entity_key: str, field_name: str) -> date | None:
-    sid = series_id(domain, entity_key, field_name)
-    row = conn.execute(
-        "SELECT max(trade_date) FROM ts_point WHERE series_id = ?",
-        [sid],
-    ).fetchone()
-    if not row or row[0] is None:
-        return None
-    return _to_date(row[0])
-
-
 def max_trade_dates_batch(
     conn,
     entity_keys: list[str],

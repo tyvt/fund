@@ -25,7 +25,6 @@ from drop_to_buy import (
 from price_position import (
     build_buy_price_ceilings,
     effective_max_above_low_pct,
-    is_near_year_low,
     make_price_position_criterion,
     make_trend_criterion,
     price_position_ok,
