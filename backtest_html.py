@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from config import BUY_AMOUNT_DEFAULT
+
 DAILY_ADVICE_START = "<!--DAILY_ADVICE_START-->"
 DAILY_ADVICE_END = "<!--DAILY_ADVICE_END-->"
 
@@ -30,8 +32,9 @@ _DAILY_ADVICE_CSS = """
   #daily-advice .sig-buy .advice-badge { background: #dcfce7; color: #166534; }
   #daily-advice .sig-sell .advice-badge { background: #fee2e2; color: #991b1b; }
   #daily-advice .advice-score { margin-left: auto; font-size: 0.75rem; color: #666; }
-  #daily-advice .advice-body { margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
-    font-family: Consolas, Menlo, monospace; font-size: 0.8rem; line-height: 1.5; }
+  #daily-advice .advice-amount { padding: 10px 12px 4px; font-size: 0.85rem; }
+  #daily-advice .advice-amount strong { color: #16a34a; font-size: 1rem; }
+  #daily-advice .advice-reason { padding: 2px 12px 10px; font-size: 0.8rem; color: #555; }
   #daily-advice .advice-empty { color: #666; font-size: 0.875rem; }
 """
 
@@ -44,8 +47,31 @@ def _advice_signal_class(signal_short):
     return "sig-hold"
 
 
+_REALTIME_CHANGE_RE = re.compile(r"实时[^\n]*?([+-]?\d+(?:\.\d+)?)%")
+_REASON_SIGNALS = {
+    "强买入": "多项条件强达标，可考虑分批买入",
+    "买入": "条件达标，可考虑分批买入",
+    "可买": "条件达标，可考虑分批买入",
+    "观望": "条件未完全达标，暂观望",
+    "暂不买": "条件未达标，暂不买入",
+}
+
+
+def _advice_change_and_amount(section):
+    """从报告文本解析实时涨跌幅，按基准50元×越跌越买倍率算本次买入金额。"""
+    from buy_amount_change import change_multiplier
+    from config import BUY_AMOUNT_DEFAULT
+
+    text = str(section.get("text") or "")
+    match = _REALTIME_CHANGE_RE.search(text)
+    change_pct = float(match.group(1)) / 100 if match else None
+    mult = change_multiplier(change_pct)
+    amount = round(BUY_AMOUNT_DEFAULT * mult)
+    return change_pct, mult, amount
+
+
 def render_daily_advice_block(sections=None, generated_at=None, error=None) -> str:
-    """渲染可嵌入回测 HTML 的当日建议区块（含唯一标记，CSS 作用域限 #daily-advice）。"""
+    """渲染可嵌入回测 HTML 的当日建议区块（极简卡片：名称/信号/金额倍率/一句话理由）。"""
     generated_at = generated_at or datetime.now()
     ts = generated_at.strftime("%Y-%m-%d %H:%M:%S")
     if error is not None:
@@ -56,19 +82,19 @@ def render_daily_advice_block(sections=None, generated_at=None, error=None) -> s
             code = str(s.get("code") or "")
             name = str(s.get("name") or "")
             signal = str(s.get("signal_short") or "")
-            text = str(s.get("text") or "")
-            score, total = s.get("score"), s.get("total")
-            score_html = (
-                f'<span class="advice-score">{escape(str(score))}/{escape(str(total))}</span>'
-                if score is not None and total
-                else ""
+            change_pct, mult, amount = _advice_change_and_amount(s)
+            reason = _REASON_SIGNALS.get(signal, "按信号与仓位自行决策")
+            change_text = (
+                f"当日 {change_pct * 100:+.2f}%" if change_pct is not None else "当日涨跌 —"
             )
             title = " ".join(x for x in (code, name) if x) or "指数"
             cards.append(
                 f'<article class="advice-card {_advice_signal_class(signal)}">'
                 f'<div class="advice-head"><span class="advice-title">{escape(title)}</span>'
-                f'<span class="advice-badge">{escape(signal)}</span>{score_html}</div>'
-                f'<pre class="advice-body">{escape(text)}</pre></article>'
+                f'<span class="advice-badge">{escape(signal)}</span></div>'
+                f'<div class="advice-amount">基准 {BUY_AMOUNT_DEFAULT:g} 元 × {mult:.2f}（{escape(change_text)}，越跌越买） '
+                f'= <strong>{amount} 元</strong></div>'
+                f'<div class="advice-reason">{escape(reason)}</div></article>'
             )
         inner = f'<div class="advice-grid">{"".join(cards)}</div>'
     else:
@@ -76,7 +102,7 @@ def render_daily_advice_block(sections=None, generated_at=None, error=None) -> s
     return (
         f"{DAILY_ADVICE_START}\n"
         f'<section id="daily-advice"><h2>当日买卖建议</h2>'
-        f'<p class="advice-meta">生成时间：{escape(ts)} · 共 {len(sections or [])} 只指数</p>'
+        f'<p class="advice-meta">生成时间：{escape(ts)} · 单次基准 {BUY_AMOUNT_DEFAULT:g} 元 × 越跌越买倍率</p>'
         f"{inner}</section>\n{DAILY_ADVICE_END}"
     )
 

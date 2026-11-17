@@ -3,9 +3,19 @@
 from backtest_html import (
     DAILY_ADVICE_END,
     DAILY_ADVICE_START,
+    _advice_change_and_amount,
     _write_block,
     render_daily_advice_block,
 )
+
+
+def test_advice_amount_and_multiplier():
+    up = _advice_change_and_amount({"text": "实时 1,221.19 +0.62% 20261117"})
+    down = _advice_change_and_amount({"text": "实时 2,292.20 -1.20% 20261117"})
+    missing = _advice_change_and_amount({"text": "无实时数据"})
+    assert round(up[1], 2) == 0.94 and up[2] == 47
+    assert round(down[1], 2) == 1.12 and down[2] == 56
+    assert missing[1] == 1.0 and missing[2] == 50
 
 
 def _html(with_advice=True, twice=False):

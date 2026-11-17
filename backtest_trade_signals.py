@@ -901,7 +901,8 @@ def resolve_chart_sell_dates(
             m["code"] == code and us_index_sell_enabled(k)
             for k, m in US_INDEX_META.items()
         )
-        if not cn_broad_sell_enabled(code) and not us_enabled:
+        cyb_enabled = code == CYB_INDEX["code"]
+        if not cn_broad_sell_enabled(code) and not us_enabled and not cyb_enabled:
             return []
         return list(_rotation_sell_dates_cache[code])
 
@@ -1085,14 +1086,17 @@ def collect_trade_chart_tables(
         )
 
     cyb_panel = panels.cyb_panel()
-    cyb_buy, _ = _cyb_signal_fns(buy_only=True)
+    cyb_buy, _ = _cyb_signal_fns(buy_only=False)
+
+    def _cyb_sell_dates(c=CYB_INDEX["code"], p=cyb_panel, bf=cyb_buy):
+        return resolve_chart_sell_dates(c, p, start_date, end_date, amounts, bf)
 
     _maybe_add(
         cyb_panel,
         CYB_INDEX["code"],
         CYB_INDEX["name"],
         cyb_buy,
-        sell_dates_fn=None,
+        sell_dates_fn=_cyb_sell_dates,
     )
 
     for key in US_INDEX_KEYS:

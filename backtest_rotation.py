@@ -87,6 +87,7 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
     from backtest_trade_signals import (
         _cn_broad_signal_fns,
         _cyb_signal_fns,
+        _valuation_tier_fn,
     )
     from backtest_buy_signals import (
         CN_BROAD_BACKTEST_INDICES,
@@ -127,7 +128,7 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
     cyb_code = CYB_INDEX["code"]
     cyb_amt = get_backtest_buy_amount(cyb_code, amounts)
     if cyb_amt > 0:
-        cyb_buy, _ = _cyb_signal_fns(buy_only=True)
+        cyb_buy, _ = _cyb_signal_fns(buy_only=False)
         sim_amt = _resolve_trade_amount(
             cyb_code, cyb_amt, amounts, cyb_panel, start_date, end_date, cyb_buy
         )
@@ -136,9 +137,10 @@ def _iter_rotation_configs(panels, amounts, start_date, end_date):
             "name": CYB_INDEX["name"],
             "panel": cyb_panel,
             "buy_fn": cyb_buy,
-            # 创业板禁卖（仅科创50保留卖出），卖点逻辑已移除。
-            "has_sell": False,
-            "trailing_cfg": None,
+            "has_sell": True,
+            "trailing_cfg": {
+                "tier_sell_fn": lambda row: _valuation_tier_fn(row, cyb_code)
+            },
             "valuation_sell_fn": None,
             "valuation_price_col": None,
             "sim_amt": sim_amt,
